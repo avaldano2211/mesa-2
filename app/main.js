@@ -413,11 +413,46 @@ function durTxt(a, b) {
 const usd = (n) => (n == null ? '—' : (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
 const colUtil = (n) => n == null ? 'var(--tx2)' : n > 0 ? 'var(--verde)' : n < 0 ? 'var(--rojo)' : 'var(--tx2)';
 
+const BROKERS = [
+  { k: 'tasty', n: 'tastytrade' }, { k: 'etrade', n: 'E*TRADE' },
+  { k: 'schwab', n: 'Charles Schwab' }, { k: 'moomoo', n: 'moomoo' },
+];
+
 async function vistaCuentas() {
-  const { data } = await sb.from('posiciones').select('*').order('cerrada_at', { ascending: false, nullsFirst: false });
-  const pos = data || [];
-  const cerradas = pos.filter(p => p.estado === 'cerrada' || p.estado === 'expirada');
+  const [posR, btR, csR] = await Promise.all([
+    sb.from('posiciones').select('*'),
+    sb.from('broker_trades').select('*'),
+    sb.from('cuenta_snapshots').select('*'),
+  ]);
+  const manual = (posR.data || []).filter(p => p.estado === 'cerrada' || p.estado === 'expirada')
+    .map(p => ({ ...p, _fuente: 'manual' }));
+  // los round-trips del bróker se normalizan al mismo shape del historial
+  const delBroker = (btR.data || []).map(t => ({
+    ...t, estado: 'cerrada', _fuente: t.broker,
+    abierta_fecha_ny: (t.cerrada_at || '').slice(0, 10),
+  }));
+  const cerradas = [...manual, ...delBroker].sort((a, b) =>
+    (b.cerrada_at || '').localeCompare(a.cerrada_at || ''));
+  const saldos = csR.data || [];
   let h = '';
+
+  // ---- saldos de brókeres ----
+  const total = saldos.reduce((s, c) => s + (Number(c.saldo_neto) || 0), 0);
+  h += `<div class="card">
+    <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">SALDO TOTAL</div>
+    <div class="mono" style="font-size:28px;font-weight:700;margin:2px 0">${saldos.length ? usd(total) : '—'}</div>
+    ${saldos.length ? `<span class="fresco">${saldos.length} de 4 brókeres conectados</span>` : ''}</div>`;
+  h += BROKERS.map(b => {
+    const c = saldos.find(x => x.broker === b.k);
+    if (c) return `<div class="card"><div class="fila">
+      <div><b style="font-size:14px">${esc(b.n)}</b> <span class="mut">${esc(c.numero_mascara||'')}</span>
+        <div class="fresco">${c.origen==='vps'?'en vivo':'desde tu Mac'} · ${esc(haceCuanto(c.capturado_at).txt)}</div></div>
+      <span class="mono" style="font-weight:700;font-size:15px">${usd(c.saldo_neto)}</span></div></div>`;
+    return `<div class="card"><div class="fila">
+      <div><b style="font-size:14px;color:var(--tx2)">${esc(b.n)}</b>
+        <div class="fresco">${b.k==='tasty'?'conectando…':'requiere tu login'}</div></div>
+      <button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.conectar('${b.k}')">Conectar</button></div></div>`;
+  }).join('');
 
   // selector de período
   h += `<div class="periodos">
@@ -475,6 +510,11 @@ function tarjetaHistorial(p) {
 }
 window.MZ = Object.assign(window.MZ || {}, {
   periodo: (k) => { _periodoSel = k; vistaCuentas(); },
+  conectar: (b) => {
+    if (b === 'tasty') { toast('tastytrade ya está conectada (en vivo)'); return; }
+    const n = { etrade: 'E*TRADE', schwab: 'Charles Schwab' }[b] || b;
+    toast('Conexión a ' + n + ': llega en la próxima entrega');
+  },
 });
 
 // ---------- Disciplina ----------
