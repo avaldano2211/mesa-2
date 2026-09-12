@@ -682,8 +682,10 @@ function emparejarEtrade(txs) {
     const p = t.brokerage.product, b = t.brokerage;
     const right = String(p.callPut || '').toUpperCase() === 'PUT' ? 'PUT' : 'CALL';
     const strike = num(p.strikePrice);
-    const exp = (p.expiryYear && p.expiryMonth && p.expiryDay)
-      ? `${p.expiryYear}-${String(p.expiryMonth).padStart(2, '0')}-${String(p.expiryDay).padStart(2, '0')}` : null;
+    // E*TRADE manda expiryYear con 2 dígitos (26 = 2026): normalizar a 4.
+    const y0 = num(p.expiryYear), anio = y0 > 0 && y0 < 100 ? 2000 + y0 : y0;
+    const exp = (anio && p.expiryMonth && p.expiryDay)
+      ? `${anio}-${String(p.expiryMonth).padStart(2, '0')}-${String(p.expiryDay).padStart(2, '0')}` : null;
     const contrato = `${p.symbol}|${exp}|${right}|${strike}`;
     const qty = Math.abs(num(b.quantity));
     if (!qty) continue;
