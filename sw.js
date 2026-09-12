@@ -2,9 +2,9 @@
    de la mesa privada: JAMÁS cachear datos de mercado. Toda petición a
    *.supabase.co se deja pasar a la red SIEMPRE — una foto vieja no puede
    disfrazarse del mercado de ahora. Offline: abre el shell y falla honesto. */
-const VER = 'mesa2-v1';
+const VER = 'mesa2-v2';
 const SHELL = [
-  './', './index.html', './config.js', './app/main.js',
+  './', './index.html', './app/main.js',
   './vendor/supabase.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png',
 ];
