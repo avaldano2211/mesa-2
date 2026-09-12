@@ -525,7 +525,7 @@ const BROKERS = [
 // Opción B: el proxy del VPS solo FIRMA con el secreto de app; el token con
 // poder (oauth_token + secret) se guarda aquí en localStorage y jamás se sube a
 // la nube. E*TRADE lo caduca cada medianoche ET → login casi diario, con PIN.
-const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache' };
+const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync' };
 const num2 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 function etCreds() {
   try {
@@ -583,9 +583,10 @@ async function etradeSaldo(forzar) {
       saldo_neto: num2(rtv.totalAccountValue) ?? num2(comp.netAccountValue),
       efectivo: num2(comp.cashBalance) ?? num2(comp.settledCashForInvestment),
       poder_compra: num2(comp.cashBuyingPower) ?? num2(comp.marginBuyingPower),
-      origen: 'dispositivo', capturado_at: new Date().toISOString(),
+      origen: 'dispositivo', capturado_at: new Date().toISOString(), _vivo: true,
     };
     try { localStorage.setItem(ET_K.cache, JSON.stringify({ _ts: Date.now(), snap })); } catch (_) {}
+    etradeGuardarSnapshot(snap);
     return snap;
   } catch (_) {
     return null;  // proxy inalcanzable (¿Funnel apagado?) → se ofrece Conectar
@@ -630,8 +631,147 @@ async function etradePinEnviar(rt) {
   if (!d.token) { err.textContent = d.error || 'No pude conectar. Revisa el código.'; return; }
   etGuardar(d.token, d.token_secret);
   const m = $('#modalPin'); if (m) m.remove();
+  try { localStorage.removeItem(ET_K.sync); } catch (_) {}   // fuerza sincronizar historial
   toast('E*TRADE conectada ✓');
   vistaCuentas();
+}
+
+// ---------- Historial E*TRADE: transacciones → round-trips → Supabase ----------
+// Las transacciones se traen desde ESTE dispositivo (el token vive aquí) y los
+// round-trips ya emparejados se guardan en broker_trades (RLS: solo tú). Así el
+// historial persiste aunque la sesión diaria de E*TRADE muera y se ve en todos
+// tus equipos. Mismo emparejado FIFO por contrato que tasty (tasty_cuenta.py).
+const ET_SYNC_TTL = 10 * 60 * 1000;
+const ET_DIAS_HIST = 180;
+
+function emparejarEtrade(txs) {
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const ops = (txs || []).filter(t => t && t.brokerage && t.brokerage.product
+    && String(t.brokerage.product.securityType || '').toUpperCase() === 'OPTN');
+  ops.sort((a, b) => num(a.transactionDate) - num(b.transactionDate) || num(a.transactionId) - num(b.transactionId));
+  const abiertos = {}, salidas = [];
+  for (const t of ops) {
+    const p = t.brokerage.product, b = t.brokerage;
+    const right = String(p.callPut || '').toUpperCase() === 'PUT' ? 'PUT' : 'CALL';
+    const strike = num(p.strikePrice);
+    const exp = (p.expiryYear && p.expiryMonth && p.expiryDay)
+      ? `${p.expiryYear}-${String(p.expiryMonth).padStart(2, '0')}-${String(p.expiryDay).padStart(2, '0')}` : null;
+    const contrato = `${p.symbol}|${exp}|${right}|${strike}`;
+    const qty = Math.abs(num(b.quantity));
+    if (!qty) continue;
+    const tipo = String(t.transactionType || '').toLowerCase();
+    const fee = Math.abs(num(b.fee));
+    const ts = new Date(num(t.transactionDate)).toISOString();
+    const esCompra = num(b.quantity) > 0 || /bought|buy/.test(tipo);
+    const esExpira = /expir/.test(tipo);
+    const esVenta = !esCompra && (num(b.quantity) < 0 || /sold|sell|expir|assign|exercis/.test(tipo));
+    const precio = esExpira ? 0 : Math.abs(num(b.price));
+    if (esCompra) { (abiertos[contrato] = abiertos[contrato] || []).push({ qty, precio, ts, fee, id: t.transactionId }); continue; }
+    if (!esVenta) continue;
+    let rest = qty; const cola = abiertos[contrato] || [];
+    while (rest > 0 && cola.length) {
+      const ap = cola[0], usa = Math.min(rest, ap.qty);
+      const feeAp = ap.fee * (ap.qty ? usa / ap.qty : 1), feeCi = fee * (usa / qty);
+      salidas.push({
+        broker: 'etrade', symbol: p.symbol, osi: contrato, direccion: right, strike, expiracion: exp,
+        contratos: usa, prima_fill: ap.precio, prima_salida: precio,
+        abierta_at: ap.ts, cerrada_at: ts,
+        resultado_usd: Math.round(((precio - ap.precio) * usa * 100 - feeAp - feeCi) * 100) / 100,
+        fees: Math.round((feeAp + feeCi) * 100) / 100,
+        clave_ext: `${contrato}|${ap.ts}|${ts}|${usa}`,
+        raw: { abre: ap.id, cierra: t.transactionId, tipo: t.transactionType },
+      });
+      ap.qty -= usa; ap.fee -= feeAp; rest -= usa;   // la comisión restante viaja con el resto del lote
+      if (ap.qty <= 1e-9) cola.shift();
+    }
+  }
+  return salidas;
+}
+
+async function etradeTransacciones(cr, accountIdKey, dias) {
+  const fmt = (d) => `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${d.getFullYear()}`;
+  const hoy = new Date(), desde = new Date(Date.now() - dias * 86400000);
+  let marker = null, todas = [], vueltas = 0;
+  do {
+    const query = { startDate: fmt(desde), endDate: fmt(hoy), count: '50', sortOrder: 'DESC' };
+    if (marker) query.marker = marker;
+    const r = await etProxy('/etrade/read', { ...cr,
+      path: `/v1/accounts/${encodeURIComponent(accountIdKey)}/transactions.json`, query });
+    if (r.status === 401 || (r.data && r.data.error && r.status !== 204)) return { expirado: true, txs: todas };
+    const L = (r.data || {}).TransactionListResponse || {};
+    const arr = Array.isArray(L.Transaction) ? L.Transaction : (L.Transaction ? [L.Transaction] : []);
+    todas = todas.concat(arr);
+    marker = null;
+    if (L.moreTransactions && arr.length) {
+      try { marker = L.next ? new URL(L.next).searchParams.get('marker') : null; } catch (_) { marker = null; }
+      if (!marker) marker = String(arr[arr.length - 1].transactionId || '');
+    }
+    vueltas++;
+  } while (marker && vueltas < 20);
+  return { expirado: false, txs: todas };
+}
+
+// Sincroniza (con tope de 10 min por dispositivo). Devuelve el resumen para la
+// vista y `cambio` = true si escribió algo nuevo (para re-dibujar).
+async function etradeSincronizar(forzar) {
+  const cr = etCreds();
+  if (!cr) return { estado: 'sin' };
+  let prev = null;
+  try { prev = JSON.parse(localStorage.getItem(ET_K.sync) || 'null'); } catch (_) {}
+  if (!forzar && prev && Date.now() - prev.ts < ET_SYNC_TTL) return { ...prev.resumen, estado: prev.resumen.estado, cambio: false };
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  // Todo resultado (también expirado/error) se cachea con su hora: el tope de
+  // 10 min evita martillar el proxy; reconectar E*TRADE borra el caché.
+  const fin = (resumen) => {
+    resumen.ts = Date.now();
+    try { localStorage.setItem(ET_K.sync, JSON.stringify({ ts: resumen.ts, resumen })); } catch (_) {}
+    return resumen;
+  };
+  try {
+    const lst = await etProxy('/etrade/read', { ...cr, path: '/v1/accounts/list.json' });
+    if (lst.status === 401 || (lst.data && lst.data.error)) return fin({ estado: 'expirado' });
+    const acc = (((lst.data || {}).AccountListResponse || {}).Accounts || {}).Account || [];
+    const arr = Array.isArray(acc) ? acc : [acc];
+    const a = arr.find(x => String(x.accountStatus || '').toUpperCase() !== 'CLOSED') || arr[0];
+    if (!a || !a.accountIdKey) return fin({ estado: 'error', detalle: 'sin cuenta' });
+    const { expirado, txs } = await etradeTransacciones(cr, a.accountIdKey, ET_DIAS_HIST);
+    if (expirado) return fin({ estado: 'expirado' });
+    const ops = txs.filter(t => t && t.brokerage && t.brokerage.product
+      && String(t.brokerage.product.securityType || '').toUpperCase() === 'OPTN').length;
+    const rts = emparejarEtrade(txs);
+    let nuevos = 0;
+    if (rts.length && uid) {
+      const filas = rts.map(r => ({ ...r, user_id: uid }));
+      const { error, data } = await sb.from('broker_trades')
+        .upsert(filas, { onConflict: 'user_id,broker,clave_ext', ignoreDuplicates: true }).select('id');
+      if (error) return fin({ estado: 'error', detalle: error.message });
+      nuevos = (data || []).length;
+    }
+    const resumen = fin({ estado: 'ok', txs: txs.length, ops, rts: rts.length, nuevos });
+    return { ...resumen, cambio: nuevos > 0 };
+  } catch (e) {
+    return fin({ estado: 'error', detalle: (e && e.message) || 'fallo' });
+  }
+}
+
+// Guarda la foto del saldo E*TRADE en la nube (origen 'dispositivo'): así se ve
+// también desde otros equipos, con su fecha. Silencioso si falla.
+async function etradeGuardarSnapshot(snap) {
+  try {
+    const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+    if (!uid || !snap) return;
+    const { _vivo, ...fila } = snap;
+    await sb.from('cuenta_snapshots').upsert({ ...fila, user_id: uid }, { onConflict: 'user_id,broker' });
+  } catch (_) {}
+}
+
+function etradeLineaHistorial(s) {
+  if (!s || s.estado === 'sin') return '';
+  if (s.estado === 'expirado') return 'historial: sesión de E*TRADE expirada — reconecta';
+  if (s.estado === 'error') return 'historial: no pude sincronizar' + (s.detalle ? ' (' + esc(s.detalle) + ')' : '');
+  if (s.estado === 'sincronizando') return 'historial: sincronizando…';
+  const hace = s.ts ? haceCuanto(new Date(s.ts).toISOString()).txt : '';
+  return `historial: ${s.txs} transacciones · ${s.ops} de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hace ? ' · ' + hace : ''}`;
 }
 
 async function vistaCuentas() {
@@ -651,10 +791,22 @@ async function vistaCuentas() {
     (b.cerrada_at || '').localeCompare(a.cerrada_at || ''));
   const saldos = [...(csR.data || [])];
   // E*TRADE vive en el dispositivo (opción B): su saldo se trae en vivo por el
-  // proxy, no está en Supabase. Lo fusionamos aquí.
+  // proxy; si hay una foto guardada desde otro equipo, la viva la reemplaza.
   const etSnap = await etradeSaldo();
   const etExpirado = !!(etSnap && etSnap._expirado);
-  if (etSnap && !etSnap._expirado) saldos.push(etSnap);
+  if (etSnap && !etSnap._expirado) {
+    const i = saldos.findIndex(x => x.broker === 'etrade');
+    if (i >= 0) saldos[i] = etSnap; else saldos.push(etSnap);
+  }
+  // Historial E*TRADE: se muestra el resumen cacheado y se sincroniza en segundo
+  // plano; se re-dibuja al terminar (el tope de 10 min evita bucles).
+  let etHist = null;
+  try { const p = JSON.parse(localStorage.getItem(ET_K.sync) || 'null'); etHist = p ? p.resumen : null; } catch (_) {}
+  if (etCreds() && !etExpirado) {
+    const enCurso = !etHist || Date.now() - (etHist.ts || 0) >= ET_SYNC_TTL;
+    if (enCurso) etHist = { estado: 'sincronizando' };
+    etradeSincronizar().then(s => { if (s && (s.cambio || enCurso)) vistaCuentas(); });
+  }
   let h = '';
 
   // ---- saldos de brókeres ----
@@ -666,13 +818,15 @@ async function vistaCuentas() {
   h += BROKERS.map(b => {
     const c = saldos.find(x => x.broker === b.k);
     if (c) {
-      const orig = c.origen === 'vps' ? 'en vivo'
-        : c.origen === 'dispositivo' ? 'en vivo · este equipo' : 'desde tu Mac';
+      const orig = c._vivo ? 'en vivo · este equipo'
+        : c.origen === 'vps' ? 'en vivo' : c.origen === 'dispositivo' ? 'desde otro equipo' : 'desde tu Mac';
       const reconn = b.k === 'etrade'
         ? ` · <a href="#" onclick="MZ.conectar('etrade');return false" style="color:var(--oro)">reconectar</a>` : '';
+      const hist = b.k === 'etrade' ? etradeLineaHistorial(etHist) : '';
       return `<div class="card"><div class="fila">
       <div><b style="font-size:14px">${esc(b.n)}</b> <span class="mut">${esc(c.numero_mascara||'')}</span>
-        <div class="fresco">${orig} · ${esc(haceCuanto(c.capturado_at).txt)}${reconn}</div></div>
+        <div class="fresco">${orig} · ${esc(haceCuanto(c.capturado_at).txt)}${reconn}</div>
+        ${hist ? `<div class="fresco">${hist}</div>` : ''}</div>
       <span class="mono" style="font-weight:700;font-size:15px">${usd(c.saldo_neto)}</span></div></div>`;
     }
     const sub = b.k === 'tasty' ? 'conectando…'
