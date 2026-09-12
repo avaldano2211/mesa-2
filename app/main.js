@@ -163,9 +163,16 @@ function tarjetaTicker(e, sym, compacto) {
       <span class="fresco">${esc(fr.txt)}</span></div>
     <div class="tend" style="margin-top:6px">
       ${tg('15m', te.m15)} ${tg('hora', te.hora)} ${tg('día', te.dia)}
-      ${p.volatilidad ? `<span class="tg">vol <b>${esc(p.volatilidad)}</b></span>` : ''}</div>
+      ${volTxt(p.volatilidad)}</div>
     ${av.length ? `<div class="mut" style="margin-top:7px">${av.map(esc).join(' · ')}</div>` : ''}
   </div>`;
+}
+function volTxt(v) {
+  if (!v) return '';
+  const fase = typeof v === 'object' ? v.fase : v;
+  if (!fase || fase === 'sin_datos') return '';
+  const rumbo = typeof v === 'object' && v.rumbo && v.rumbo !== 'quieta' ? ' ' + v.rumbo : '';
+  return `<span class="tg">vol <b>${esc(fase)}${esc(rumbo)}</b></span>`;
 }
 function tg(lbl, v) {
   const col = v === 'alcista' ? 'var(--verde)' : v === 'bajista' ? 'var(--rojo)' : 'var(--tx2)';
