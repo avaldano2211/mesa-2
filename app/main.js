@@ -525,7 +525,7 @@ const BROKERS = [
 // Opción B: el proxy del VPS solo FIRMA con el secreto de app; el token con
 // poder (oauth_token + secret) se guarda aquí en localStorage y jamás se sube a
 // la nube. E*TRADE lo caduca cada medianoche ET → login casi diario, con PIN.
-const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync' };
+const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2' };
 const num2 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 function etCreds() {
   try {
@@ -713,7 +713,9 @@ function emparejarEtrade(txs) {
         abierta_at: ap.ts, cerrada_at: ts,
         resultado_usd: Math.round(((precio - ap.precio) * usa * 100 - feeAp - feeCi) * 100) / 100,
         fees: Math.round((feeAp + feeCi) * 100) / 100,
-        clave_ext: `${contrato}|${ap.ts}|${ts}|${usa}`,
+        // Clave por IDs de transacción (las fechas de E*TRADE no traen hora:
+        // dos round-trips iguales el mismo día colisionaban y se perdía uno).
+        clave_ext: `${contrato}#${ap.id}>${t.transactionId}#${usa}`,
         raw: { abre: ap.id, cierra: t.transactionId, tipo: t.transactionType },
       });
       ap.qty -= usa; ap.fee -= feeAp; rest -= usa;   // la comisión restante viaja con el resto del lote
@@ -790,6 +792,9 @@ async function etradeSincronizar(forzar) {
     const rts = emparejarEtrade(txs);
     let nuevos = 0;
     if (rts.length && uid) {
+      // Autolimpieza: filas con la clave vieja (formato con '|', sin IDs) se
+      // reemplazan por el conjunto completo con clave por IDs.
+      try { await sb.from('broker_trades').delete().eq('broker', 'etrade').not('clave_ext', 'like', '%#%'); } catch (_) {}
       const filas = rts.map(r => ({ ...r, user_id: uid }));
       const { error, data } = await sb.from('broker_trades')
         .upsert(filas, { onConflict: 'user_id,broker,clave_ext', ignoreDuplicates: true }).select('id');
