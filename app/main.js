@@ -393,7 +393,9 @@ function abrirCuenta() {
   const email = (sesionActiva && sesionActiva.user && sesionActiva.user.email) || '';
   m.innerHTML = `<div class="hoja">
     <h3 style="margin:0 0 2px">Tu cuenta</h3>
-    <div class="mut" style="margin-bottom:10px">${esc(email)}</div>
+    <div class="mut" style="margin-bottom:10px">${esc(email)} <span id="cpDiag" style="font-size:10px;color:var(--tx3)"></span></div>
+    <label>Contraseña actual</label>
+    <input id="cpActual" type="password" autocomplete="current-password">
     <label>Nueva contraseña</label>
     <input id="cpNueva" type="password" autocomplete="new-password" placeholder="mínimo 8 caracteres">
     <label>Repite la nueva contraseña</label>
@@ -405,52 +407,66 @@ function abrirCuenta() {
     <button class="btnsec" style="width:100%;margin-top:12px" onclick="MZ.salir()">Salir de la Mesa</button>
   </div>`;
   document.body.appendChild(m);
-  setTimeout(() => { const i = $('#cpNueva'); if (i) i.focus(); }, 60);
+  diagSesion().then(t => { const d = $('#cpDiag'); if (d) d.textContent = t; });
+  setTimeout(() => { const i = $('#cpActual'); if (i) i.focus(); }, 60);
+}
+const claveSesion = () => 'sb-' + new URL(SUPABASE_URL).hostname.split('.')[0] + '-auth-token';
+// Diagnóstico corto (sin tokens) del estado de la sesión en ESTE dispositivo.
+async function diagSesion() {
+  const o = [];
+  try { const { data, error } = await sb.auth.getSession(); o.push('gs:' + (data && data.session ? 'ok' : (error ? 'err' : 'null'))); }
+  catch (_) { o.push('gs:exc'); }
+  try { const j = JSON.parse(localStorage.getItem(claveSesion()) || 'null');
+    o.push('ls:' + (!j ? 'no' : (j.expires_at && j.expires_at <= Date.now() / 1000 ? 'exp' : 'ok'))); }
+  catch (_) { o.push('ls:exc'); }
+  o.push('locks:' + (typeof navigator.locks === 'object' ? 'y' : 'n'));
+  return '· ' + o.join(' ');
 }
 function cerrarCuenta() { const m = $('#modalCuenta'); if (m) m.remove(); }
-// Token de sesión con tres intentos. En iOS supabase-js a veces no «ve» la
-// sesión en el instante de updateUser (Auth session missing) aunque las
-// consultas sí funcionen; por eso no dependemos de esa lectura interna.
-async function tokenSesion() {
-  try { const { data } = await sb.auth.getSession(); if (data && data.session) return data.session.access_token; } catch (_) {}
-  try { const { data } = await sb.auth.refreshSession(); if (data && data.session) return data.session.access_token; } catch (_) {}
-  try {   // último recurso: el mismo sitio donde supabase-js guarda la sesión
-    const k = 'sb-' + new URL(SUPABASE_URL).hostname.split('.')[0] + '-auth-token';
-    const j = JSON.parse(localStorage.getItem(k) || 'null');
-    if (j && j.access_token && (!j.expires_at || j.expires_at > Date.now() / 1000 + 5)) return j.access_token;
-  } catch (_) {}
-  return null;
-}
+// Cambio de contraseña SIN depender de la sesión guardada (en iOS supabase-js
+// a veces no la «ve»): se re-autentica con la contraseña actual por REST
+// (sesión fresca), cambia la clave con ese token, adopta esa sesión y recarga.
 async function cambiarPass() {
-  const a = $('#cpNueva').value, b = $('#cpRep').value, err = $('#cpErr');
+  const email = (sesionActiva && sesionActiva.user && sesionActiva.user.email) || '';
+  const actual = $('#cpActual').value, a = $('#cpNueva').value, b = $('#cpRep').value, err = $('#cpErr');
+  if (!email) { err.textContent = 'No encuentro tu correo. Sal y vuelve a entrar.'; return; }
+  if (!actual) { err.textContent = 'Pon tu contraseña actual.'; return; }
   if (a.length < 8) { err.textContent = 'Mínimo 8 caracteres.'; return; }
   if (a !== b) { err.textContent = 'Las dos no coinciden.'; return; }
-  err.textContent = 'Guardando…';
-  const jwt = await tokenSesion();
-  if (!jwt) { err.textContent = 'Tu sesión caducó. Toca «Salir de la Mesa», vuelve a entrar y cámbiala enseguida.'; return; }
-  let r, d = {};
+  if (a === actual) { err.textContent = 'La nueva tiene que ser distinta.'; return; }
+  const H = { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
+  err.textContent = 'Verificando…';
+  let ses;
   try {
-    r = await fetch(SUPABASE_URL + '/auth/v1/user', {
-      method: 'PUT',
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + jwt, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: a }),
-    });
-    d = await r.json().catch(() => ({}));
+    const r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
+      method: 'POST', headers: H, body: JSON.stringify({ email, password: actual }) });
+    ses = await r.json().catch(() => ({}));
+    if (!r.ok || !ses.access_token) { err.textContent = 'La contraseña actual no es correcta.'; return; }
   } catch (_) { err.textContent = 'Sin conexión. Inténtalo de nuevo.'; return; }
-  if (!r.ok) {
-    const m = d.msg || d.message || d.error_description || d.error || ('error ' + r.status);
-    err.textContent = /jwt|expired|invalid token|401/i.test(String(m) + r.status)
-      ? 'Tu sesión caducó. Toca «Salir de la Mesa», vuelve a entrar y cámbiala enseguida.'
-      : 'No pude cambiarla: ' + m;
-    return;
-  }
+  err.textContent = 'Guardando…';
+  try {
+    const r = await fetch(SUPABASE_URL + '/auth/v1/user', {
+      method: 'PUT', headers: Object.assign({ Authorization: 'Bearer ' + ses.access_token }, H),
+      body: JSON.stringify({ password: a }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { err.textContent = 'No pude cambiarla: ' + (d.msg || d.message || d.error_description || d.error || r.status); return; }
+  } catch (_) { err.textContent = 'Sin conexión. Inténtalo de nuevo.'; return; }
+  // La sesión fresca es la que sobrevive al cambio: la adoptamos y recargamos.
+  try {
+    if (!ses.expires_at && ses.expires_in) ses.expires_at = Math.floor(Date.now() / 1000) + Number(ses.expires_in);
+    localStorage.setItem(claveSesion(), JSON.stringify(ses));
+  } catch (_) {}
   cerrarCuenta();
   toast('Contraseña cambiada ✓');
+  setTimeout(() => location.reload(), 900);
 }
 async function salir() {
   cerrarCuenta();
-  await sb.auth.signOut();
+  // signOut con tope de tiempo + borrado directo: en iOS no puede quedarse colgado.
+  try { await Promise.race([sb.auth.signOut(), new Promise(r => setTimeout(r, 2500))]); } catch (_) {}
+  try { localStorage.removeItem(claveSesion()); } catch (_) {}
   location.hash = '';
+  location.reload();
 }
 window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir });
 
