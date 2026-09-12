@@ -387,6 +387,44 @@ function toast(t) {
 }
 window.MZ = { abrirFill, cerrarModal, guardarFill, cerrar, copiar };
 
+// ---------- Tu cuenta: cambiar contraseña / salir ----------
+function abrirCuenta() {
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalCuenta';
+  const email = (sesionActiva && sesionActiva.user && sesionActiva.user.email) || '';
+  m.innerHTML = `<div class="hoja">
+    <h3 style="margin:0 0 2px">Tu cuenta</h3>
+    <div class="mut" style="margin-bottom:10px">${esc(email)}</div>
+    <label>Nueva contraseña</label>
+    <input id="cpNueva" type="password" autocomplete="new-password" placeholder="mínimo 8 caracteres">
+    <label>Repite la nueva contraseña</label>
+    <input id="cpRep" type="password" autocomplete="new-password">
+    <div class="err" id="cpErr"></div>
+    <div class="dos" style="margin-top:6px">
+      <button class="btnsec" onclick="MZ.cerrarCuenta()">Cancelar</button>
+      <button class="pri" onclick="MZ.cambiarPass()">Cambiar contraseña</button></div>
+    <button class="btnsec" style="width:100%;margin-top:12px" onclick="MZ.salir()">Salir de la Mesa</button>
+  </div>`;
+  document.body.appendChild(m);
+  setTimeout(() => { const i = $('#cpNueva'); if (i) i.focus(); }, 60);
+}
+function cerrarCuenta() { const m = $('#modalCuenta'); if (m) m.remove(); }
+async function cambiarPass() {
+  const a = $('#cpNueva').value, b = $('#cpRep').value, err = $('#cpErr');
+  if (a.length < 8) { err.textContent = 'Mínimo 8 caracteres.'; return; }
+  if (a !== b) { err.textContent = 'Las dos no coinciden.'; return; }
+  err.textContent = 'Guardando…';
+  const { error } = await sb.auth.updateUser({ password: a });
+  if (error) { err.textContent = 'No pude cambiarla: ' + error.message; return; }
+  cerrarCuenta();
+  toast('Contraseña cambiada ✓');
+}
+async function salir() {
+  cerrarCuenta();
+  await sb.auth.signOut();
+  location.hash = '';
+}
+window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir });
+
 // ---------- Cuentas y diario (historial + resúmenes) ----------
 let _periodoSel = 'semana';   // semana | mes | ytd
 

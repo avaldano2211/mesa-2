@@ -119,6 +119,9 @@
   .hist>div{display:flex;flex-direction:column;gap:1px}
   .hist span{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase}
   .hist b{font-size:12.5px;font-weight:600}
+  .cfg{background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:999px;
+    width:32px;height:32px;font-size:15px;line-height:1;cursor:pointer;flex:none;padding:0}
+  .cfg:active{background:var(--card)}
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
@@ -144,14 +147,17 @@
         <div class="fecha" id="fecha">—</div>
         <div class="t" id="titulo">El informe de la mañana</div>
       </div>
-      <span class="badge b-cerrado" id="estadoWorker"><span class="dot" style="background:var(--tx2)"></span>—</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="badge b-cerrado" id="estadoWorker"><span class="dot" style="background:var(--tx2)"></span>—</span>
+        <button class="cfg" type="button" onclick="MZ.abrirCuenta()" aria-label="Tu cuenta" title="Tu cuenta">⚙</button>
+      </div>
     </header>
     <main class="vista" id="vista"></main>
     <nav class="tabs" id="nav"></nav>
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=10"></script>
-  <script src="./app/main.js?v=10"></script>
+  <script src="./config.js?v=11"></script>
+  <script src="./app/main.js?v=11"></script>
 </body>
 </html>
