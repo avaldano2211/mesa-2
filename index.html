@@ -102,6 +102,15 @@
   .hoja .dos{display:grid;grid-template-columns:1fr 1fr;gap:9px}
   .gtcprev{margin-top:10px;padding:11px 12px;border-radius:11px;background:rgba(231,181,77,.12);
     border:1px solid rgba(231,181,77,.3);color:var(--oro);font-family:var(--mono);font-size:13px;font-weight:700;text-align:center}
+  .rango{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;
+    font-size:11px;color:var(--tx2)}
+  .rango b{color:var(--oro);font-size:13px}
+  .rangohint{margin-top:9px;padding:9px 11px;border-radius:10px;font-size:12px;text-align:center;
+    background:var(--card);border:1px solid var(--line);color:var(--tx2)}
+  .rangohint[data-n="ok"]{background:rgba(69,208,140,.12);border-color:rgba(69,208,140,.3);color:var(--verde)}
+  .rangohint[data-n="aviso"]{background:rgba(231,181,77,.12);border-color:rgba(231,181,77,.3);color:var(--oro)}
+  .rangohint[data-n="alto"]{background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.3);color:var(--rojo)}
+  .rangohint b{font-weight:700}
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
@@ -134,7 +143,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=5"></script>
-  <script src="./app/main.js?v=5"></script>
+  <script src="./config.js?v=6"></script>
+  <script src="./app/main.js?v=6"></script>
 </body>
 </html>

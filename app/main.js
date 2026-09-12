@@ -159,12 +159,17 @@ function tarjetaTicker(e, sym, compacto) {
   const te = p.tendencias || {};
   const fr = haceCuanto(e.actualizado_at);
   const av = (p.avisos || []).slice(0, compacto ? 1 : 4);
+  const rv = p.rango_vivo;
   return `<div class="card">
     <div class="fila"><h3>${esc(sym)}</h3>
       <span class="fresco">${esc(fr.txt)}</span></div>
     <div class="tend" style="margin-top:6px">
       ${tg('15m', te.m15)} ${tg('hora', te.hora)} ${tg('día', te.dia)}
       ${volTxt(p.volatilidad)}</div>
+    ${rv && rv.lo != null ? `<div class="rango">
+      <span>Rango óptimo del día</span>
+      <b class="mono">$${esc(Math.round(rv.lo))}–$${esc(Math.round(rv.hi))}</b>
+      <span class="fresco">exp ${esc((rv.exp||'').slice(5))} · spot $${esc(rv.spot)}</span></div>` : ''}
     ${av.length ? `<div class="mut" style="margin-top:7px">${av.map(esc).join(' · ')}</div>` : ''}
   </div>`;
 }
@@ -295,6 +300,7 @@ function abrirFill(pre) {
         <option value="schwab">Schwab</option><option value="tasty">tastytrade</option></select></div></div>
     <label>Prima de tu fill (por contrato)</label>
     <input id="fPrima" type="number" inputmode="decimal" step="0.01" placeholder="ej. 0.98" autofocus>
+    <div id="fRango" class="rangohint">Rango óptimo: —</div>
     <div id="fGtc" class="gtcprev">Límite GTC: —</div>
     <div class="err" id="fErr"></div>
     <div class="dos" style="margin-top:6px">
@@ -303,11 +309,33 @@ function abrirFill(pre) {
   </div>`;
   document.body.appendChild(m);
   const prima = m.querySelector('#fPrima');
-  prima.addEventListener('input', () => {
+  const sym = m.querySelector('#fSym');
+  let rango = null;                 // rango_vivo del ticker seleccionado
+  const evaluar = () => {
     const v = parseFloat(prima.value);
     m.querySelector('#fGtc').textContent = v > 0
       ? `Límite GTC a colocar: $${gtcDe(v).toFixed(2)}  (fill ×1.35 + $0.02)` : 'Límite GTC: —';
-  });
+    const rh = m.querySelector('#fRango');
+    if (!rango || rango.lo == null) { rh.textContent = 'Rango óptimo: sin dato'; rh.dataset.n = ''; return; }
+    const lo = Math.round(rango.lo), hi = Math.round(rango.hi);
+    if (!(v > 0)) { rh.innerHTML = `Rango óptimo: <b>$${lo}–$${hi}</b>`; rh.dataset.n = 'ok'; return; }
+    const cent = v * 100;
+    const borde = (hi - lo) * 0.15;
+    let n = 'ok', txt = 'dentro del rango';
+    if (cent < lo - borde || cent > hi + borde) { n = 'alto'; txt = 'FUERA del rango — así se perdió en agosto'; }
+    else if (cent < lo || cent > hi) { n = 'aviso'; txt = 'en el borde del rango'; }
+    rh.innerHTML = `Rango óptimo <b>$${lo}–$${hi}</b> · tu prima $${cent.toFixed(0)}: <b>${txt}</b>`;
+    rh.dataset.n = n;
+  };
+  const cargarRango = async () => {
+    rango = null;
+    const { data } = await sb.from('ticker_estado').select('payload').eq('symbol', sym.value).maybeSingle();
+    rango = data && data.payload ? data.payload.rango_vivo : null;
+    evaluar();
+  };
+  prima.addEventListener('input', evaluar);
+  sym.addEventListener('change', cargarRango);
+  cargarRango();
   setTimeout(() => prima.focus(), 50);
 }
 function cerrarModal() { const m = $('#modalFill'); if (m) m.remove(); }
