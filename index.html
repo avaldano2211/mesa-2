@@ -111,6 +111,14 @@
   .rangohint[data-n="aviso"]{background:rgba(231,181,77,.12);border-color:rgba(231,181,77,.3);color:var(--oro)}
   .rangohint[data-n="alto"]{background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.3);color:var(--rojo)}
   .rangohint b{font-weight:700}
+  .periodos{display:flex;gap:7px;margin:2px 0 2px}
+  .perbtn{flex:1;background:var(--card);border:1px solid var(--line);color:var(--tx2);
+    border-radius:11px;padding:9px;font-size:13px;font-weight:700;font-family:var(--sans);cursor:pointer}
+  .perbtn.on{background:var(--oro);border-color:var(--oro);color:#0B0E14}
+  .hist{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:9px}
+  .hist>div{display:flex;flex-direction:column;gap:1px}
+  .hist span{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase}
+  .hist b{font-size:12.5px;font-weight:600}
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
@@ -143,7 +151,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=6"></script>
-  <script src="./app/main.js?v=6"></script>
+  <script src="./config.js?v=7"></script>
+  <script src="./app/main.js?v=7"></script>
 </body>
 </html>

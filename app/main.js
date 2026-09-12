@@ -110,6 +110,7 @@ async function ruta() {
   if (tab === 'informe') return vistaInforme(hb);
   if (tab === 'tickers') return vistaTickers();
   if (tab === 'copiloto') return vistaCopiloto();
+  if (tab === 'cuentas') return vistaCuentas();
   return vistaProx(tab);
 }
 
@@ -380,6 +381,97 @@ function toast(t) {
   document.body.appendChild(el); setTimeout(() => el.remove(), 2200);
 }
 window.MZ = { abrirFill, cerrarModal, guardarFill, cerrar, copiar };
+
+// ---------- Cuentas y diario (historial + resúmenes) ----------
+let _periodoSel = 'semana';   // semana | mes | ytd
+
+function inicioPeriodo(clave) {
+  // fecha YYYY-MM-DD (NY) de inicio del período
+  const ymdNY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  if (clave === 'semana') return lunesNY();
+  if (clave === 'mes') return ymdNY.slice(0, 8) + '01';
+  return ymdNY.slice(0, 4) + '-01-01';   // ytd
+}
+function fmtFechaNY(iso, conHora) {
+  if (!iso) return '—';
+  const o = { timeZone: 'America/New_York', day: '2-digit', month: 'short' };
+  if (conHora) { o.hour = '2-digit'; o.minute = '2-digit'; o.hour12 = false; }
+  return new Intl.DateTimeFormat('es', o).format(new Date(iso));
+}
+function durTxt(a, b) {
+  if (!a || !b) return '—';
+  const min = (new Date(b) - new Date(a)) / 60000;
+  if (min < 60) return `${Math.round(min)} min`;
+  const h = min / 60;
+  if (h < 24) return `${h.toFixed(h < 10 ? 1 : 0)} h`;
+  return `${Math.round(h / 24)} d`;
+}
+const usd = (n) => (n == null ? '—' : (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
+const colUtil = (n) => n == null ? 'var(--tx2)' : n > 0 ? 'var(--verde)' : n < 0 ? 'var(--rojo)' : 'var(--tx2)';
+
+async function vistaCuentas() {
+  const { data } = await sb.from('posiciones').select('*').order('cerrada_at', { ascending: false, nullsFirst: false });
+  const pos = data || [];
+  const cerradas = pos.filter(p => p.estado === 'cerrada' || p.estado === 'expirada');
+  let h = '';
+
+  // selector de período
+  h += `<div class="periodos">
+    ${[['semana','Semana'],['mes','Mes'],['ytd','YTD']].map(([k,l]) =>
+      `<button class="perbtn ${_periodoSel===k?'on':''}" onclick="MZ.periodo('${k}')">${l}</button>`).join('')}</div>`;
+
+  // resumen del período
+  const desde = inicioPeriodo(_periodoSel);
+  const enP = cerradas.filter(p => (p.cerrada_at || '').slice(0, 10) >= desde);
+  const util = enP.reduce((s, p) => s + (Number(p.resultado_usd) || 0), 0);
+  const ganadoras = enP.filter(p => (Number(p.resultado_usd) || 0) > 0).length;
+  const winrate = enP.length ? Math.round(100 * ganadoras / enP.length) : 0;
+  const mejor = enP.reduce((m, p) => Math.max(m, Number(p.resultado_usd) || -1e9), -1e9);
+  const peor = enP.reduce((m, p) => Math.min(m, Number(p.resultado_usd) || 1e9), 1e9);
+  h += `<div class="card">
+    <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">UTILIDAD · ${_periodoSel.toUpperCase()}</div>
+    <div class="mono" style="font-size:30px;font-weight:700;margin:3px 0;color:${colUtil(util)}">${usd(util)}</div>
+    <div class="fila" style="margin-top:4px">
+      <span class="mut">${enP.length} ops · ${winrate}% aciertos</span>
+      <span class="mut">mejor ${usd(enP.length?mejor:null)} · peor ${usd(enP.length?peor:null)}</span></div></div>`;
+
+  // historial completo
+  h += `<div class="sec">HISTORIAL DE OPERACIONES</div>`;
+  if (cerradas.length) {
+    h += cerradas.map(tarjetaHistorial).join('');
+  } else {
+    h += `<div class="card vacio">Aún no hay operaciones cerradas.<br>Cuando cierres una posición en el Copiloto, aparece aquí.</div>`;
+  }
+
+  // nota de brókeres (llega después)
+  h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">Los saldos de tus 4 brókeres (E*TRADE, Schwab, tastytrade, moomoo) se suman aquí en la próxima entrega.</div>`;
+  $('#vista').innerHTML = h;
+}
+
+function tarjetaHistorial(p) {
+  const c = Number(p.contratos) || 1;
+  const costo = Number(p.prima_fill) * c * 100;
+  const venta = p.prima_salida != null ? Number(p.prima_salida) * c * 100 : null;
+  const util = p.resultado_usd != null ? Number(p.resultado_usd) : (venta != null ? venta - costo : null);
+  const pct = costo ? (util / costo * 100) : null;
+  return `<div class="card">
+    <div class="fila"><h3>${esc(p.symbol)} ${esc(p.direccion)}${p.strike ? ' ' + esc(p.strike) : ''}</h3>
+      <span class="mono" style="font-weight:700;color:${colUtil(util)}">${usd(util)}${pct!=null?` · ${pct>0?'+':''}${pct.toFixed(0)}%`:''}</span></div>
+    <div class="hist">
+      <div><span>compra</span><b>${fmtFechaNY(p.abierta_at, true)}</b></div>
+      <div><span>venta</span><b>${p.estado==='expirada'?'expiró':fmtFechaNY(p.cerrada_at, true)}</b></div>
+      <div><span>duración</span><b>${durTxt(p.abierta_at, p.cerrada_at)}</b></div>
+    </div>
+    <div class="hist">
+      <div><span>costo</span><b class="mono">${usd(costo)}</b></div>
+      <div><span>venta</span><b class="mono">${usd(venta)}</b></div>
+      <div><span>×${esc(c)}</span><b>${esc(p.broker || '—')}</b></div>
+    </div>
+  </div>`;
+}
+window.MZ = Object.assign(window.MZ || {}, {
+  periodo: (k) => { _periodoSel = k; vistaCuentas(); },
+});
 
 function vistaProx(tab) {
   const txt = {
