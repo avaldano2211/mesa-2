@@ -681,9 +681,14 @@ function emparejarEtrade(txs) {
     const tipo = String(t.transactionType || '').toLowerCase();
     const fee = Math.abs(num(b.fee));
     const ts = new Date(num(t.transactionDate)).toISOString();
-    const esCompra = num(b.quantity) > 0 || /bought|buy/.test(tipo);
+    // La dirección la manda el TIPO ('Bought To Open', 'Sold To Close', 'Option
+    // Expired'); el signo de quantity solo desempata si el tipo no lo dice
+    // (E*TRADE puede reportar la cantidad siempre positiva).
+    const diceVenta = /sold|sell|expir|assign|exercis/.test(tipo);
+    const diceCompra = /bought|buy/.test(tipo);
+    const esCompra = diceCompra || (!diceVenta && num(b.quantity) > 0);
     const esExpira = /expir/.test(tipo);
-    const esVenta = !esCompra && (num(b.quantity) < 0 || /sold|sell|expir|assign|exercis/.test(tipo));
+    const esVenta = !esCompra && (diceVenta || num(b.quantity) < 0);
     const precio = esExpira ? 0 : Math.abs(num(b.price));
     if (esCompra) { (abiertos[contrato] = abiertos[contrato] || []).push({ qty, precio, ts, fee, id: t.transactionId }); continue; }
     if (!esVenta) continue;
@@ -723,12 +728,18 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
     const arr = Array.isArray(L.Transaction) ? L.Transaction : (L.Transaction ? [L.Transaction] : []);
     todas = todas.concat(arr);
     marker = null;
-    if (L.moreTransactions && arr.length) {
-      try { marker = L.next ? new URL(L.next).searchParams.get('marker') : null; } catch (_) { marker = null; }
+    // E*TRADE puede decir moreTransactions=false aunque totalCount > lo
+    // recibido; se pagina mientras falten y haya con qué (next/marker/último id).
+    const total = Number(L.totalCount) || 0;
+    const faltan = L.moreTransactions === true || (total > todas.length);
+    if (faltan && arr.length) {
+      try { marker = L.next ? new URL(L.next, 'https://api.etrade.com').searchParams.get('marker') : null; } catch (_) { marker = null; }
+      if (!marker && L.marker && String(L.marker) !== String(query.marker || '')) marker = String(L.marker);
       if (!marker) marker = String(arr[arr.length - 1].transactionId || '');
+      if (marker === String(query.marker || '')) marker = null;   // sin avance → parar
     }
     vueltas++;
-  } while (marker && vueltas < 20);
+  } while (marker && vueltas < 40);
   return { expirado: false, txs: todas, dias };
 }
 
