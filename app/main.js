@@ -6,6 +6,7 @@ const { SUPABASE_URL, SUPABASE_ANON_KEY } = window.MESA2;
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true }
 });
+const PROXY_URL = (window.MESA2 && window.MESA2.PROXY_URL) || '';
 
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => (
@@ -414,9 +415,122 @@ const usd = (n) => (n == null ? '—' : (n < 0 ? '-$' : '$') + Math.abs(n).toLoc
 const colUtil = (n) => n == null ? 'var(--tx2)' : n > 0 ? 'var(--verde)' : n < 0 ? 'var(--rojo)' : 'var(--tx2)';
 
 const BROKERS = [
-  { k: 'tasty', n: 'tastytrade' }, { k: 'etrade', n: 'E*TRADE' },
-  { k: 'schwab', n: 'Charles Schwab' }, { k: 'moomoo', n: 'moomoo' },
+  { k: 'etrade', n: 'E*TRADE' }, { k: 'tasty', n: 'tastytrade' },
+  { k: 'schwab', n: 'Charles Schwab' },
 ];
+
+// ---------- Conexión E*TRADE (OAuth 1.0a; el token vive en ESTE dispositivo) ----------
+// Opción B: el proxy del VPS solo FIRMA con el secreto de app; el token con
+// poder (oauth_token + secret) se guarda aquí en localStorage y jamás se sube a
+// la nube. E*TRADE lo caduca cada medianoche ET → login casi diario, con PIN.
+const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache' };
+const num2 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+function etCreds() {
+  try {
+    const t = localStorage.getItem(ET_K.tok), s = localStorage.getItem(ET_K.sec);
+    return (t && s) ? { token: t, token_secret: s } : null;
+  } catch (_) { return null; }
+}
+function etGuardar(t, s) {
+  try { localStorage.setItem(ET_K.tok, t); localStorage.setItem(ET_K.sec, s); } catch (_) {}
+}
+function etOlvidar() {
+  try { Object.values(ET_K).forEach(k => localStorage.removeItem(k)); } catch (_) {}
+}
+async function etProxy(path, body) {
+  if (!PROXY_URL) throw new Error('proxy sin configurar');
+  const r = await fetch(PROXY_URL + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  return { status: r.status, data: await r.json().catch(() => ({})) };
+}
+
+// Trae el saldo de E*TRADE en vivo por el proxy y lo adapta al shape de snapshot.
+// Devuelve: snapshot | {_expirado:true} (token muerto) | null (sin token / proxy
+// inalcanzable). Cache 5 min (el saldo no cambia con el mercado cerrado).
+async function etradeSaldo(forzar) {
+  const cr = etCreds();
+  if (!cr) return null;
+  if (!forzar) {
+    try {
+      const c = JSON.parse(localStorage.getItem(ET_K.cache) || 'null');
+      if (c && Date.now() - c._ts < 300000) return c.snap;
+    } catch (_) {}
+  }
+  const expiro = (r) => r.status === 401 || (r.data && r.data.error);
+  try {
+    const lst = await etProxy('/etrade/read', { ...cr, path: '/v1/accounts/list.json' });
+    if (expiro(lst)) return { _expirado: true };
+    const acc = (((lst.data || {}).AccountListResponse || {}).Accounts || {}).Account || [];
+    const arr = Array.isArray(acc) ? acc : [acc];
+    const a = arr.find(x => String(x.accountStatus || '').toUpperCase() !== 'CLOSED') || arr[0];
+    if (!a || !a.accountIdKey) return null;
+    const bal = await etProxy('/etrade/read', {
+      ...cr, path: `/v1/accounts/${encodeURIComponent(a.accountIdKey)}/balance.json`,
+      query: { instType: a.institutionType || 'BROKERAGE', realTimeNAV: 'true' },
+    });
+    if (expiro(bal)) return { _expirado: true };
+    const b = (bal.data || {}).BalanceResponse || {};
+    const comp = b.Computed || {};
+    const rtv = comp.RealTimeValues || {};
+    const num = String(a.accountId || '');
+    const snap = {
+      broker: 'etrade',
+      numero_mascara: num ? num.slice(0, 3) + '***' + num.slice(-3) : '',
+      saldo_neto: num2(rtv.totalAccountValue) ?? num2(comp.netAccountValue),
+      efectivo: num2(comp.cashBalance) ?? num2(comp.settledCashForInvestment),
+      poder_compra: num2(comp.cashBuyingPower) ?? num2(comp.marginBuyingPower),
+      origen: 'dispositivo', capturado_at: new Date().toISOString(),
+    };
+    try { localStorage.setItem(ET_K.cache, JSON.stringify({ _ts: Date.now(), snap })); } catch (_) {}
+    return snap;
+  } catch (_) {
+    return null;  // proxy inalcanzable (¿Funnel apagado?) → se ofrece Conectar
+  }
+}
+
+async function conectarEtrade() {
+  if (!PROXY_URL) { toast('Falta configurar el proxy'); return; }
+  toast('Preparando login de E*TRADE…');
+  let r;
+  try { r = await etProxy('/etrade/login/start', {}); }
+  catch (_) { toast('No pude contactar el proxy (¿Funnel activo?)'); return; }
+  const d = r.data || {};
+  if (!d.authorize_url) { toast('E*TRADE no respondió: ' + (d.error || 'error')); return; }
+  window.open(d.authorize_url, '_blank', 'noopener');
+  modalPin(d.rt);
+}
+function modalPin(rt) {
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalPin';
+  m.innerHTML = `<div class="hoja">
+    <h3 style="margin:0 0 6px">Conectar E*TRADE</h3>
+    <div class="mut" style="font-size:12.5px;line-height:1.45">Se abrió E*TRADE en otra pestaña. Inicia sesión, <b>autoriza el acceso</b> y copia el <b>código de verificación</b> que te muestra. Pégalo aquí:</div>
+    <label>Código de verificación</label>
+    <input id="etPin" inputmode="numeric" autocomplete="off" placeholder="pega el código" style="text-align:center;letter-spacing:.12em;font-size:16px">
+    <div class="err" id="etErr"></div>
+    <div class="dos" style="margin-top:6px">
+      <button class="btnsec" onclick="MZ.pinCancelar()">Cancelar</button>
+      <button class="pri" onclick="MZ.pinEnviar('${esc(rt)}')">Conectar</button></div>
+  </div>`;
+  document.body.appendChild(m);
+  setTimeout(() => { const i = $('#etPin'); if (i) i.focus(); }, 60);
+}
+async function etradePinEnviar(rt) {
+  const pin = ($('#etPin').value || '').trim();
+  const err = $('#etErr');
+  if (!pin) { err.textContent = 'Pega el código de verificación.'; return; }
+  err.textContent = 'Conectando…';
+  let r;
+  try { r = await etProxy('/etrade/login/finish', { rt, pin }); }
+  catch (_) { err.textContent = 'No pude contactar el proxy.'; return; }
+  const d = r.data || {};
+  if (!d.token) { err.textContent = d.error || 'No pude conectar. Revisa el código.'; return; }
+  etGuardar(d.token, d.token_secret);
+  const m = $('#modalPin'); if (m) m.remove();
+  toast('E*TRADE conectada ✓');
+  vistaCuentas();
+}
 
 async function vistaCuentas() {
   const [posR, btR, csR] = await Promise.all([
@@ -433,7 +547,12 @@ async function vistaCuentas() {
   }));
   const cerradas = [...manual, ...delBroker].sort((a, b) =>
     (b.cerrada_at || '').localeCompare(a.cerrada_at || ''));
-  const saldos = csR.data || [];
+  const saldos = [...(csR.data || [])];
+  // E*TRADE vive en el dispositivo (opción B): su saldo se trae en vivo por el
+  // proxy, no está en Supabase. Lo fusionamos aquí.
+  const etSnap = await etradeSaldo();
+  const etExpirado = !!(etSnap && etSnap._expirado);
+  if (etSnap && !etSnap._expirado) saldos.push(etSnap);
   let h = '';
 
   // ---- saldos de brókeres ----
@@ -441,17 +560,29 @@ async function vistaCuentas() {
   h += `<div class="card">
     <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">SALDO TOTAL</div>
     <div class="mono" style="font-size:28px;font-weight:700;margin:2px 0">${saldos.length ? usd(total) : '—'}</div>
-    ${saldos.length ? `<span class="fresco">${saldos.length} de 4 brókeres conectados</span>` : ''}</div>`;
+    ${saldos.length ? `<span class="fresco">${saldos.length} de ${BROKERS.length} brókeres conectados</span>` : ''}</div>`;
   h += BROKERS.map(b => {
     const c = saldos.find(x => x.broker === b.k);
-    if (c) return `<div class="card"><div class="fila">
+    if (c) {
+      const orig = c.origen === 'vps' ? 'en vivo'
+        : c.origen === 'dispositivo' ? 'en vivo · este equipo' : 'desde tu Mac';
+      const reconn = b.k === 'etrade'
+        ? ` · <a href="#" onclick="MZ.conectar('etrade');return false" style="color:var(--oro)">reconectar</a>` : '';
+      return `<div class="card"><div class="fila">
       <div><b style="font-size:14px">${esc(b.n)}</b> <span class="mut">${esc(c.numero_mascara||'')}</span>
-        <div class="fresco">${c.origen==='vps'?'en vivo':'desde tu Mac'} · ${esc(haceCuanto(c.capturado_at).txt)}</div></div>
+        <div class="fresco">${orig} · ${esc(haceCuanto(c.capturado_at).txt)}${reconn}</div></div>
       <span class="mono" style="font-weight:700;font-size:15px">${usd(c.saldo_neto)}</span></div></div>`;
+    }
+    const sub = b.k === 'tasty' ? 'conectando…'
+      : (b.k === 'etrade' && etExpirado) ? 'sesión expirada — vuelve a entrar'
+      : b.k === 'etrade' ? 'inicia sesión (login diario, con PIN)'
+      : b.k === 'schwab' ? 'en aprobación de Schwab' : 'requiere tu login';
+    const btn = b.k === 'tasty' ? ''
+      : `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.conectar('${b.k}')">Conectar</button>`;
     return `<div class="card"><div class="fila">
       <div><b style="font-size:14px;color:var(--tx2)">${esc(b.n)}</b>
-        <div class="fresco">${b.k==='tasty'?'conectando…':'requiere tu login'}</div></div>
-      <button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.conectar('${b.k}')">Conectar</button></div></div>`;
+        <div class="fresco">${sub}</div></div>
+      ${btn}</div></div>`;
   }).join('');
 
   // selector de período
@@ -483,7 +614,7 @@ async function vistaCuentas() {
   }
 
   // nota de brókeres (llega después)
-  h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">Los saldos de tus 4 brókeres (E*TRADE, Schwab, tastytrade, moomoo) se suman aquí en la próxima entrega.</div>`;
+  h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">tastytrade en vivo 24/7 · E*TRADE en vivo desde este equipo (login diario) · Charles Schwab se activa en cuanto Schwab apruebe tu app.</div>`;
   $('#vista').innerHTML = h;
 }
 
@@ -512,9 +643,12 @@ window.MZ = Object.assign(window.MZ || {}, {
   periodo: (k) => { _periodoSel = k; vistaCuentas(); },
   conectar: (b) => {
     if (b === 'tasty') { toast('tastytrade ya está conectada (en vivo)'); return; }
-    const n = { etrade: 'E*TRADE', schwab: 'Charles Schwab' }[b] || b;
-    toast('Conexión a ' + n + ': llega en la próxima entrega');
+    if (b === 'etrade') { conectarEtrade(); return; }
+    if (b === 'schwab') { toast('Schwab: la activamos en cuanto apruebe tu app'); return; }
+    toast('Bróker no soportado');
   },
+  pinEnviar: (rt) => etradePinEnviar(rt),
+  pinCancelar: () => { const m = $('#modalPin'); if (m) m.remove(); },
 });
 
 // ---------- Disciplina ----------
