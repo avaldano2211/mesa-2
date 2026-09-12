@@ -408,13 +408,42 @@ function abrirCuenta() {
   setTimeout(() => { const i = $('#cpNueva'); if (i) i.focus(); }, 60);
 }
 function cerrarCuenta() { const m = $('#modalCuenta'); if (m) m.remove(); }
+// Token de sesión con tres intentos. En iOS supabase-js a veces no «ve» la
+// sesión en el instante de updateUser (Auth session missing) aunque las
+// consultas sí funcionen; por eso no dependemos de esa lectura interna.
+async function tokenSesion() {
+  try { const { data } = await sb.auth.getSession(); if (data && data.session) return data.session.access_token; } catch (_) {}
+  try { const { data } = await sb.auth.refreshSession(); if (data && data.session) return data.session.access_token; } catch (_) {}
+  try {   // último recurso: el mismo sitio donde supabase-js guarda la sesión
+    const k = 'sb-' + new URL(SUPABASE_URL).hostname.split('.')[0] + '-auth-token';
+    const j = JSON.parse(localStorage.getItem(k) || 'null');
+    if (j && j.access_token && (!j.expires_at || j.expires_at > Date.now() / 1000 + 5)) return j.access_token;
+  } catch (_) {}
+  return null;
+}
 async function cambiarPass() {
   const a = $('#cpNueva').value, b = $('#cpRep').value, err = $('#cpErr');
   if (a.length < 8) { err.textContent = 'Mínimo 8 caracteres.'; return; }
   if (a !== b) { err.textContent = 'Las dos no coinciden.'; return; }
   err.textContent = 'Guardando…';
-  const { error } = await sb.auth.updateUser({ password: a });
-  if (error) { err.textContent = 'No pude cambiarla: ' + error.message; return; }
+  const jwt = await tokenSesion();
+  if (!jwt) { err.textContent = 'Tu sesión caducó. Toca «Salir de la Mesa», vuelve a entrar y cámbiala enseguida.'; return; }
+  let r, d = {};
+  try {
+    r = await fetch(SUPABASE_URL + '/auth/v1/user', {
+      method: 'PUT',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + jwt, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: a }),
+    });
+    d = await r.json().catch(() => ({}));
+  } catch (_) { err.textContent = 'Sin conexión. Inténtalo de nuevo.'; return; }
+  if (!r.ok) {
+    const m = d.msg || d.message || d.error_description || d.error || ('error ' + r.status);
+    err.textContent = /jwt|expired|invalid token|401/i.test(String(m) + r.status)
+      ? 'Tu sesión caducó. Toca «Salir de la Mesa», vuelve a entrar y cámbiala enseguida.'
+      : 'No pude cambiarla: ' + m;
+    return;
+  }
   cerrarCuenta();
   toast('Contraseña cambiada ✓');
 }
