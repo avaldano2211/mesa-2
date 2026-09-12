@@ -665,11 +665,20 @@ const ET_DIAS_HIST = 180;
 
 function emparejarEtrade(txs) {
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  const ops = (txs || []).filter(t => t && t.brokerage && t.brokerage.product
-    && String(t.brokerage.product.securityType || '').toUpperCase() === 'OPTN');
-  ops.sort((a, b) => num(a.transactionDate) - num(b.transactionDate) || num(a.transactionId) - num(b.transactionId));
+  // transactionDate de E*TRADE es FECHA (medianoche): dentro del mismo día las
+  // compras van antes que las ventas (una venta nunca precede a su compra), y el
+  // desempate respeta el orden real del listado (E*TRADE lo devuelve DESC).
+  const lado = (t) => {
+    const tipo = String(t.transactionType || '').toLowerCase();
+    const dv = /sold|sell|expir|assign|exercis/.test(tipo), dc = /bought|buy/.test(tipo);
+    return (dc || (!dv && num(t.brokerage.quantity) > 0)) ? 0 : 1;
+  };
+  const ops = (txs || []).map((t, i) => ({ t, i })).filter(x => x.t && x.t.brokerage && x.t.brokerage.product
+    && String(x.t.brokerage.product.securityType || '').toUpperCase() === 'OPTN');
+  ops.sort((a, b) => num(a.t.transactionDate) - num(b.t.transactionDate)
+    || lado(a.t) - lado(b.t) || (b.i - a.i) || num(a.t.transactionId) - num(b.t.transactionId));
   const abiertos = {}, salidas = [];
-  for (const t of ops) {
+  for (const { t } of ops) {
     const p = t.brokerage.product, b = t.brokerage;
     const right = String(p.callPut || '').toUpperCase() === 'PUT' ? 'PUT' : 'CALL';
     const strike = num(p.strikePrice);
@@ -757,6 +766,8 @@ async function etradeSincronizar(forzar) {
   const fin = (resumen) => {
     resumen.ts = Date.now();
     try { localStorage.setItem(ET_K.sync, JSON.stringify({ ts: resumen.ts, resumen })); } catch (_) {}
+    // Diagnóstico a la bitácora del proxy: SOLO contadores/estado (jamás tokens ni trades).
+    try { etProxy('/diag', { que: 'etrade_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}
     return resumen;
   };
   try {
