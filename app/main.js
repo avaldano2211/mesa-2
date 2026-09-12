@@ -111,6 +111,7 @@ async function ruta() {
   if (tab === 'tickers') return vistaTickers();
   if (tab === 'copiloto') return vistaCopiloto();
   if (tab === 'cuentas') return vistaCuentas();
+  if (tab === 'disciplina') return vistaDisciplina();
   return vistaProx(tab);
 }
 
@@ -348,12 +349,15 @@ async function guardarFill(senalId) {
   if (!(prima > 0) || !(qty > 0)) { $('#fErr').textContent = 'Falta la prima o los contratos.'; return; }
   const { data: { user } } = await sb.auth.getUser();
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  const sem = ($('#fRango') || {}).dataset ? $('#fRango').dataset.n : '';  // veredicto del rango
   const fila = {
     user_id: user.id, symbol: g('fSym'), direccion: g('fDir'),
     strike: g('fStrike') ? parseFloat(g('fStrike')) : null,
     expiracion: g('fExp') || null, contratos: qty, prima_fill: prima,
     plan_pct: PLAN_PCT, broker: g('fBr'), senal_id: senalId || null,
     abierta_fecha_ny: hoy,
+    entrada_semaforo: (sem === 'ok' || sem === 'aviso' || sem === 'alto') ? sem : null,
+    fuera_de_rango: sem === 'alto',
   };
   const { error } = await sb.from('posiciones').insert(fila);
   if (error) { $('#fErr').textContent = 'No se guardó: ' + error.message; return; }
@@ -473,11 +477,92 @@ window.MZ = Object.assign(window.MZ || {}, {
   periodo: (k) => { _periodoSel = k; vistaCuentas(); },
 });
 
+// ---------- Disciplina ----------
+function nombreMesNY() {
+  return new Intl.DateTimeFormat('es', { timeZone: 'America/New_York', month: 'long' }).format(new Date());
+}
+async function vistaDisciplina() {
+  const { data } = await sb.from('posiciones').select('*').order('abierta_at', { ascending: false });
+  const pos = data || [];
+  const inicioMes = inicioPeriodo('mes');
+  const lun = lunesNY();
+  const cerradas = pos.filter(p => p.estado === 'cerrada' || p.estado === 'expirada');
+  const delMes = pos.filter(p => (p.abierta_fecha_ny || '') >= inicioMes);
+  const cerradasSem = cerradas.filter(p => (p.abierta_fecha_ny || '') >= lun);
+
+  // cupo de la semana
+  const semana = pos.filter(p => (p.abierta_fecha_ny || '') >= lun);
+  const usadas = semana.length;
+  const colCupo = usadas > OPS_SEMANA ? 'var(--rojo)' : usadas === OPS_SEMANA ? 'var(--oro)' : 'var(--verde)';
+
+  // excedente a retirar (resultado cerrado positivo de la semana)
+  const resSem = cerradasSem.reduce((s, p) => s + (Number(p.resultado_usd) || 0), 0);
+  const excedente = Math.max(0, resSem);
+
+  // reglas rotas del mes
+  const rotas = [];
+  // (1) entrar FUERA del rango
+  for (const p of delMes.filter(p => p.fuera_de_rango)) {
+    const r = Number(p.resultado_usd);
+    rotas.push({ regla: 'Entró FUERA del rango óptimo',
+      det: `${p.symbol} ${p.direccion} · ${fmtFechaNY(p.abierta_at)}`,
+      costo: (r != null && r < 0) ? r : 0, gano: r != null && r > 0 });
+  }
+  // (2) 4ª+ operación de una semana (cupo excedido) — agrupar por semana ISO
+  const porSemana = {};
+  for (const p of delMes) {
+    const d = new Date((p.abierta_fecha_ny || '') + 'T12:00:00Z');
+    const wk = new Date(d); wk.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    const key = wk.toISOString().slice(0, 10);
+    (porSemana[key] = porSemana[key] || []).push(p);
+  }
+  for (const [wk, ops] of Object.entries(porSemana)) {
+    if (ops.length > OPS_SEMANA) {
+      const extra = ops.slice(OPS_SEMANA); // las que sobraron
+      const costo = extra.reduce((s, p) => s + Math.min(0, Number(p.resultado_usd) || 0), 0);
+      rotas.push({ regla: `${ops.length} operaciones esa semana (plan: ${OPS_SEMANA})`,
+        det: `semana del ${fmtFechaNY(wk + 'T12:00:00Z')}`, costo, gano: false });
+    }
+  }
+  const costoTotal = rotas.reduce((s, r) => s + (r.costo || 0), 0);
+
+  let h = '';
+  // cumplimiento del plan (semana)
+  h += `<div class="card">
+    <div class="fila"><h3>Plan de la semana</h3>
+      <span style="font-weight:800;font-size:20px;color:${colCupo}">${usadas} / ${OPS_SEMANA}</span></div>
+    <div class="mut" style="margin-top:3px">3 operaciones por semana · 10% de la cuenta por operación · solo tus 4 tickers. El plan manda.</div></div>`;
+
+  // excedente a retirar
+  if (excedente > 0) {
+    h += `<div class="card" style="border-color:rgba(69,208,140,.4)">
+      <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em;color:var(--verde)">EXCEDENTE A RETIRAR ESTE VIERNES</div>
+      <div class="mono" style="font-size:26px;font-weight:700;color:var(--verde);margin-top:2px">${usd(excedente)}</div>
+      <div class="mut" style="margin-top:2px">Lo ganado de la semana. La doctrina: retira el excedente, no lo dejes en riesgo.</div></div>`;
+  }
+
+  // reglas rotas
+  h += `<div class="sec">REGLAS ROTAS · ${nombreMesNY().toUpperCase()}</div>`;
+  if (rotas.length) {
+    h += `<div class="card" style="border-color:rgba(242,109,95,.35)">
+      <div class="fila"><span class="mut" style="font-weight:700">Te costaron este mes</span>
+        <span class="mono" style="font-weight:700;color:var(--rojo)">${usd(costoTotal)}</span></div></div>`;
+    h += rotas.map(r => `<div class="card">
+      <div class="fila" style="align-items:flex-start">
+        <div><div style="font-weight:700;font-size:13.5px;color:var(--rojo)">${esc(r.regla)}</div>
+          <div class="mut" style="margin-top:2px">${esc(r.det)}</div></div>
+        <span class="mono" style="font-weight:700;color:${r.costo<0?'var(--rojo)':'var(--tx2)'};white-space:nowrap">${
+          r.costo < 0 ? usd(r.costo) : (r.gano ? 'ganó igual' : '$0')}</span></div>
+    </div>`).join('');
+  } else {
+    h += `<div class="card vacio">Ninguna regla rota este mes. 🎯<br>Así se construye la cuenta.</div>`;
+  }
+  $('#vista').innerHTML = h;
+}
+
 function vistaProx(tab) {
   const txt = {
-    copiloto: 'El Copiloto llega en la próxima entrega: ticket verificado, registro de tu fill en 10 s y aviso de refuerzo.',
-    cuentas: 'Cuentas y diario llega pronto: tus 4 brókeres consolidados y el diario con reconciliación.',
-    disciplina: 'Disciplina llega pronto: plan 3 ops/semana, reglas rotas con su costo y excedente a retirar.',
+    cuentas: 'Cuentas y diario llega pronto.',
   }[tab] || 'Próximamente.';
   $('#vista').innerHTML = `<div class="prox">${esc(txt)}</div>`;
 }
