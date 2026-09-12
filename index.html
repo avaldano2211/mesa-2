@@ -83,6 +83,28 @@
   nav.tabs svg{width:22px;height:22px}
   .prox{text-align:center;color:var(--tx3);padding:60px 24px;font-size:13.5px;line-height:1.6}
   .fresco{font-size:10px;color:var(--tx3)}
+  button.pri{cursor:pointer}
+  .btnsec{flex:1;background:transparent;border:1px solid var(--line);color:var(--tx);
+    border-radius:11px;padding:10px;font-size:13px;font-weight:600;font-family:var(--sans);cursor:pointer}
+  .btnsec:active{background:var(--card)}
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;
+    justify-content:center;z-index:50;animation:fade .15s ease}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .hoja{background:var(--bg2);border:1px solid var(--line);border-radius:20px 20px 0 0;
+    width:100%;max-width:440px;padding:20px 18px calc(env(safe-area-inset-bottom) + 20px);
+    display:flex;flex-direction:column;gap:6px;max-height:92dvh;overflow:auto}
+  .hoja h3{font-size:16px;font-weight:700}
+  .hoja label{font-size:10.5px;font-weight:700;letter-spacing:.06em;color:var(--tx2);margin:8px 2px 1px}
+  .hoja input,.hoja select{background:var(--card);border:1px solid var(--line);border-radius:11px;
+    padding:12px;color:var(--tx);font-size:15px;font-family:var(--sans);width:100%}
+  .hoja input:focus,.hoja select:focus{outline:none;border-color:var(--oro)}
+  .hoja .dos{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .gtcprev{margin-top:10px;padding:11px 12px;border-radius:11px;background:rgba(231,181,77,.12);
+    border:1px solid rgba(231,181,77,.3);color:var(--oro);font-family:var(--mono);font-size:13px;font-weight:700;text-align:center}
+  .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
+    background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
+    box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400..600&display=swap">
@@ -112,7 +134,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=4"></script>
-  <script src="./app/main.js?v=4"></script>
+  <script src="./config.js?v=5"></script>
+  <script src="./app/main.js?v=5"></script>
 </body>
 </html>

@@ -109,6 +109,7 @@ async function ruta() {
   $('#titulo').textContent = titulos[tab] || 'Mesa 2.0';
   if (tab === 'informe') return vistaInforme(hb);
   if (tab === 'tickers') return vistaTickers();
+  if (tab === 'copiloto') return vistaCopiloto();
   return vistaProx(tab);
 }
 
@@ -186,6 +187,171 @@ async function vistaTickers() {
     tarjetaTicker(est.find(e => e.symbol === t), t, false)).join('') ||
     `<div class="card vacio">Aún no hay estado publicado.</div>`;
 }
+
+// ---------- Copiloto ----------
+const PLAN_PCT = 35;      // doctrina (literal); el plan personal lo afinará plan_semanal
+const OPS_SEMANA = 3;     // 3 ops/semana
+const gtcDe = (fill) => Math.round((fill * (1 + PLAN_PCT / 100) + 0.02) * 100) / 100;
+function lunesNY() {
+  // fecha (YYYY-MM-DD en NY) del lunes de esta semana
+  const f = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' })
+    .formatToParts(new Date());
+  const wd = f.find(p => p.type === 'weekday').value;
+  const ymd = `${f.find(p=>p.type==='year').value}-${f.find(p=>p.type==='month').value}-${f.find(p=>p.type==='day').value}`;
+  const idx = { Mon:0, Tue:1, Wed:2, Thu:3, Fri:4, Sat:5, Sun:6 }[wd];
+  const d = new Date(ymd + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - idx);
+  return d.toISOString().slice(0, 10);
+}
+
+async function vistaCopiloto() {
+  const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  const [sen, pos] = await Promise.all([
+    sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }),
+    sb.from('posiciones').select('*').order('abierta_at', { ascending: false }),
+  ]);
+  const senales = sen.data || [];
+  const posic = pos.data || [];
+  const abiertas = posic.filter(p => p.estado === 'abierta');
+  const semana = posic.filter(p => p.abierta_fecha_ny >= lunesNY());
+  let h = '';
+
+  // cupo semanal
+  const usadas = semana.length;
+  const colorCupo = usadas > OPS_SEMANA ? 'var(--rojo)' : usadas === OPS_SEMANA ? 'var(--oro)' : 'var(--verde)';
+  h += `<div class="card"><div class="fila"><h3>Plan de la semana</h3>
+    <span style="font-weight:700;color:${colorCupo}">${usadas} / ${OPS_SEMANA}</span></div>
+    <div class="mut">Operaciones esta semana. La doctrina: 3 por semana, ni una más.</div></div>`;
+
+  // señales de hoy → ticket
+  h += `<div class="sec">SEÑALES DE HOY</div>`;
+  if (senales.length) {
+    h += senales.map(s => tarjetaSenal(s, posic)).join('');
+  } else {
+    h += `<div class="card vacio">Sin señales todavía hoy.<br>E5 evalúa la apertura de las 9:30 ET.</div>`;
+  }
+
+  // registrar a mano (útil siempre)
+  h += `<button class="pri" style="width:100%" onclick="MZ.abrirFill()">+ Registrar una operación</button>`;
+
+  // posiciones abiertas
+  h += `<div class="sec">POSICIONES ABIERTAS</div>`;
+  if (abiertas.length) {
+    h += abiertas.map(tarjetaPosicion).join('');
+  } else {
+    h += `<div class="card vacio">Sin posiciones abiertas.</div>`;
+  }
+  $('#vista').innerHTML = h;
+}
+
+function tarjetaSenal(s, posic) {
+  const yaReg = posic.some(p => p.senal_id === s.id);
+  return `<div class="card" style="border-color:rgba(231,181,77,.45)">
+    <div class="fila"><span style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>
+      <span class="fresco">${esc(haceCuanto(s.creado_at).txt)}</span></div>
+    <div class="mut" style="margin-top:5px">${esc(s.motivo || '')}</div>
+    ${s.instruccion_gtc ? `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${esc(s.instruccion_gtc)}</div>` : ''}
+    ${yaReg ? `<div class="mut" style="margin-top:8px;color:var(--verde)">✓ ya registraste tu fill</div>`
+      : `<button class="pri" style="width:100%;margin-top:9px" onclick='MZ.abrirFill(${JSON.stringify({
+          senal_id: s.id, symbol: s.symbol, direccion: s.direccion }).replace(/'/g, "&#39;")})'>Registrar mi fill</button>`}
+  </div>`;
+}
+
+function tarjetaPosicion(p) {
+  const pnl = p.prima_salida != null
+    ? ((p.prima_salida - p.prima_fill) / p.prima_fill * 100) : null;
+  return `<div class="card">
+    <div class="fila"><h3>${esc(p.symbol)} ${esc(p.direccion)}${p.strike ? ' ' + esc(p.strike) : ''}</h3>
+      <span class="fresco">×${esc(p.contratos)} · ${esc(p.broker || '—')}</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">fill <b class="mono" style="color:var(--tx)">$${esc(p.prima_fill)}</b></span>
+      <span class="mut">límite GTC <b class="mono" style="color:var(--oro)">$${esc(p.gtc_limite)}</b></span></div>
+    <div class="fila" style="margin-top:9px;gap:8px">
+      <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
+      <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button></div>
+  </div>`;
+}
+
+// ---- modal de registro de fill ----
+function abrirFill(pre) {
+  pre = pre || {};
+  const m = document.createElement('div');
+  m.className = 'modal'; m.id = 'modalFill';
+  m.innerHTML = `<div class="hoja">
+    <h3 style="margin:0 0 2px">Registrar fill</h3>
+    <div class="mut" style="margin-bottom:10px">La orden la pones en tu bróker. Aquí registras lo que se llenó.</div>
+    <label>Ticker</label>
+    <select id="fSym">${['AAPL','TSLA','NVDA','SPY'].map(t =>
+      `<option ${pre.symbol===t?'selected':''}>${t}</option>`).join('')}</select>
+    <label>Dirección</label>
+    <select id="fDir"><option ${pre.direccion==='CALL'?'selected':''}>CALL</option>
+      <option ${pre.direccion==='PUT'?'selected':''}>PUT</option></select>
+    <div class="dos">
+      <div><label>Strike</label><input id="fStrike" type="number" inputmode="decimal" placeholder="opcional"></div>
+      <div><label>Expira</label><input id="fExp" type="date"></div></div>
+    <div class="dos">
+      <div><label>Contratos</label><input id="fQty" type="number" inputmode="numeric" value="1" min="1"></div>
+      <div><label>Bróker</label><select id="fBr"><option value="etrade">E*TRADE</option>
+        <option value="schwab">Schwab</option><option value="tasty">tastytrade</option></select></div></div>
+    <label>Prima de tu fill (por contrato)</label>
+    <input id="fPrima" type="number" inputmode="decimal" step="0.01" placeholder="ej. 0.98" autofocus>
+    <div id="fGtc" class="gtcprev">Límite GTC: —</div>
+    <div class="err" id="fErr"></div>
+    <div class="dos" style="margin-top:6px">
+      <button class="btnsec" onclick="MZ.cerrarModal()">Cancelar</button>
+      <button class="pri" onclick="MZ.guardarFill(${pre.senal_id || 'null'})">Guardar</button></div>
+  </div>`;
+  document.body.appendChild(m);
+  const prima = m.querySelector('#fPrima');
+  prima.addEventListener('input', () => {
+    const v = parseFloat(prima.value);
+    m.querySelector('#fGtc').textContent = v > 0
+      ? `Límite GTC a colocar: $${gtcDe(v).toFixed(2)}  (fill ×1.35 + $0.02)` : 'Límite GTC: —';
+  });
+  setTimeout(() => prima.focus(), 50);
+}
+function cerrarModal() { const m = $('#modalFill'); if (m) m.remove(); }
+
+async function guardarFill(senalId) {
+  const g = (id) => $('#' + id).value;
+  const prima = parseFloat(g('fPrima'));
+  const qty = parseFloat(g('fQty'));
+  if (!(prima > 0) || !(qty > 0)) { $('#fErr').textContent = 'Falta la prima o los contratos.'; return; }
+  const { data: { user } } = await sb.auth.getUser();
+  const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  const fila = {
+    user_id: user.id, symbol: g('fSym'), direccion: g('fDir'),
+    strike: g('fStrike') ? parseFloat(g('fStrike')) : null,
+    expiracion: g('fExp') || null, contratos: qty, prima_fill: prima,
+    plan_pct: PLAN_PCT, broker: g('fBr'), senal_id: senalId || null,
+    abierta_fecha_ny: hoy,
+  };
+  const { error } = await sb.from('posiciones').insert(fila);
+  if (error) { $('#fErr').textContent = 'No se guardó: ' + error.message; return; }
+  cerrarModal(); ruta();
+}
+async function cerrar(id, primaFill) {
+  const val = prompt('Prima de salida (por contrato). Deja vacío si expiró sin valor.');
+  if (val === null) return;
+  const salida = val.trim() === '' ? 0 : parseFloat(val);
+  if (isNaN(salida)) return;
+  const { data: p } = await sb.from('posiciones').select('contratos').eq('id', id).single();
+  const res = p ? Math.round((salida - primaFill) * (p.contratos || 1) * 100 * 100) / 100 : null;
+  await sb.from('posiciones').update({
+    estado: salida === 0 ? 'expirada' : 'cerrada', prima_salida: salida,
+    resultado_usd: res, cerrada_at: new Date().toISOString(),
+  }).eq('id', id);
+  ruta();
+}
+async function copiar(v) {
+  try { await navigator.clipboard.writeText(String(v)); toast('GTC $' + v + ' copiado'); }
+  catch { toast('Copia manual: $' + v); }
+}
+function toast(t) {
+  const el = document.createElement('div'); el.className = 'toast'; el.textContent = t;
+  document.body.appendChild(el); setTimeout(() => el.remove(), 2200);
+}
+window.MZ = { abrirFill, cerrarModal, guardarFill, cerrar, copiar };
 
 function vistaProx(tab) {
   const txt = {
