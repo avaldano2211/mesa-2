@@ -548,6 +548,26 @@ async function etProxy(path, body) {
   return { status: r.status, data: await r.json().catch(() => ({})) };
 }
 
+// Lectura E*TRADE con auto-renovación: si el token quedó INACTIVO (>2 h sin
+// uso) E*TRADE responde 401; renew_access_token lo reactiva sin login. Muere
+// de verdad a medianoche ET (ahí sí toca reconectar).
+async function etRead(cr, path, query) {
+  let r = await etProxy('/etrade/read', { ...cr, path, query: query || {} });
+  if (r.status === 401) {
+    try { await etProxy('/etrade/renew', { token: cr.token, token_secret: cr.token_secret }); } catch (_) {}
+    r = await etProxy('/etrade/read', { ...cr, path, query: query || {} });
+  }
+  return r;
+}
+// Mensaje de error de E*TRADE ({Error:{message}}) o del proxy ({error}), o null.
+function etError(r) {
+  const d = r && r.data;
+  if (!d || typeof d !== 'object') return null;
+  if (d.Error && d.Error.message) return String(d.Error.message);
+  if (d.error) return String(d.error);
+  return null;
+}
+
 // Trae el saldo de E*TRADE en vivo por el proxy y lo adapta al shape de snapshot.
 // Devuelve: snapshot | {_expirado:true} (token muerto) | null (sin token / proxy
 // inalcanzable). Cache 5 min (el saldo no cambia con el mercado cerrado).
@@ -560,19 +580,18 @@ async function etradeSaldo(forzar) {
       if (c && Date.now() - c._ts < 300000) return c.snap;
     } catch (_) {}
   }
-  const expiro = (r) => r.status === 401 || (r.data && r.data.error);
   try {
-    const lst = await etProxy('/etrade/read', { ...cr, path: '/v1/accounts/list.json' });
-    if (expiro(lst)) return { _expirado: true };
+    const lst = await etRead(cr, '/v1/accounts/list.json');
+    if (lst.status === 401) return { _expirado: true };
+    if (etError(lst)) return null;
     const acc = (((lst.data || {}).AccountListResponse || {}).Accounts || {}).Account || [];
     const arr = Array.isArray(acc) ? acc : [acc];
     const a = arr.find(x => String(x.accountStatus || '').toUpperCase() !== 'CLOSED') || arr[0];
     if (!a || !a.accountIdKey) return null;
-    const bal = await etProxy('/etrade/read', {
-      ...cr, path: `/v1/accounts/${encodeURIComponent(a.accountIdKey)}/balance.json`,
-      query: { instType: a.institutionType || 'BROKERAGE', realTimeNAV: 'true' },
-    });
-    if (expiro(bal)) return { _expirado: true };
+    const bal = await etRead(cr, `/v1/accounts/${encodeURIComponent(a.accountIdKey)}/balance.json`,
+      { instType: a.institutionType || 'BROKERAGE', realTimeNAV: 'true' });
+    if (bal.status === 401) return { _expirado: true };
+    if (etError(bal)) return null;
     const b = (bal.data || {}).BalanceResponse || {};
     const comp = b.Computed || {};
     const rtv = comp.RealTimeValues || {};
@@ -695,9 +714,11 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
   do {
     const query = { startDate: fmt(desde), endDate: fmt(hoy), count: '50', sortOrder: 'DESC' };
     if (marker) query.marker = marker;
-    const r = await etProxy('/etrade/read', { ...cr,
-      path: `/v1/accounts/${encodeURIComponent(accountIdKey)}/transactions.json`, query });
-    if (r.status === 401 || (r.data && r.data.error && r.status !== 204)) return { expirado: true, txs: todas };
+    const r = await etRead(cr, `/v1/accounts/${encodeURIComponent(accountIdKey)}/transactions.json`, query);
+    if (r.status === 401) return { expirado: true, txs: todas };
+    if (r.status === 204) break;                       // sin transacciones en el rango
+    const em = etError(r);
+    if (em || r.status >= 400) return { error: em || ('HTTP ' + r.status), txs: todas };
     const L = (r.data || {}).TransactionListResponse || {};
     const arr = Array.isArray(L.Transaction) ? L.Transaction : (L.Transaction ? [L.Transaction] : []);
     todas = todas.concat(arr);
@@ -708,7 +729,7 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
     }
     vueltas++;
   } while (marker && vueltas < 20);
-  return { expirado: false, txs: todas };
+  return { expirado: false, txs: todas, dias };
 }
 
 // Sincroniza (con tope de 10 min por dispositivo). Devuelve el resumen para la
@@ -728,14 +749,18 @@ async function etradeSincronizar(forzar) {
     return resumen;
   };
   try {
-    const lst = await etProxy('/etrade/read', { ...cr, path: '/v1/accounts/list.json' });
-    if (lst.status === 401 || (lst.data && lst.data.error)) return fin({ estado: 'expirado' });
+    const lst = await etRead(cr, '/v1/accounts/list.json');
+    if (lst.status === 401) return fin({ estado: 'expirado' });
+    if (etError(lst)) return fin({ estado: 'error', detalle: etError(lst).slice(0, 80) });
     const acc = (((lst.data || {}).AccountListResponse || {}).Accounts || {}).Account || [];
     const arr = Array.isArray(acc) ? acc : [acc];
     const a = arr.find(x => String(x.accountStatus || '').toUpperCase() !== 'CLOSED') || arr[0];
     if (!a || !a.accountIdKey) return fin({ estado: 'error', detalle: 'sin cuenta' });
-    const { expirado, txs } = await etradeTransacciones(cr, a.accountIdKey, ET_DIAS_HIST);
-    if (expirado) return fin({ estado: 'expirado' });
+    let res = await etradeTransacciones(cr, a.accountIdKey, ET_DIAS_HIST);
+    if (res.error && !res.expirado) res = await etradeTransacciones(cr, a.accountIdKey, 60);  // E*TRADE limita el rango
+    if (res.expirado) return fin({ estado: 'expirado' });
+    if (res.error) return fin({ estado: 'error', detalle: String(res.error).slice(0, 80) });
+    const txs = res.txs, dias = res.dias;
     const ops = txs.filter(t => t && t.brokerage && t.brokerage.product
       && String(t.brokerage.product.securityType || '').toUpperCase() === 'OPTN').length;
     const rts = emparejarEtrade(txs);
@@ -747,7 +772,7 @@ async function etradeSincronizar(forzar) {
       if (error) return fin({ estado: 'error', detalle: error.message });
       nuevos = (data || []).length;
     }
-    const resumen = fin({ estado: 'ok', txs: txs.length, ops, rts: rts.length, nuevos });
+    const resumen = fin({ estado: 'ok', txs: txs.length, ops, rts: rts.length, nuevos, dias });
     return { ...resumen, cambio: nuevos > 0 };
   } catch (e) {
     return fin({ estado: 'error', detalle: (e && e.message) || 'fallo' });
@@ -767,11 +792,18 @@ async function etradeGuardarSnapshot(snap) {
 
 function etradeLineaHistorial(s) {
   if (!s || s.estado === 'sin') return '';
+  const sync = ` · <a href="#" onclick="MZ.etSync();return false" style="color:var(--oro)">sincronizar</a>`;
   if (s.estado === 'expirado') return 'historial: sesión de E*TRADE expirada — reconecta';
-  if (s.estado === 'error') return 'historial: no pude sincronizar' + (s.detalle ? ' (' + esc(s.detalle) + ')' : '');
+  if (s.estado === 'error') return 'historial: no pude sincronizar' + (s.detalle ? ' (' + esc(s.detalle) + ')' : '') + sync;
   if (s.estado === 'sincronizando') return 'historial: sincronizando…';
   const hace = s.ts ? haceCuanto(new Date(s.ts).toISOString()).txt : '';
-  return `historial: ${s.txs} transacciones · ${s.ops} de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hace ? ' · ' + hace : ''}`;
+  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.txs} transacciones · ${s.ops} de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hace ? ' · ' + hace : ''}${sync}`;
+}
+async function etSyncAhora() {
+  try { localStorage.removeItem(ET_K.sync); } catch (_) {}
+  toast('Sincronizando E*TRADE…');
+  await etradeSincronizar(true);
+  vistaCuentas();
 }
 
 async function vistaCuentas() {
@@ -905,6 +937,7 @@ window.MZ = Object.assign(window.MZ || {}, {
   },
   pinEnviar: (rt) => etradePinEnviar(rt),
   pinCancelar: () => { const m = $('#modalPin'); if (m) m.remove(); },
+  etSync: () => etSyncAhora(),
 });
 
 // ---------- Disciplina ----------
