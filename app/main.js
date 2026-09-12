@@ -22,12 +22,31 @@ const TABS = [
 ];
 
 // ---------- auth ----------
+// Login por REST directo, sin la maquinaria de sesión/locks de supabase-js (que
+// falla en iOS): token grant → escribir la sesión donde supabase-js la lee →
+// recargar (la recuperación de sesión al arrancar sí funciona en iOS).
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  $('#loginErr').textContent = '';
-  const { error } = await sb.auth.signInWithPassword({
-    email: $('#email').value.trim(), password: $('#pass').value });
-  if (error) $('#loginErr').textContent = 'No pude entrar: ' + error.message;
+  const err = $('#loginErr'); err.textContent = 'Entrando…';
+  const email = $('#email').value.trim().toLowerCase(), password = $('#pass').value;
+  let r, ses = {};
+  try {
+    r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
+      method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }) });
+    ses = await r.json().catch(() => ({}));
+  } catch (_) { err.textContent = 'Sin conexión. Inténtalo de nuevo.'; return; }
+  if (!r.ok || !ses.access_token) {
+    const m = String(ses.error_description || ses.msg || ses.error || '');
+    err.textContent = /invalid|credentials/i.test(m) ? 'Correo o contraseña incorrectos.'
+      : /confirm/i.test(m) ? 'Correo sin confirmar.' : ('No pude entrar: ' + (m || r.status));
+    return;
+  }
+  try {
+    if (!ses.expires_at && ses.expires_in) ses.expires_at = Math.floor(Date.now() / 1000) + Number(ses.expires_in);
+    localStorage.setItem(claveSesion(), JSON.stringify(ses));
+  } catch (_) { err.textContent = 'Este navegador no deja guardar la sesión (¿modo privado?).'; return; }
+  location.reload();
 });
 
 sb.auth.onAuthStateChange((_e, session) => arrancar(session));
