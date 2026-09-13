@@ -1414,6 +1414,110 @@ function semaforoRango(prima, rango) {
 // Avisos de doctrina EN VIVO (amarillos; nunca bloquean). ctx: {rango, opsSemana,
 // saldo, antes1030}. La regla del ticker aplica a toda orden; las demás solo a
 // ENTRADAS (una salida no abre operación ni gasta cupo).
+// ---- tabla oficial de rangos óptimos de la academia (Investep, xls 2026-08-26): prima por
+// contrato en DÓLARES [lo, hi, tolerancia_lo, tolerancia_hi, fecha del análisis].
+// Regla 1-13: lunes/martes tercio bajo, miércoles medio, jueves/viernes alto.
+// El rango VIVO (delta 0.15-0.30 sobre la cadena de hoy) lo publica el worker en
+// ticker_estado; aquí se muestran los dos bajo el ticker del formulario de orden.
+const RANGOS_TABLA = {
+  AAL: [40, 70, 30, 70, '2026-05-19'],
+  AAPL: [35, 90, 30, 100, '2026-05-19'],
+  AMD: [150, 235, 140, 240, '2026-05-19'],
+  AMZN: [140, 230, 130, 240, '2026-05-19'],
+  AVGO: [70, 140, 65, 145, '2026-05-19'],
+  AXP: [85, 190, 80, 195, '2026-05-19'],
+  BA: [60, 170, 50, 180, '2026-05-19'],
+  BABA: [40, 60, 40, 70, '2026-05-19'],
+  C: [50, 140, 45, 150, '2026-05-19'],
+  CCL: [40, 60, 35, 65, '2026-05-19'],
+  COIN: [200, 300, 195, 310, '2026-05-19'],
+  CVS: [60, 120, 55, 130, '2026-05-19'],
+  DAL: [40, 65, 35, 70, '2026-05-19'],
+  DASH: [160, 240, 155, 245, '2026-05-19'],
+  DIA: [100, 200, 95, 210, '2026-05-19'],
+  GLD: [40, 80, 40, 90, '2026-05-19'],
+  GOOG: [60, 170, 50, 170, '2026-05-19'],
+  HD: [120, 240, 120, 240, '2026-05-19'],
+  HOOD: [100, 150, 90, 160, '2026-05-19'],
+  IBM: [115, 220, 110, 230, '2026-06-10'],
+  INTC: [50, 80, 45, 85, '2026-06-10'],
+  IWM: [40, 70, 35, 70, '2026-05-19'],
+  LI: [25, 60, 25, 70, '2026-05-19'],
+  LOW: [120, 220, 110, 225, '2026-05-19'],
+  LYFT: [25, 50, 25, 55, '2026-05-19'],
+  MA: [90, 175, 85, 180, '2026-05-19'],
+  META: [150, 210, 145, 220, '2026-05-19'],
+  MRNA: [50, 130, 50, 130, '2026-05-19'],
+  MSFT: [60, 120, 50, 130, '2026-05-19'],
+  MU: [400, 600, 400, 650, '2026-05-19'],
+  NFLX: [40, 80, 35, 85, '2026-05-19'],
+  NIO: [30, 75, 25, 75, '2026-05-19'],
+  NOW: [62, 87, 55, 95, '2026-07-13'],
+  NVDA: [80, 170, 75, 175, '2026-02-17'],
+  ORCL: [80, 130, 70, 140, '2026-05-19'],
+  PFE: [30, 70, 25, 75, '2026-05-19'],
+  PLTR: [140, 300, 135, 310, '2026-05-19'],
+  PYPL: [50, 80, 40, 90, '2026-05-19'],
+  QCOM: [80, 160, 70, 170, '2026-05-19'],
+  QQQ: [35, 55, 30, 60, '2026-05-19'],
+  RCL: [80, 150, 75, 155, '2026-05-19'],
+  SLV: [40, 75, 35, 80, '2026-05-19'],
+  SOXL: [150, 240, 120, 250, '2026-05-19'],
+  SPX: [400, 600, 380, 620, '2026-05-19'],
+  SPY: [30, 45, 25, 50, '2026-05-19'],
+  TNA: [40, 90, 40, 100, '2026-05-19'],
+  TSLA: [100, 250, 90, 250, '2026-05-19'],
+  UBER: [35, 60, 30, 65, '2026-05-19'],
+  URA: [55, 80, 55, 85, '2026-05-19'],
+  USO: [50, 80, 45, 90, '2026-05-19'],
+  V: [60, 170, 55, 175, '2026-05-19'],
+  WMT: [60, 110, 55, 115, '2026-02-17'],
+  XPEV: [50, 70, 45, 75, '2026-05-19'],
+};
+const RANGOS_TABLA_FECHA = '2026-08-26';
+const DIAS_ES = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+function diaSemanaNY(d) {
+  const w = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' }).format(d || new Date());
+  return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(w);
+}
+// Parte del rango que toca hoy (doctrina 1-13): [lo, hi] y nombre de la parte.
+function bandaDelDia(rango, dia) {
+  const lo = Number(rango[0]), hi = Number(rango[1]), t = (hi - lo) / 3;
+  if (dia === 0 || dia === 1) return { banda: [lo, lo + t], parte: 'baja' };
+  if (dia === 2) return { banda: [lo + t, hi - t], parte: 'media' };
+  return { banda: [hi - t, hi], parte: 'alta' };
+}
+// Texto (HTML) del rango de precio de un ticker para el formulario de orden:
+// rango VIVO del worker + tabla de la academia con la parte del día.
+function textoRangoOrden(sym, vivo, tabla, dia) {
+  sym = String(sym || '').toUpperCase();
+  if (!sym) return '';
+  const d$ = (v) => '$' + Math.round(Number(v));
+  const partes = [];
+  if (vivo && vivo.lo != null && vivo.hi != null) {
+    let extra = vivo.exp ? ' · vence ' + esc(String(vivo.exp).slice(5)) : '';
+    if (vivo.strike_put != null && vivo.prima_put != null) extra += ` · PUT ${esc(vivo.strike_put)} ${d$(vivo.prima_put)}`;
+    if (vivo.strike_call != null && vivo.prima_call != null) extra += ` · CALL ${esc(vivo.strike_call)} ${d$(vivo.prima_call)}`;
+    partes.push(`<b style="color:var(--oro)">Rango óptimo vivo ${d$(vivo.lo)}–${d$(vivo.hi)}</b> por contrato${extra}`);
+  } else {
+    partes.push('Rango óptimo vivo: el worker aún no lo publicó para ' + esc(sym));
+  }
+  if (tabla) {
+    const b = bandaDelDia([tabla[0], tabla[1]], dia);
+    const vieja = tabla[4] && tabla[4] < RANGOS_TABLA_FECHA;
+    partes.push(`Tabla Investep ${d$(tabla[0])}–${d$(tabla[1])} (tolerancia ${d$(tabla[2])}–${d$(tabla[3])}) · hoy ${DIAS_ES[dia] || ''}: parte ${b.parte} ${d$(b.banda[0])}–${d$(b.banda[1])}${vieja ? ' · <span style="color:var(--rojo)">tabla de ' + esc(tabla[4]) + ', pide la fresca</span>' : ''}`);
+  } else {
+    partes.push(esc(sym) + ' no está en la tabla de rangos de la academia');
+  }
+  return partes.join('<br>');
+}
+function pintarRangoOrden() {
+  if (!_ord) return; const el = $('#oRango'); if (!el) return;
+  const f = leerFormOrden();
+  if (!f.symbol || f.tipo === 'EQ') { el.innerHTML = ''; return; }
+  const vivo = (_ord.ctx && _ord.ctx.rangos && _ord.ctx.rangos[f.symbol]) || null;
+  el.innerHTML = textoRangoOrden(f.symbol, vivo, RANGOS_TABLA[f.symbol] || null, diaSemanaNY());
+}
 // ---- presupuesto por ticket (regla personal de Andrés, 2026-09-13): el 35% del
 // saldo del BRÓKER de la orden (E*TRADE hoy; Schwab/tasty con su propio saldo
 // cuando operen). La cantidad se prearma sola: presupuesto ÷ valor del contrato.
@@ -1647,6 +1751,7 @@ function abrirOrden(pre) {
     <label>Ticker</label>
     <input id="oSym" list="oSyms" value="${esc(pre.symbol || '')}" placeholder="AAPL" autocapitalize="characters" autocomplete="off" spellcheck="false" style="text-transform:uppercase">
     <datalist id="oSyms">${TICKERS.map(t => `<option value="${t}">`).join('')}</datalist>
+    <div id="oRango" class="fresco" style="margin:-3px 0 8px;line-height:1.45"></div>
     <div class="dos">
       <div><label>Tipo</label><select id="oTipo">
         <option value="CALL" ${tipo === 'CALL' ? 'selected' : ''}>Opción CALL</option>
@@ -1689,16 +1794,17 @@ function abrirOrden(pre) {
     const id = e && e.target && e.target.id;
     if (id === 'oQty') _ord.qtyManual = true;                       // el usuario manda: no se vuelve a prearmar
     if (id === 'oPrecio') autoCantidad();
+    if (id === 'oSym' || id === 'oTipo') pintarRangoOrden();
     ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden();
   });
   m.addEventListener('change', (e) => {
-    ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden();
+    ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden(); pintarRangoOrden();
     const id = e && e.target && e.target.id;
     if (id === 'oSym') _ord.cadenaSym = null;                      // símbolo nuevo → cotización y vencimientos de nuevo
     if (['oSym', 'oTipo', 'oExp', 'oAcc'].includes(id)) { _ord.cadenaGen++; cargarCadena(true); }   // gen++: una carga en vuelo se descarta y se relanza
   });
-  ajustarFormOrden(); pintarArmadoOrden(); pintarTotalOrden();
-  cargarCtxOrden().then(() => { autoCantidad(); pintarAvisosOrden(); pintarTotalOrden(); pintarCadena(); });
+  ajustarFormOrden(); pintarArmadoOrden(); pintarTotalOrden(); pintarRangoOrden();
+  cargarCtxOrden().then(() => { autoCantidad(); pintarAvisosOrden(); pintarTotalOrden(); pintarRangoOrden(); pintarCadena(); });
   cargarCadena();
   setTimeout(() => { const i = $('#oSym'); if (i && !i.value) i.focus(); }, 60);
 }
