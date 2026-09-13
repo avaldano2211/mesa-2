@@ -1776,7 +1776,9 @@ async function cargarCadena(forzar) {
 function pintarCadena() {
   if (!_ord) return; const box = $('#oCadena'); if (!box) return;
   const f = leerFormOrden(); if (f.tipo === 'EQ' || !f.symbol) { box.innerHTML = ''; return; }
-  const c = _ord.cadena, q = _ord.cotiz || {}, err = _ord.cadenaErr;
+  // solo se dibuja la cadena que corresponde al ticker del formulario; si no coincide (cambio en curso), «consultando…»
+  const deEsteTicker = String(_ord.cadenaClave || '').split('|')[0] === f.symbol;
+  const c = deEsteTicker ? _ord.cadena : null, q = (deEsteTicker || _ord.cadenaSym === f.symbol) ? (_ord.cotiz || {}) : {}, err = deEsteTicker ? _ord.cadenaErr : null;
   const est = (c && c.estado) || q.estado || '';
   const vivo = /REAL/i.test(est) ? '<span style="color:var(--verde)">en vivo</span>'
     : est ? '<span style="color:var(--oro)">retrasado — activa cotizaciones en tiempo real en E*TRADE</span>' : '';
@@ -1812,6 +1814,8 @@ function pintarCadena() {
 function cadenaElegir(lado, strike, ask, bid) {
   if (!_ord) return;
   const f = leerFormOrden();
+  // cinturón: si la tabla que se ve no es del ticker del formulario (cambio en curso), no llenar nada
+  if (!_ord.cadena || String(_ord.cadenaClave || '').split('|')[0] !== f.symbol) { pintarCadena(); return; }
   const tipo = $('#oTipo'), st = $('#oStrike'), ex = $('#oExp'), pt = $('#oPt'), pr = $('#oPrecio');
   if (tipo && (lado === 'CALL' || lado === 'PUT')) tipo.value = lado;
   if (st) st.value = strike;
