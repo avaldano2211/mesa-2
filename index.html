@@ -128,6 +128,18 @@
   .aviso .check{display:flex;gap:8px;align-items:center;margin:8px 0 0;font-size:13px;font-weight:700;
     letter-spacing:0;color:var(--tx);cursor:pointer}
   .aviso .check input{width:auto;height:auto;margin:0;accent-color:var(--oro)}
+  .cadena{margin-top:10px;padding:9px 10px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:12px}
+  .cadena table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+  .cadena th{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;padding:2px 4px;text-align:center}
+  .cadena th:first-child,.cadena td:first-child{text-align:left}
+  .cadena th:last-child,.cadena td:last-child{text-align:right}
+  .cadena td{padding:6px 4px;border-top:1px solid var(--line);white-space:nowrap}
+  .cadena td.k{text-align:center;font-weight:700;color:var(--tx)}
+  .cadena td.cel{cursor:pointer}
+  .cadena td.cel small{color:var(--tx3);font-size:9.5px}
+  .cadena td.en-rango{background:rgba(231,181,77,.16);color:var(--oro);font-weight:700}
+  .cadena td.borde{background:rgba(231,181,77,.07)}
+  .cadena tr.atm td.k{color:var(--oro)}
   .prevbox{margin-top:10px;padding:11px 12px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:13px}
   .prevbox .fila{padding:2px 0}
   .hoja input.pin{text-align:center;letter-spacing:.3em;font-size:18px}
@@ -170,7 +182,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=25"></script>
-  <script src="./app/main.js?v=25"></script>
+  <script src="./config.js?v=26"></script>
+  <script src="./app/main.js?v=26"></script>
 </body>
 </html>

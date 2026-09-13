@@ -1508,6 +1508,7 @@ function abrirOrden(pre) {
     <div class="dos" id="oOptn">
       <div><label>Strike</label><input id="oStrike" type="number" inputmode="decimal" step="0.5" value="${pre.strike == null ? '' : esc(pre.strike)}" placeholder="ej. 230"></div>
       <div><label>Expira</label><input id="oExp" type="date" value="${esc(pre.expiracion || '')}"></div></div>
+    <div id="oCadena"></div>
     <div class="dos">
       <div><label>Cantidad</label><input id="oQty" type="number" inputmode="numeric" min="1" step="1" value="${esc(pre.cantidad || 1)}"></div>
       <div><label>Término</label><select id="oTerm">
@@ -1528,11 +1529,18 @@ function abrirOrden(pre) {
       <button class="pri" id="oBtnPrev" onclick="MZ.ordenPreview()">Vista previa en E*TRADE</button></div>
   </div>`;
   document.body.appendChild(m);
-  _ord = { pre, ctx: null, f: null, orden: null, previewIds: null, filaId: null, accountIdKey: null, caduca: 0, timer: null, avisos: [], avisosTxt: '' };
+  _ord = { pre, ctx: null, f: null, orden: null, previewIds: null, filaId: null, accountIdKey: null, caduca: 0, timer: null, avisos: [], avisosTxt: '',
+    cadena: null, cadenaSym: null, cadenaExp: null, cadenaClave: '', cadenaTs: 0, cadenaTimer: null, cadenaErr: null, cadenaCargando: false, cotiz: null, cotizTs: 0, vencs: [] };
   m.addEventListener('input', () => { ajustarFormOrden(); pintarAvisosOrden(); });
-  m.addEventListener('change', () => { ajustarFormOrden(); pintarAvisosOrden(); });
+  m.addEventListener('change', (e) => {
+    ajustarFormOrden(); pintarAvisosOrden();
+    const id = e && e.target && e.target.id;
+    if (id === 'oSym') _ord.cadenaSym = null;                      // símbolo nuevo → cotización y vencimientos de nuevo
+    if (['oSym', 'oTipo', 'oExp', 'oAcc'].includes(id)) cargarCadena(true);
+  });
   ajustarFormOrden(); pintarArmadoOrden();
-  cargarCtxOrden().then(() => pintarAvisosOrden());
+  cargarCtxOrden().then(() => { pintarAvisosOrden(); pintarCadena(); });
+  cargarCadena();
   setTimeout(() => { const i = $('#oSym'); if (i && !i.value) i.focus(); }, 60);
 }
 // Una vista previa que no se envía (caduca, se edita o se cierra) queda 'expirada'
@@ -1545,8 +1553,151 @@ function expirarPreviewHuerfana() {
 function cerrarOrden() {
   expirarPreviewHuerfana();
   if (_ord && _ord.timer) clearInterval(_ord.timer);
+  if (_ord && _ord.cadenaTimer) clearInterval(_ord.cadenaTimer);
   _ord = null;
   const m = $('#modalOrden'); if (m) m.remove();
+}
+
+// ---- Cadena de opciones EN VIVO (E*TRADE, con tu login diario) ----
+// Para elegir strike y precio sin salir de la Mesa: cotización del subyacente,
+// vencimientos y la cadena (bid/ask/delta de CALL y PUT) alrededor del spot,
+// con el rango óptimo de Sardiñas marcado. Tocar un precio llena la orden.
+// Todo son lecturas (/v1/market, GET) con el token del dispositivo.
+const CADENA_STRIKES = 14, CADENA_REFRESCO_MS = 15000;
+function parsearCotizacion(resp) {
+  const d = (resp && resp.data) || {}; const Q = d.QuoteResponse || d;
+  let q = Q.QuoteData || Q.quoteData || []; if (!Array.isArray(q)) q = [q];
+  const x = q[0] || {}; const a = x.All || x.Intraday || x.all || x.intraday || {};
+  return { last: num2(a.lastTrade), bid: num2(a.bid), ask: num2(a.ask),
+    estado: String(x.quoteStatus || Q.quoteStatus || '').toUpperCase(), hora: x.dateTime || null };
+}
+function parsearVencimientos(resp) {
+  const d = (resp && resp.data) || {}; const R = d.OptionExpireDateResponse || d;
+  let e = R.ExpirationDate || R.expirationDates || R.expirationDate || []; if (!Array.isArray(e)) e = [e];
+  return e.map(x => ({ y: Number(x.year), m: Number(x.month), d: Number(x.day), tipo: String(x.expiryType || '') }))
+    .filter(x => x.y && x.m && x.d)
+    .map(x => ({ ...x, ymd: `${x.y < 100 ? 2000 + x.y : x.y}-${String(x.m).padStart(2, '0')}-${String(x.d).padStart(2, '0')}` }));
+}
+function parsearCadena(resp) {
+  const d = (resp && resp.data) || {}; const R = d.OptionChainResponse || d;
+  let pares = R.OptionPair || R.optionPairs || R.optionPair || []; if (!Array.isArray(pares)) pares = [pares];
+  const lado = (o) => o ? { simbolo: o.symbol, strike: num2(o.strikePrice), bid: num2(o.bid), ask: num2(o.ask), last: num2(o.lastPrice),
+    vol: num2(o.volume), oi: num2(o.openInterest), delta: num2((o.OptionGreeks || o.optionGreeks || {}).delta), itm: !!o.inTheMoney } : null;
+  const filas = pares.map(p => {
+    const c = lado(p.Call || p.optioncall || p.call), u = lado(p.Put || p.optionPut || p.put);
+    return { strike: (c && c.strike != null) ? c.strike : (u ? u.strike : null), call: c, put: u };
+  }).filter(f => f.strike != null).sort((a, b) => a.strike - b.strike);
+  const sel = R.SelectedED || R.selectedED || {};
+  const exp = (sel.year && sel.month && sel.day) ? `${Number(sel.year) < 100 ? 2000 + Number(sel.year) : sel.year}-${String(sel.month).padStart(2, '0')}-${String(sel.day).padStart(2, '0')}` : null;
+  return { filas, estado: String(R.quoteType || '').toUpperCase(), near: num2(R.nearPrice), exp };
+}
+// ¿La prima (mid × 100 por contrato) cae en el rango óptimo del ticker?
+function enRangoCadena(o, rango) {
+  if (!o || !rango || rango.lo == null || rango.hi == null) return null;
+  const mid = (o.bid != null && o.ask != null) ? (o.bid + o.ask) / 2 : o.last;
+  if (mid == null) return null;
+  const c = mid * 100;
+  return (c >= rango.lo && c <= rango.hi) ? 'ok' : (c >= rango.lo * 0.85 && c <= rango.hi * 1.15) ? 'borde' : 'fuera';
+}
+async function cargarCadena(forzar) {
+  if (!_ord) return; const box = $('#oCadena'); if (!box) return;
+  const f = leerFormOrden();
+  if (f.tipo === 'EQ' || !f.symbol) { box.innerHTML = ''; return; }
+  const cr = etCreds();
+  if (!cr) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: conecta E*TRADE (Cuentas) para ver aquí los precios de calls y puts.</div>`; return; }
+  if (etDiaVencido()) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: la sesión de E*TRADE expiró a medianoche — reconecta en Cuentas.</div>`; return; }
+  const clave = f.symbol + '|' + (f.expiracion || '');
+  if (!forzar && _ord.cadena && _ord.cadenaClave === clave && Date.now() - _ord.cadenaTs < 5000) return;
+  if (_ord.cadenaCargando) return;
+  _ord.cadenaCargando = true;
+  if (!_ord.cadena || _ord.cadenaClave !== clave) box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: consultando E*TRADE…</div>`;
+  try {
+    const sym = f.symbol;
+    if (_ord.cadenaSym !== sym) {                       // símbolo nuevo: cotización + vencimientos
+      const [rq, rv] = await Promise.all([
+        etRead(cr, `/v1/market/quote/${encodeURIComponent(sym)}.json`, { detailFlag: 'INTRADAY' }),
+        etRead(cr, '/v1/market/optionexpiredate.json', { symbol: sym, expiryType: 'ALL' }),
+      ]);
+      if (rq.status === 401 || rv.status === 401) throw new Error('sesión de E*TRADE expirada — reconecta en Cuentas');
+      const e1 = etError(rq) || etError(rv); if (e1) throw new Error(e1);
+      _ord.cotiz = parsearCotizacion(rq); _ord.vencs = parsearVencimientos(rv); _ord.cadenaSym = sym;
+    } else if (forzar) {
+      const rq = await etRead(cr, `/v1/market/quote/${encodeURIComponent(sym)}.json`, { detailFlag: 'INTRADAY' });
+      if (rq.status < 400 && !etError(rq)) _ord.cotiz = parsearCotizacion(rq);
+    }
+    _ord.cotizTs = Date.now();
+    // vencimiento: el del formulario si existe en la lista; si no, el del rango vivo; si no, el más cercano
+    const vs = _ord.vencs || [], hoy = hoyNY();
+    const rango = (_ord.ctx && _ord.ctx.rangos[sym]) || null;
+    const exp = (f.expiracion && vs.some(v => v.ymd === f.expiracion)) ? f.expiracion
+      : (rango && rango.exp && vs.some(v => v.ymd === rango.exp)) ? rango.exp
+      : ((vs.find(v => v.ymd >= hoy) || vs[0] || {}).ymd || f.expiracion || null);
+    const ex = $('#oExp'); if (exp && ex && ex.value !== exp) ex.value = exp;
+    let cadena = null;
+    if (exp) {
+      const [y, m, d] = exp.split('-').map(Number);
+      const q = { symbol: sym, expiryYear: y, expiryMonth: m, expiryDay: d, noOfStrikes: CADENA_STRIKES,
+        includeWeekly: 'true', chainType: 'CALLPUT', priceType: 'ALL', skipAdjusted: 'true' };
+      const near = _ord.cotiz && (_ord.cotiz.last || _ord.cotiz.bid); if (near) q.strikePriceNear = near;
+      const rc = await etRead(cr, '/v1/market/optionchains.json', q);
+      if (rc.status === 401) throw new Error('sesión de E*TRADE expirada — reconecta en Cuentas');
+      const e2 = etError(rc); if (e2) throw new Error(e2);
+      cadena = parsearCadena(rc);
+    }
+    Object.assign(_ord, { cadena, cadenaExp: exp, cadenaClave: sym + '|' + (exp || ''), cadenaTs: Date.now(), cadenaErr: null });
+  } catch (e) { _ord.cadenaErr = String((e && e.message) || e); }
+  _ord.cadenaCargando = false;
+  pintarCadena();
+  // se refresca sola mientras el formulario esté abierto y sin vista previa en curso
+  if (!_ord.cadenaTimer) _ord.cadenaTimer = setInterval(() => { if (_ord && $('#modalOrden') && !_ord.orden) cargarCadena(true); }, CADENA_REFRESCO_MS);
+}
+function pintarCadena() {
+  if (!_ord) return; const box = $('#oCadena'); if (!box) return;
+  const f = leerFormOrden(); if (f.tipo === 'EQ' || !f.symbol) { box.innerHTML = ''; return; }
+  const c = _ord.cadena, q = _ord.cotiz || {}, err = _ord.cadenaErr;
+  const est = (c && c.estado) || q.estado || '';
+  const vivo = /REAL/i.test(est) ? '<span style="color:var(--verde)">en vivo</span>'
+    : est ? '<span style="color:var(--oro)">retrasado — activa cotizaciones en tiempo real en E*TRADE</span>' : '';
+  const vs = _ord.vencs || [];
+  const sel = vs.length ? `<select id="oCadExp" onchange="MZ.cadenaExp(this.value)" style="width:auto;padding:5px 7px;font-size:12px">${
+    vs.slice(0, 14).map(v => `<option value="${v.ymd}" ${v.ymd === _ord.cadenaExp ? 'selected' : ''}>${v.ymd.slice(5)}${/WEEK/i.test(v.tipo) ? ' s' : ''}</option>`).join('')}</select>` : '';
+  const rango = (_ord.ctx && _ord.ctx.rangos[f.symbol]) || null;
+  const rangoTxt = rango && rango.lo != null ? ` · rango óptimo $${Math.round(rango.lo)}–$${Math.round(rango.hi)}` : '';
+  let h = `<div class="cadena"><div class="fila" style="margin-bottom:4px">
+    <span class="mut"><b style="color:var(--tx)">${esc(f.symbol)}</b> ${q.last != null ? '$' + q.last.toFixed(2) : ''} ${(q.bid != null && q.ask != null) ? `<span class="fresco">${q.bid.toFixed(2)}/${q.ask.toFixed(2)}</span>` : ''} ${vivo}</span>
+    <span style="display:flex;gap:8px;align-items:center">${sel}<a href="#" onclick="MZ.cadenaRefrescar();return false" style="font-size:13px">↻</a></span></div>`;
+  if (err) h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: ${esc(err)}</div>`;
+  else if (!c) h += `<div class="mut" style="font-size:11.5px">consultando E*TRADE…</div>`;
+  else if (!c.filas.length) h += `<div class="mut" style="font-size:11.5px">E*TRADE no devolvió strikes para ese vencimiento.</div>`;
+  else {
+    const spot = q.last != null ? q.last : c.near;
+    const dist = spot != null ? Math.min(...c.filas.map(x => Math.abs(x.strike - spot))) : null;
+    const celda = (o, lado, strike) => {
+      if (!o) return '<td></td>';
+      const r = enRangoCadena(o, rango);
+      const cls = r === 'ok' ? ' en-rango' : r === 'borde' ? ' borde' : '';
+      const precio = (o.bid != null && o.ask != null) ? `${o.bid.toFixed(2)}/${o.ask.toFixed(2)}` : (o.last != null ? o.last.toFixed(2) : '—');
+      const dl = o.delta != null ? ` <small>δ${Math.abs(o.delta).toFixed(2)}</small>` : '';
+      return `<td class="cel${cls}" onclick="MZ.cadenaElegir('${lado}',${strike},${o.ask != null ? o.ask : 'null'},${o.bid != null ? o.bid : 'null'})">${precio}${dl}</td>`;
+    };
+    h += `<table><thead><tr><th>PUT bid/ask</th><th>strike</th><th>CALL bid/ask</th></tr></thead><tbody>` +
+      c.filas.map(r => `<tr class="${dist != null && Math.abs(r.strike - spot) === dist ? 'atm' : ''}">${celda(r.put, 'PUT', r.strike)}<td class="k">${r.strike}</td>${celda(r.call, 'CALL', r.strike)}</tr>`).join('') +
+      `</tbody></table><div class="fresco" style="margin-top:4px">toca un precio para llenar la orden · vence ${esc(_ord.cadenaExp || '')}${rangoTxt} · <span style="color:var(--oro)">■</span> prima dentro del rango · ${esc(horaNY(_ord.cadenaTs))}</div>`;
+  }
+  box.innerHTML = h + '</div>';
+}
+function cadenaElegir(lado, strike, ask, bid) {
+  if (!_ord) return;
+  const f = leerFormOrden();
+  const tipo = $('#oTipo'), st = $('#oStrike'), ex = $('#oExp'), pt = $('#oPt'), pr = $('#oPrecio');
+  if (tipo && (lado === 'CALL' || lado === 'PUT')) tipo.value = lado;
+  if (st) st.value = strike;
+  if (ex && _ord.cadenaExp) ex.value = _ord.cadenaExp;
+  if (pt && !['LIMIT', 'STOP', 'TRAILING_STOP_PRCT'].includes(pt.value)) pt.value = 'LIMIT';
+  // compra: al ask (se llena); venta: al bid — editable después
+  const p = f.accion === 'venta' ? (bid != null ? bid : ask) : (ask != null ? ask : bid);
+  if (pr && pt && pt.value === 'LIMIT' && p != null) pr.value = Number(p).toFixed(2);
+  ajustarFormOrden(); pintarAvisosOrden(); pintarCadena();
 }
 // Contexto de doctrina (rango por ticker, cupo semanal, saldo, hora): una consulta.
 async function cargarCtxOrden() {
@@ -1899,6 +2050,8 @@ async function ordenesActualizar() {
 }
 window.MZ = Object.assign(window.MZ || {}, {
   abrirOrden, cerrarOrden, ordenPreview, ordenPlace, ordenEditar, cancelarOrden, ordenesActualizar,
+  cadenaElegir, cadenaRefrescar: () => cargarCadena(true),
+  cadenaExp: (v) => { const ex = $('#oExp'); if (ex) ex.value = v; if (_ord) _ord.cadenaExp = v; cargarCadena(true); },
   pinOrdenes: async () => { await modalPinOrdenes(pinHash() ? 'cambiar' : 'crear'); pintarOrdenesCuenta(); },
   armar: async () => { if (armadoHasta()) desarmar(); else await pedirPin(); pintarOrdenesCuenta(); },
 });
