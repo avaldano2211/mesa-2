@@ -122,6 +122,17 @@
   .cfg{background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:999px;
     width:32px;height:32px;font-size:15px;line-height:1;cursor:pointer;flex:none;padding:0}
   .cfg:active{background:var(--card)}
+  /* órdenes E*TRADE */
+  .aviso{margin-top:10px;padding:10px 12px;border-radius:11px;background:rgba(231,181,77,.12);
+    border:1px solid rgba(231,181,77,.35);color:var(--oro);font-size:12.5px;line-height:1.45}
+  .aviso .check{display:flex;gap:8px;align-items:center;margin:8px 0 0;font-size:13px;font-weight:700;
+    letter-spacing:0;color:var(--tx);cursor:pointer}
+  .aviso .check input{width:auto;height:auto;margin:0;accent-color:var(--oro)}
+  .prevbox{margin-top:10px;padding:11px 12px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:13px}
+  .prevbox .fila{padding:2px 0}
+  .hoja input.pin{text-align:center;letter-spacing:.3em;font-size:18px}
+  .hoja input:disabled,.hoja select:disabled{opacity:.55}
+  .sec a{color:var(--oro);text-decoration:none;font-size:11px;letter-spacing:0}
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
@@ -159,7 +170,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=23"></script>
-  <script src="./app/main.js?v=23"></script>
+  <script src="./config.js?v=24"></script>
+  <script src="./app/main.js?v=24"></script>
 </body>
 </html>

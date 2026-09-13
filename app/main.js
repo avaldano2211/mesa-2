@@ -242,10 +242,11 @@ function lunesNY() {
 
 async function vistaCopiloto() {
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
-  const [sen, pos, bt] = await Promise.all([
+  const [sen, pos, bt, ord] = await Promise.all([
     sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }),
     sb.from('posiciones').select('*').order('abierta_at', { ascending: false }),
     sb.from('broker_trades').select('*'),
+    sb.from('ordenes').select('*').order('creado_at', { ascending: false }).limit(10),
   ]);
   const senales = sen.data || [];
   const posic = pos.data || [];
@@ -269,16 +270,21 @@ async function vistaCopiloto() {
     h += `<div class="card vacio">Sin señales todavía hoy.<br>E5 evalúa la apertura de las 9:30 ET.</div>`;
   }
 
-  // registrar a mano (útil siempre)
-  h += `<button class="pri" style="width:100%" onclick="MZ.abrirFill()">+ Registrar una operación</button>`;
+  // registrar a mano (útil siempre) · nueva orden en E*TRADE (vista previa primero)
+  h += `<div class="dos">
+    <button class="btnsec" style="padding:12px" onclick="MZ.abrirFill()">+ Registrar una operación</button>
+    <button class="pri" onclick="MZ.abrirOrden({proposito:'entrada'})">+ Nueva orden E*TRADE</button></div>`;
 
   // posiciones abiertas
   h += `<div class="sec">POSICIONES ABIERTAS</div>`;
   if (abiertas.length) {
-    h += abiertas.map(tarjetaPosicion).join('');
+    h += abiertas.map(p => tarjetaPosicion(p)).join('');
   } else {
     h += `<div class="card vacio">Sin posiciones abiertas.</div>`;
   }
+
+  // órdenes anotadas en E*TRADE (últimas 10)
+  h += seccionOrdenes(ord.data || []);
   $('#vista').innerHTML = h;
 }
 
@@ -290,8 +296,12 @@ function tarjetaSenal(s, posic) {
     <div class="mut" style="margin-top:5px">${esc(s.motivo || '')}</div>
     ${s.instruccion_gtc ? `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${esc(s.instruccion_gtc)}</div>` : ''}
     ${yaReg ? `<div class="mut" style="margin-top:8px;color:var(--verde)">✓ ya registraste tu fill</div>`
-      : `<button class="pri" style="width:100%;margin-top:9px" onclick='MZ.abrirFill(${JSON.stringify({
-          senal_id: s.id, symbol: s.symbol, direccion: s.direccion }).replace(/'/g, "&#39;")})'>Registrar mi fill</button>`}
+      : `<div class="dos" style="margin-top:9px">
+        <button class="btnsec" onclick='MZ.abrirFill(${JSON.stringify({
+          senal_id: s.id, symbol: s.symbol, direccion: s.direccion }).replace(/'/g, "&#39;")})'>Registrar mi fill</button>
+        <button class="pri" onclick='MZ.abrirOrden(${JSON.stringify({
+          senal_id: s.id, symbol: s.symbol, direccion: s.direccion, proposito: 'entrada',
+          strike: s.strike == null ? undefined : s.strike, expiracion: s.expiracion || undefined }).replace(/'/g, "&#39;")})'>Operar en E*TRADE</button></div>`}
   </div>`;
 }
 
@@ -331,7 +341,19 @@ function tarjetaPosicion(p) {
     <div class="fila" style="margin-top:9px;gap:8px">
       <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
       <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button></div>
+    ${(!p.broker || p.broker === 'etrade') ? `<div class="fila" style="margin-top:8px;gap:8px">
+      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45)" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>GTC +${PLAN_PCT}% ($${esc(gtcDe(Number(p.prima_fill)).toFixed(2))})</button>
+      <button class="btnsec" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_stop')).replace(/'/g, "&#39;")})'>Trailing stop</button></div>` : ''}
   </div>`;
+}
+// Prefill de una orden de SALIDA (SELL_CLOSE) desde una posición abierta.
+function preSalida(p, proposito) {
+  const gtc = proposito === 'salida_gtc';
+  return { proposito, posicion_id: p.id, symbol: p.symbol, direccion: p.direccion,
+    strike: p.strike == null ? undefined : Number(p.strike), expiracion: p.expiracion || undefined,
+    cantidad: Number(p.contratos) || 1, accion: 'venta', orderTerm: 'GOOD_UNTIL_CANCEL',
+    priceType: gtc ? 'LIMIT' : 'TRAILING_STOP_PRCT',
+    limitPrice: gtc ? gtcDe(Number(p.prima_fill)) : undefined };
 }
 
 // ---- modal de registro de fill ----
@@ -465,11 +487,19 @@ function abrirCuenta() {
     <div class="fila" style="align-items:flex-start">
       <div class="mut" id="avEstado" style="flex:1">consultando…</div>
       <button class="btnsec oculto" id="avBtn" style="flex:none;padding:8px 14px" onclick="MZ.avisos()">Activar</button></div>
+    <div class="sec" style="margin-top:14px">ÓRDENES</div>
+    <div class="fila" style="align-items:flex-start">
+      <div class="mut" id="ordPinEstado" style="flex:1">…</div>
+      <button class="btnsec" id="ordPinBtn" style="flex:none;padding:8px 14px" onclick="MZ.pinOrdenes()">Crear PIN</button></div>
+    <div class="fila" style="align-items:flex-start;margin-top:6px">
+      <div class="mut" id="ordArmEstado" style="flex:1">desarmado</div>
+      <button class="btnsec oculto" id="ordArmBtn" style="flex:none;padding:8px 14px" onclick="MZ.armar()">Armar</button></div>
     <button class="btnsec" style="width:100%;margin-top:12px" onclick="MZ.salir()">Salir de la Mesa</button>
   </div>`;
   document.body.appendChild(m);
   diagSesion().then(t => { const d = $('#cpDiag'); if (d) d.textContent = t; });
   pintarAvisos();
+  pintarOrdenesCuenta();
   setTimeout(() => { const i = $('#cpActual'); if (i) i.focus(); }, 60);
 }
 
@@ -718,7 +748,7 @@ const BROKERS = [
 // Opción B: el proxy del VPS solo FIRMA con el secreto de app; el token con
 // poder (oauth_token + secret) se guarda aquí en localStorage y jamás se sube a
 // la nube. E*TRADE lo caduca cada medianoche ET → login casi diario, con PIN.
-const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2', dia: 'mz_et_dia' };
+const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2', dia: 'mz_et_dia', acct: 'mz_et_acct' };
 const num2 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // El token de E*TRADE muere a medianoche ET: si el login fue otro día NY, está
 // expirado seguro y no vale la pena molestar al proxy (mz_et_dia = día del login).
@@ -1183,6 +1213,632 @@ window.MZ = Object.assign(window.MZ || {}, {
   pinCancelar: () => { const m = $('#modalPin'); if (m) m.remove(); },
   etSync: () => etSyncAhora(),
   etOlvidar: () => { etOlvidar(); toast('E*TRADE olvidada en este equipo'); ruta(); },
+});
+
+// ---------- Órdenes E*TRADE ----------
+// La app ARMA la orden y el proxy del VPS solo la FIRMA; E*TRADE la recibe
+// únicamente cuando el usuario toca «Enviar» tras ver la vista previa (que vale
+// 3 min). Ningún código coloca órdenes solo. Las reglas de doctrina AVISAN (el
+// override queda anotado en ordenes.overrides), jamás bloquean; los únicos
+// candados duros son de seguridad: PIN por dispositivo + guardarraíles del proxy.
+const ORD_K = { pin: 'mz_pin', armado: 'mz_armado_hasta' };
+const ARMADO_MIN = 15;          // el PIN arma este dispositivo 15 min
+const PREVIEW_SEG = 180;        // la vista previa de E*TRADE caduca a los 3 min
+const PRICE_TYPES = ['LIMIT', 'MARKET', 'STOP', 'TRAILING_STOP_PRCT'];
+const PROPOSITOS = ['entrada', 'salida_gtc', 'salida_stop', 'cancelar', 'otro'];
+
+// clientOrderId de E*TRADE: ≤20 alfanumérico y único ('mz' + tiempo base36 + 4 al azar).
+function clientOrderIdNuevo(ahora) {
+  const t = (ahora == null ? Date.now() : Number(ahora)).toString(36);
+  const r = Math.floor(Math.random() * 1679616).toString(36).padStart(4, '0');
+  return ('mz' + t + r).replace(/[^a-z0-9]/gi, '').slice(0, 20);
+}
+
+// Formulario f: {symbol, tipo:'CALL'|'PUT'|'EQ', accion:'compra'|'venta', strike,
+// expiracion:'YYYY-MM-DD', cantidad, priceType, limitPrice, stopPrice,
+// offsetValue, orderTerm:'DAY'|'GTC'}. Devuelve el texto del error o null.
+function validarOrden(f) {
+  f = f || {};
+  const sym = String(f.symbol || '').trim().toUpperCase();
+  if (!/^[A-Z.]{1,6}$/.test(sym)) return 'Ticker inválido (1 a 6 letras).';
+  if (!['CALL', 'PUT', 'EQ'].includes(f.tipo)) return 'Tipo inválido.';
+  if (!['compra', 'venta'].includes(f.accion)) return 'Acción inválida.';
+  const qty = Number(f.cantidad);
+  if (!(Number.isInteger(qty) && qty > 0)) return 'La cantidad es un entero mayor que 0.';
+  if (f.tipo !== 'EQ') {
+    if (!(Number(f.strike) > 0)) return 'Falta el strike.';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(f.expiracion || ''))) return 'Falta la expiración.';
+  }
+  if (!PRICE_TYPES.includes(f.priceType)) return 'Tipo de precio inválido.';
+  if (f.priceType === 'LIMIT' && !(Number(f.limitPrice) > 0)) return 'Falta el precio límite.';
+  if (f.priceType === 'STOP' && !(Number(f.stopPrice) > 0)) return 'Falta el precio stop.';
+  if (f.priceType === 'TRAILING_STOP_PRCT' && !(Number(f.offsetValue) > 0 && Number(f.offsetValue) < 100)) return 'El trailing stop es un % entre 0 y 100.';
+  if (!['DAY', 'GTC'].includes(f.orderTerm)) return 'Término inválido.';
+  return null;
+}
+
+// Construye la 'orden' EXACTA del contrato app↔proxy (forma interna de E*TRADE).
+function construirOrden(f) {
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const esEq = f.tipo === 'EQ';
+  const venta = f.accion === 'venta';
+  const sym = String(f.symbol || '').trim().toUpperCase();
+  const o = {
+    allOrNone: false,
+    priceType: f.priceType,
+    orderTerm: f.orderTerm === 'GTC' ? 'GOOD_UNTIL_CANCEL' : 'GOOD_FOR_DAY',
+    marketSession: 'REGULAR',
+  };
+  if (f.priceType === 'LIMIT') o.limitPrice = n(f.limitPrice);
+  if (f.priceType === 'STOP') o.stopPrice = n(f.stopPrice);
+  if (f.priceType === 'STOP_LIMIT') { o.stopPrice = n(f.stopPrice); o.stopLimitPrice = n(f.limitPrice); }
+  if (f.priceType === 'TRAILING_STOP_PRCT' || f.priceType === 'TRAILING_STOP_CNST') {
+    o.offsetType = f.priceType; o.offsetValue = n(f.offsetValue);
+  }
+  let Product;
+  if (esEq) {
+    Product = { securityType: 'EQ', symbol: sym };
+  } else {
+    const [y, m, d] = String(f.expiracion || '').split('-').map(Number);
+    Product = { securityType: 'OPTN', symbol: sym, callPut: f.tipo === 'PUT' ? 'PUT' : 'CALL',
+      expiryYear: y, expiryMonth: m, expiryDay: d, strikePrice: n(f.strike) };
+  }
+  o.Instrument = [{ Product,
+    orderAction: esEq ? (venta ? 'SELL' : 'BUY') : (venta ? 'SELL_CLOSE' : 'BUY_OPEN'),
+    quantityType: 'QUANTITY', quantity: Math.floor(Number(f.cantidad)) }];
+  return { orderType: esEq ? 'EQ' : 'OPTN', clientOrderId: f.clientOrderId || clientOrderIdNuevo(), Order: [o] };
+}
+
+// Veredicto de la prima frente al rango óptimo del ticker (mismo criterio que el
+// registro del fill): 'ok' | 'aviso' (en el borde, 15 %) | 'alto' (FUERA) | null.
+function semaforoRango(prima, rango) {
+  if (!rango || rango.lo == null || rango.hi == null || !(prima > 0)) return null;
+  const lo = Math.round(rango.lo), hi = Math.round(rango.hi), cent = prima * 100, borde = (hi - lo) * 0.15;
+  if (cent < lo - borde || cent > hi + borde) return 'alto';
+  if (cent < lo || cent > hi) return 'aviso';
+  return 'ok';
+}
+
+// Avisos de doctrina EN VIVO (amarillos; nunca bloquean). ctx: {rango, opsSemana,
+// saldo, antes1030}. La regla del ticker aplica a toda orden; las demás solo a
+// ENTRADAS (una salida no abre operación ni gasta cupo).
+function avisosOrden(f, ctx) {
+  f = f || {}; ctx = ctx || {};
+  const av = [];
+  const sym = String(f.symbol || '').trim().toUpperCase();
+  const esEntrada = f.accion !== 'venta';
+  const esOpt = f.tipo !== 'EQ';
+  const qty = Number(f.cantidad) || 0;
+  const precio = f.priceType === 'LIMIT' ? Number(f.limitPrice) : null;
+  if (sym && !TICKERS.includes(sym)) av.push(`${sym} no está en tus 4 tickers (${TICKERS.join(', ')})`);
+  if (!esEntrada) return av;
+  if (esOpt && precio > 0 && ctx.rango && ctx.rango.lo != null && semaforoRango(precio, ctx.rango) === 'alto') {
+    av.push(`Prima $${(precio * 100).toFixed(0)} FUERA del rango óptimo $${Math.round(ctx.rango.lo)}–$${Math.round(ctx.rango.hi)} — así se perdió en agosto`);
+  }
+  const ops = Number(ctx.opsSemana) || 0;
+  if (ops >= OPS_SEMANA) av.push(`Sería la ${ops + 1}ª operación de la semana (plan: ${OPS_SEMANA})`);
+  const saldo = Number(ctx.saldo) || 0;
+  if (precio > 0 && qty > 0 && saldo > 0) {
+    const costo = precio * qty * (esOpt ? 100 : 1), tope = saldo * TAMANO_PCT / 100;
+    if (costo > tope) av.push(`Costo ${usd(costo)}: más del ${TAMANO_PCT}% de la cuenta (${usd(tope)})`);
+  }
+  if (ctx.antes1030) av.push('Antes de las 10:30 ET: la doctrina espera a que el mercado defina');
+  return av;
+}
+function requiereOverride(avisos) { return Array.isArray(avisos) && avisos.length > 0; }
+
+// ¿Estamos antes de las 10:30 ET en día de mercado? Manda MERCADO.payload.regla_1030
+// si es de HOY (NY); si no, el reloj NY y día hábil (sin calendario de festivos).
+function antesDe1030NY(merc) {
+  const p = merc && merc.payload;
+  if (p && p.regla_1030 != null && (!p.fecha_ny || p.fecha_ny === hoyNY())) return !!p.regla_1030;
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  const v = (t) => (f.find(x => x.type === t) || {}).value;
+  if (v('weekday') === 'Sat' || v('weekday') === 'Sun') return false;
+  return Number(v('hour')) * 60 + Number(v('minute')) < 630;
+}
+function horaNY(ms) {
+  return new Intl.DateTimeFormat('es', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms));
+}
+// Recorta un JSON a `max` caracteres para guardarlo en jsonb sin inflar la tabla.
+function recortarJson(o, max) {
+  max = max || 4096;
+  let s; try { s = JSON.stringify(o == null ? {} : o); } catch (_) { s = '{}'; }
+  if (s.length <= max) { try { return JSON.parse(s); } catch (_) { return {}; } }
+  return { _recortado: true, bytes: s.length, texto: s.slice(0, max - 80) };
+}
+// Fila de 'ordenes' a partir del formulario y de la 'orden' construida.
+function filaOrdenDe(f, orden, extra) {
+  const o = orden.Order[0], ins = o.Instrument[0], pr = ins.Product;
+  return Object.assign({
+    broker: 'etrade', client_order_id: orden.clientOrderId, symbol: pr.symbol,
+    security_type: orden.orderType, direccion: pr.callPut || null,
+    strike: pr.strikePrice == null ? null : pr.strikePrice,
+    expiracion: orden.orderType === 'EQ' ? null : (f.expiracion || null),
+    accion: ins.orderAction, cantidad: ins.quantity, price_type: o.priceType,
+    limit_price: o.limitPrice == null ? null : o.limitPrice,
+    stop_price: o.stopPrice == null ? null : o.stopPrice,
+    offset_value: o.offsetValue == null ? null : o.offsetValue,
+    order_term: o.orderTerm,
+  }, extra || {});
+}
+function propositoDe(f) {
+  if (f.accion !== 'venta') return 'entrada';
+  if (f.priceType === 'LIMIT') return 'salida_gtc';
+  if (f.priceType === 'STOP' || f.priceType === 'TRAILING_STOP_PRCT') return 'salida_stop';
+  return 'otro';
+}
+// Mensaje claro de un fallo del proxy o de E*TRADE (jamás inventar éxito).
+function mensajeError(r) {
+  if (!r) return 'sin respuesta del proxy';
+  const em = etError(r);
+  if (em) return em;
+  if (r.status === 404) return 'El proxy aún no tiene esta ruta de órdenes (despliegue pendiente en el VPS).';
+  if (r.status === 403) return 'Órdenes desactivadas en el proxy.';
+  if (r.status >= 400) return 'HTTP ' + r.status;
+  return null;
+}
+
+// ---- PIN y armado (por dispositivo; hash SHA-256 en localStorage) ----
+async function sha256Hex(txt) {
+  if (!(window.crypto && crypto.subtle)) throw new Error('este navegador no soporta el PIN (contexto inseguro)');
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(txt)));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function pinHash() { try { return localStorage.getItem(ORD_K.pin) || ''; } catch (_) { return ''; } }
+function armadoHasta() { try { const n = Number(localStorage.getItem(ORD_K.armado)); return n > Date.now() ? n : 0; } catch (_) { return 0; } }
+function armar() { try { localStorage.setItem(ORD_K.armado, String(Date.now() + ARMADO_MIN * 60000)); } catch (_) {} }
+function desarmar() { try { localStorage.removeItem(ORD_K.armado); } catch (_) {} }
+const pinValido = (p) => /^\d{4,6}$/.test(String(p || ''));
+
+// Modal de PIN: 'crear' (dos campos), 'cambiar' (actual + nuevo) o 'pedir' (uno).
+// Devuelve Promise<boolean>; al validar (crear/pedir) arma el dispositivo.
+function modalPinOrdenes(modo) {
+  return new Promise((resolve) => {
+    const prev = $('#modalPinOrd'); if (prev) prev.remove();
+    const crear = modo === 'crear' || !pinHash();
+    const cambiar = !crear && modo === 'cambiar';
+    const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalPinOrd'; m.style.zIndex = 55;
+    m.innerHTML = `<div class="hoja">
+      <h3 style="margin:0 0 2px">${crear ? 'Crea tu PIN de órdenes' : cambiar ? 'Cambiar PIN de órdenes' : 'PIN de órdenes'}</h3>
+      <div class="mut" style="margin-bottom:6px">${crear
+        ? `De 4 a 6 dígitos. Se guarda solo en este dispositivo (hash) y arma las órdenes ${ARMADO_MIN} min.`
+        : cambiar ? 'Pon el PIN actual y el nuevo.' : `Arma este dispositivo ${ARMADO_MIN} min para operar en E*TRADE.`}</div>
+      ${!crear ? `<label>${cambiar ? 'PIN actual' : 'PIN'}</label><input id="poActual" class="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6">` : ''}
+      ${crear || cambiar ? `<label>${cambiar ? 'PIN nuevo' : 'PIN'}</label><input id="poNuevo" class="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6">
+        <label>Repite el PIN</label><input id="poRep" class="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6">` : ''}
+      <div class="err" id="poErr"></div>
+      <div class="dos" style="margin-top:6px">
+        <button class="btnsec" id="poCancel">Cancelar</button>
+        <button class="pri" id="poOk">${crear ? 'Crear y armar' : cambiar ? 'Cambiar' : 'Armar'}</button></div>
+    </div>`;
+    document.body.appendChild(m);
+    const fin = (v) => { m.remove(); resolve(v); };
+    m.querySelector('#poCancel').onclick = () => fin(false);
+    const ok = async () => {
+      const err = m.querySelector('#poErr');
+      try {
+        if (!crear) {
+          const h = await sha256Hex(m.querySelector('#poActual').value.trim());
+          if (h !== pinHash()) { err.textContent = 'PIN incorrecto.'; return; }
+        }
+        if (crear || cambiar) {
+          const a = m.querySelector('#poNuevo').value.trim(), b = m.querySelector('#poRep').value.trim();
+          if (!pinValido(a)) { err.textContent = 'El PIN es de 4 a 6 dígitos.'; return; }
+          if (a !== b) { err.textContent = 'Los dos PIN no coinciden.'; return; }
+          localStorage.setItem(ORD_K.pin, await sha256Hex(a));
+        }
+        if (!cambiar) armar();
+        fin(true);
+      } catch (e) { err.textContent = 'No pude guardar el PIN: ' + ((e && e.message) || e); }
+    };
+    m.querySelector('#poOk').onclick = ok;
+    m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
+    setTimeout(() => { const i = m.querySelector('input'); if (i) i.focus(); }, 60);
+  });
+}
+// Si el dispositivo no está armado, pide el PIN (sin PIN configurado → lo crea).
+async function pedirPin() {
+  if (armadoHasta()) return true;
+  return modalPinOrdenes(pinHash() ? 'pedir' : 'crear');
+}
+function pintarOrdenesCuenta() {
+  const e = $('#ordPinEstado'), b = $('#ordPinBtn'), ae = $('#ordArmEstado'), ab = $('#ordArmBtn');
+  if (!e || !b || !ae || !ab) return;
+  const hay = !!pinHash(), h = armadoHasta();
+  e.textContent = hay ? 'PIN de órdenes configurado en este dispositivo.' : 'Sin PIN de órdenes. Créalo para poder operar desde aquí.';
+  b.textContent = hay ? 'Cambiar PIN' : 'Crear PIN';
+  ae.textContent = h ? 'armado hasta ' + horaNY(h) + ' NY' : 'desarmado';
+  ae.style.color = h ? 'var(--verde)' : '';
+  ab.textContent = h ? 'Desarmar' : 'Armar';
+  ab.classList.toggle('oculto', !hay);
+}
+
+// ---- accountIdKey (cache por dispositivo) y POST firmado con auto-renew ----
+async function etCuentaKey(cr) {
+  try { const k = localStorage.getItem(ET_K.acct); if (k) return k; } catch (_) {}
+  const lst = await etRead(cr, '/v1/accounts/list.json');
+  if (lst.status === 401) throw new Error('La sesión de E*TRADE expiró. Reconecta en Cuentas → E*TRADE.');
+  const em = etError(lst); if (em) throw new Error('E*TRADE: ' + em);
+  const acc = (((lst.data || {}).AccountListResponse || {}).Accounts || {}).Account || [];
+  const arr = Array.isArray(acc) ? acc : [acc];
+  const a = arr.find(x => String(x.accountStatus || '').toUpperCase() !== 'CLOSED') || arr[0];
+  if (!a || !a.accountIdKey) throw new Error('E*TRADE no devolvió ninguna cuenta.');
+  try { localStorage.setItem(ET_K.acct, a.accountIdKey); } catch (_) {}
+  return a.accountIdKey;
+}
+async function etPost(cr, path, body) {
+  const llamar = async () => {
+    try { return await etProxy(path, { ...cr, ...body }); }
+    catch (_) { throw new Error('No pude contactar el proxy (¿Funnel activo?).'); }
+  };
+  let r = await llamar();
+  if (r.status === 401) {
+    try { await etProxy('/etrade/renew', { token: cr.token, token_secret: cr.token_secret }); } catch (_) {}
+    r = await llamar();
+  }
+  return r;
+}
+
+// ---- modal «Orden E*TRADE» ----
+let _ord = null;   // estado del modal: {pre, ctx, f, orden, previewIds, filaId, accountIdKey, caduca, timer, avisos}
+function abrirOrden(pre) {
+  pre = pre || {};
+  cerrarOrden();
+  const tipo = pre.security_type === 'EQ' ? 'EQ' : pre.direccion === 'PUT' ? 'PUT' : 'CALL';
+  const venta = pre.accion === 'venta' || /^salida/.test(pre.proposito || '');
+  const pt = PRICE_TYPES.includes(pre.priceType) ? pre.priceType : 'LIMIT';
+  const gtc = pre.orderTerm === 'GOOD_UNTIL_CANCEL' || pre.orderTerm === 'GTC';
+  const precio0 = pt === 'LIMIT' ? pre.limitPrice : pt === 'STOP' ? pre.stopPrice : pt === 'TRAILING_STOP_PRCT' ? pre.offsetValue : '';
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalOrden';
+  m.innerHTML = `<div class="hoja">
+    <div class="fila"><h3 style="margin:0">Orden E*TRADE</h3><span class="fresco" id="oArm"></span></div>
+    <div class="mut" style="margin-bottom:4px">Primero la vista previa de E*TRADE; nada se envía sin tu toque.</div>
+    <label>Ticker</label>
+    <input id="oSym" list="oSyms" value="${esc(pre.symbol || '')}" placeholder="AAPL" autocapitalize="characters" autocomplete="off" spellcheck="false" style="text-transform:uppercase">
+    <datalist id="oSyms">${TICKERS.map(t => `<option value="${t}">`).join('')}</datalist>
+    <div class="dos">
+      <div><label>Tipo</label><select id="oTipo">
+        <option value="CALL" ${tipo === 'CALL' ? 'selected' : ''}>Opción CALL</option>
+        <option value="PUT" ${tipo === 'PUT' ? 'selected' : ''}>Opción PUT</option>
+        <option value="EQ" ${tipo === 'EQ' ? 'selected' : ''}>Acción</option></select></div>
+      <div><label>Acción</label><select id="oAcc">
+        <option value="compra" ${!venta ? 'selected' : ''}>Comprar (abrir)</option>
+        <option value="venta" ${venta ? 'selected' : ''}>Vender (cerrar)</option></select></div></div>
+    <div class="dos" id="oOptn">
+      <div><label>Strike</label><input id="oStrike" type="number" inputmode="decimal" step="0.5" value="${pre.strike == null ? '' : esc(pre.strike)}" placeholder="ej. 230"></div>
+      <div><label>Expira</label><input id="oExp" type="date" value="${esc(pre.expiracion || '')}"></div></div>
+    <div class="dos">
+      <div><label>Cantidad</label><input id="oQty" type="number" inputmode="numeric" min="1" step="1" value="${esc(pre.cantidad || 1)}"></div>
+      <div><label>Término</label><select id="oTerm">
+        <option value="DAY" ${!gtc ? 'selected' : ''}>DAY (hoy)</option>
+        <option value="GTC" ${gtc ? 'selected' : ''}>GTC</option></select></div></div>
+    <div class="dos">
+      <div><label>Precio</label><select id="oPt">
+        <option value="LIMIT" ${pt === 'LIMIT' ? 'selected' : ''}>Límite</option>
+        <option value="MARKET" ${pt === 'MARKET' ? 'selected' : ''}>Mercado</option>
+        <option value="STOP" ${pt === 'STOP' ? 'selected' : ''}>Stop</option>
+        <option value="TRAILING_STOP_PRCT" ${pt === 'TRAILING_STOP_PRCT' ? 'selected' : ''}>Trailing stop %</option></select></div>
+      <div id="oPrecioWrap"><label id="oPrecioLbl">Límite</label><input id="oPrecio" type="number" inputmode="decimal" step="0.01" value="${precio0 == null ? '' : esc(precio0)}" placeholder="ej. 0.98"></div></div>
+    <div id="oAvisos"></div>
+    <div id="oPrev"></div>
+    <div class="err" id="oErr" style="text-align:left"></div>
+    <div class="dos" style="margin-top:6px">
+      <button class="btnsec" onclick="MZ.cerrarOrden()">Cancelar</button>
+      <button class="pri" id="oBtnPrev" onclick="MZ.ordenPreview()">Vista previa en E*TRADE</button></div>
+  </div>`;
+  document.body.appendChild(m);
+  _ord = { pre, ctx: null, f: null, orden: null, previewIds: null, filaId: null, accountIdKey: null, caduca: 0, timer: null, avisos: [], avisosTxt: '' };
+  m.addEventListener('input', () => { ajustarFormOrden(); pintarAvisosOrden(); });
+  m.addEventListener('change', () => { ajustarFormOrden(); pintarAvisosOrden(); });
+  ajustarFormOrden(); pintarArmadoOrden();
+  cargarCtxOrden().then(() => pintarAvisosOrden());
+  setTimeout(() => { const i = $('#oSym'); if (i && !i.value) i.focus(); }, 60);
+}
+function cerrarOrden() {
+  if (_ord && _ord.timer) clearInterval(_ord.timer);
+  _ord = null;
+  const m = $('#modalOrden'); if (m) m.remove();
+}
+// Contexto de doctrina (rango por ticker, cupo semanal, saldo, hora): una consulta.
+async function cargarCtxOrden() {
+  const [te, pos, bt, cs] = await Promise.all([
+    sb.from('ticker_estado').select('symbol,payload'),
+    sb.from('posiciones').select('*'),
+    sb.from('broker_trades').select('*'),
+    sb.from('cuenta_snapshots').select('broker,saldo_neto'),
+  ]);
+  const est = te.data || [];
+  const merc = est.find(e => e.symbol === 'MERCADO');
+  const rangos = {};
+  est.forEach(e => { rangos[e.symbol] = e.payload && e.payload.rango_vivo ? e.payload.rango_vivo : null; });
+  const lun = lunesNY();
+  const opsSemana = unirOperaciones(pos.data || [], bt.data || []).ops.filter(p => (p.abierta_fecha_ny || '') >= lun).length;
+  const saldo = (cs.data || []).reduce((s, c) => s + (Number(c.saldo_neto) || 0), 0);
+  if (_ord) _ord.ctx = { rangos, opsSemana, saldo, antes1030: antesDe1030NY(merc) };
+}
+function leerFormOrden() {
+  const g = (id) => { const el = $('#' + id); return el ? String(el.value || '') : ''; };
+  const pt = g('oPt'), precio = g('oPrecio');
+  return { symbol: g('oSym').trim().toUpperCase(), tipo: g('oTipo'), accion: g('oAcc'),
+    strike: g('oStrike'), expiracion: g('oExp'), cantidad: g('oQty'), orderTerm: g('oTerm'), priceType: pt,
+    limitPrice: pt === 'LIMIT' ? precio : '', stopPrice: pt === 'STOP' ? precio : '',
+    offsetValue: pt === 'TRAILING_STOP_PRCT' ? precio : '' };
+}
+function ajustarFormOrden() {
+  const tipo = $('#oTipo'), acc = $('#oAcc'), pt = $('#oPt'), wrap = $('#oPrecioWrap'), lbl = $('#oPrecioLbl'), optn = $('#oOptn');
+  if (!tipo || !acc || !pt || !wrap || !lbl || !optn) return;
+  optn.classList.toggle('oculto', tipo.value === 'EQ');
+  // STOP y trailing solo para salidas (ventas)
+  const venta = acc.value === 'venta';
+  Array.from(pt.options).forEach(op => { if (op.value === 'STOP' || op.value === 'TRAILING_STOP_PRCT') op.disabled = !venta; });
+  if (!venta && (pt.value === 'STOP' || pt.value === 'TRAILING_STOP_PRCT')) pt.value = 'LIMIT';
+  wrap.classList.toggle('oculto', pt.value === 'MARKET');
+  lbl.textContent = pt.value === 'LIMIT' ? (tipo.value === 'EQ' ? 'Límite (por acción)' : 'Límite (por contrato)')
+    : pt.value === 'STOP' ? 'Precio stop' : pt.value === 'TRAILING_STOP_PRCT' ? 'Trailing (%)' : 'Precio';
+}
+function pintarArmadoOrden() {
+  const el = $('#oArm'); if (!el) return;
+  const h = armadoHasta();
+  el.textContent = h ? 'armado hasta ' + horaNY(h) : 'desarmado · pide PIN';
+  el.style.color = h ? 'var(--verde)' : '';
+}
+function pintarAvisosOrden() {
+  if (!_ord) return;
+  const box = $('#oAvisos'); if (!box) return;
+  const f = leerFormOrden();
+  const c = _ord.ctx;
+  const av = c ? avisosOrden(f, { rango: c.rangos[f.symbol] || null, opsSemana: c.opsSemana, saldo: c.saldo, antes1030: c.antes1030 }) : [];
+  _ord.avisos = av;
+  const txt = av.join('\n');
+  if (txt === _ord.avisosTxt) return;   // sin cambios: no tocar el checkbox
+  _ord.avisosTxt = txt;
+  const marcado = !!($('#oOverride') && $('#oOverride').checked);
+  box.innerHTML = av.length ? `<div class="aviso"><div style="font-weight:700;margin-bottom:3px">Avisos de doctrina</div>
+    ${av.map(a => `<div>· ${esc(a)}</div>`).join('')}
+    <label class="check"><input type="checkbox" id="oOverride" ${marcado ? 'checked' : ''}> Entiendo, rompo la regla</label></div>` : '';
+}
+function bloquearFormOrden(si) {
+  const m = $('#modalOrden'); if (!m) return;
+  m.querySelectorAll('input, select').forEach(el => { el.disabled = !!si; });
+  const b = $('#oBtnPrev'); if (b) b.classList.toggle('oculto', !!si);
+}
+
+async function ordenPreview() {
+  if (!_ord) return;
+  const err = $('#oErr'), btn = $('#oBtnPrev');
+  if (!err || !btn) return;
+  err.textContent = '';
+  const f = leerFormOrden();
+  const e1 = validarOrden(f); if (e1) { err.textContent = e1; return; }
+  pintarAvisosOrden();
+  const av = _ord.avisos || [];
+  if (requiereOverride(av) && !($('#oOverride') && $('#oOverride').checked)) {
+    err.textContent = 'Hay avisos de doctrina: marca «Entiendo, rompo la regla» para seguir, o corrige la orden.'; return;
+  }
+  // 1) armado por PIN (sin PIN configurado → se crea aquí mismo)
+  if (!(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
+  pintarArmadoOrden();
+  // 2) credenciales de E*TRADE (viven en este dispositivo)
+  const cr = etCreds();
+  if (!cr) { err.textContent = 'Conecta E*TRADE primero: Cuentas → E*TRADE → Conectar (login diario).'; return; }
+  if (etDiaVencido()) { err.textContent = 'La sesión de E*TRADE expiró a medianoche ET. Reconecta en Cuentas → E*TRADE.'; return; }
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid) { err.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
+  btn.disabled = true; btn.textContent = 'Consultando E*TRADE…';
+  const pre = _ord.pre || {};
+  const proposito = propositoDe(f);
+  const orden = construirOrden({ ...f, clientOrderId: clientOrderIdNuevo() });
+  const rango = _ord.ctx && _ord.ctx.rangos[f.symbol] || null;
+  const semaforo = (f.tipo !== 'EQ' && f.accion !== 'venta' && f.priceType === 'LIMIT') ? semaforoRango(Number(f.limitPrice), rango) : null;
+  const extra = { proposito, senal_id: pre.senal_id || null,
+    posicion_id: (f.accion === 'venta' && pre.posicion_id) ? pre.posicion_id : null };
+  let r = null;
+  try {
+    const accountIdKey = await etCuentaKey(cr);
+    r = await etPost(cr, '/etrade/orden/preview', { accountIdKey, orden });
+    const d = r.data || {}, P = d.PreviewOrderResponse || d;
+    const em = mensajeError(r);
+    const ids = P.PreviewIds ? (Array.isArray(P.PreviewIds) ? P.PreviewIds : [P.PreviewIds]) : [];
+    if (r.status >= 400 || em || !ids.length) {
+      // E*TRADE la rechazó en la vista previa ({Error:{message}}): queda anotada
+      // como rechazada con su respuesta. Un fallo del PROXY (404/403) no se anota.
+      if (d.Error && d.Error.message) {
+        await sb.from('ordenes').insert({ ...filaOrdenDe(f, orden, extra), user_id: uid, estado: 'rechazada',
+          overrides: av, respuesta: recortarJson(d, 4096) }).then(() => {}, () => {});
+      }
+      throw new Error(em || 'E*TRADE no devolvió vista previa (HTTP ' + r.status + ').');
+    }
+    const previewIds = ids.map(x => Object.assign({ previewId: x.previewId }, x.cashMargin ? { cashMargin: x.cashMargin } : {}));
+    const fila = { ...filaOrdenDe(f, orden, extra), user_id: uid, estado: 'preview', overrides: av,
+      preview: Object.assign({ _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null } }, recortarJson(P, 4000)) };
+    const ins = await sb.from('ordenes').insert(fila).select('id').single();
+    if (ins.error) throw new Error('No pude guardar la vista previa: ' + ins.error.message);
+    Object.assign(_ord, { f, orden, previewIds, filaId: ins.data.id, accountIdKey, caduca: Date.now() + PREVIEW_SEG * 1000 });
+    pintarPreviewOrden(P);
+    bloquearFormOrden(true);
+  } catch (e) {
+    err.textContent = String((e && e.message) || e);
+  }
+  btn.disabled = false; btn.textContent = 'Vista previa en E*TRADE';
+}
+function pintarPreviewOrden(P) {
+  const box = $('#oPrev'); if (!box || !_ord) return;
+  const o = (Array.isArray(P.Order) ? P.Order[0] : P.Order) || {};
+  const msgs = (((o.messages || {}).Message) || []).map(x => x && x.description).filter(Boolean);
+  const n = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : (Number(v) < 0 ? '-$' : '$') + Math.abs(Number(v)).toFixed(2);
+  box.innerHTML = `<div class="prevbox">
+    <div class="fila"><span class="mut">Costo estimado</span><b class="mono">${n(P.estimatedTotalAmount)}</b></div>
+    <div class="fila"><span class="mut">Comisión</span><b class="mono">${n(P.estimatedCommission)}</b></div>
+    ${P.estimatedFees != null && Number(P.estimatedFees) ? `<div class="fila"><span class="mut">Tarifas</span><b class="mono">${n(P.estimatedFees)}</b></div>` : ''}
+    ${P.totalOrderValue != null ? `<div class="fila"><span class="mut">Valor de la orden</span><b class="mono">${n(P.totalOrderValue)}</b></div>` : ''}
+    ${msgs.length ? `<div class="mut" style="margin-top:6px;font-size:11.5px">${msgs.map(esc).join('<br>')}</div>` : ''}
+    <button class="pri" id="oBtnPlace" style="width:100%;margin-top:10px" onclick="MZ.ordenPlace()">Enviar orden (3:00)</button>
+    <button class="btnsec" style="width:100%;margin-top:6px" onclick="MZ.ordenEditar()">Editar la orden</button>
+  </div>`;
+  if (_ord.timer) clearInterval(_ord.timer);
+  const tick = () => {
+    const b = $('#oBtnPlace'); if (!b || !_ord) return;
+    const s = Math.max(0, Math.round((_ord.caduca - Date.now()) / 1000));
+    if (s <= 0) { b.disabled = true; b.textContent = 'Vista previa caducada — vuelve a previsualizar'; _ord.previewIds = null; clearInterval(_ord.timer); return; }
+    b.textContent = `Enviar orden (${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')})`;
+  };
+  tick(); _ord.timer = setInterval(tick, 1000);
+}
+function ordenEditar() {
+  if (!_ord) return;
+  if (_ord.timer) clearInterval(_ord.timer);
+  _ord.orden = null; _ord.previewIds = null; _ord.filaId = null; _ord.caduca = 0;
+  const p = $('#oPrev'); if (p) p.innerHTML = '';
+  bloquearFormOrden(false);
+}
+// El único paso que coloca la orden: lo dispara el usuario con «Enviar orden».
+async function ordenPlace() {
+  if (!_ord || !_ord.orden) return;
+  const err = $('#oErr'), b = $('#oBtnPlace');
+  if (!err || !b) return;
+  err.textContent = '';
+  if (!_ord.previewIds || Date.now() > _ord.caduca) { err.textContent = 'La vista previa caducó (3 min). Vuelve a previsualizar.'; return; }
+  if (!armadoHasta() && !(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
+  const cr = etCreds();
+  if (!cr) { err.textContent = 'Conecta E*TRADE primero.'; return; }
+  const id = _ord.filaId, ahora = () => new Date().toISOString();
+  b.disabled = true; b.textContent = 'Enviando a E*TRADE…';
+  let r = null;
+  try {
+    r = await etPost(cr, '/etrade/orden/place', { accountIdKey: _ord.accountIdKey, orden: _ord.orden, previewIds: _ord.previewIds });
+    const d = r.data || {}, R = d.PlaceOrderResponse || d;
+    const em = mensajeError(r);
+    const ids = R.OrderIds ? (Array.isArray(R.OrderIds) ? R.OrderIds : [R.OrderIds]) : [];
+    if (r.status >= 400 || em || !ids.length || ids[0].orderId == null) {
+      if (id) await sb.from('ordenes').update({ estado: 'rechazada', respuesta: recortarJson(d, 4096), actualizado_at: ahora() }).eq('id', id);
+      throw new Error(em || 'E*TRADE no confirmó la orden (HTTP ' + r.status + ').');
+    }
+    if (id) await sb.from('ordenes').update({ estado: 'enviada', orden_id_ext: String(ids[0].orderId),
+      respuesta: recortarJson(R, 4096), actualizado_at: ahora() }).eq('id', id);
+    if (_ord.timer) clearInterval(_ord.timer);
+    toast('Orden enviada a E*TRADE');
+    cerrarOrden(); ruta();
+  } catch (e) {
+    // Sin respuesta del proxy tras enviar: no se sabe si entró → 'error' y se
+    // pide verificar en E*TRADE (jamás inventar éxito).
+    if (!r && id) await sb.from('ordenes').update({ estado: 'error', respuesta: { error: String((e && e.message) || e), nota: 'sin respuesta al enviar: verifica en E*TRADE' }, actualizado_at: ahora() }).eq('id', id).then(() => {}, () => {});
+    err.textContent = String((e && e.message) || e) + (!r ? ' Verifica en E*TRADE si la orden entró antes de reintentar.' : '');
+    b.disabled = false; b.textContent = 'Enviar orden';
+  }
+}
+
+// ---- Copiloto: ÓRDENES EN E*TRADE ----
+function seccionOrdenes(filas) {
+  let h = `<div class="sec fila" style="margin-top:8px">ÓRDENES EN E*TRADE
+    <a href="#" onclick="MZ.ordenesActualizar();return false">Actualizar desde E*TRADE</a></div>`;
+  if (!filas.length) return h + `<div class="card vacio">Sin órdenes anotadas. Las que previsualices o envíes desde aquí quedan registradas.</div>`;
+  return h + filas.map(tarjetaOrden).join('');
+}
+function tarjetaOrden(o) {
+  const chip = { preview: 'c-esp', enviada: 'c-vig', ejecutada: 'c-op', cancelada: 'c-esp', expirada: 'c-esp', rechazada: 'c-vet', error: 'c-vet' }[o.estado] || 'c-esp';
+  const n2 = (v) => v == null ? '—' : Number(v).toFixed(2);
+  const contrato = o.security_type === 'EQ' ? `${o.symbol} · acción`
+    : `${o.symbol} ${o.direccion || ''} ${o.strike != null ? Number(o.strike) : ''}${o.expiracion ? ' · ' + fmtFechaNY(o.expiracion + 'T12:00:00Z') : ''}`;
+  const precio = o.price_type === 'LIMIT' ? `límite $${n2(o.limit_price)}` : o.price_type === 'STOP' ? `stop $${n2(o.stop_price)}`
+    : o.price_type === 'TRAILING_STOP_PRCT' ? `trailing ${Number(o.offset_value)}%` : o.price_type === 'MARKET' ? 'mercado' : esc(o.price_type);
+  const prop = { entrada: 'entrada', salida_gtc: 'salida GTC', salida_stop: 'salida stop', cancelar: 'cancelar', otro: 'otra' }[o.proposito] || o.proposito;
+  const ov = Array.isArray(o.overrides) ? o.overrides : [];
+  return `<div class="card">
+    <div class="fila"><span class="chip ${chip}">${esc(String(o.estado || '').toUpperCase())}</span>
+      <span class="fresco">${esc(fmtFechaNY(o.creado_at, true))} NY</span></div>
+    <div class="fila" style="margin-top:6px"><b style="font-size:13.5px">${esc(contrato)}</b>
+      <span class="mut mono">${esc(o.accion)} ×${esc(Number(o.cantidad))}</span></div>
+    <div class="fila" style="margin-top:3px"><span class="mut">${esc(prop)} · ${precio} · ${o.order_term === 'GOOD_UNTIL_CANCEL' ? 'GTC' : 'DAY'}${o.orden_id_ext ? ' · #' + esc(o.orden_id_ext) : ''}</span>
+      ${o.estado === 'enviada' && o.orden_id_ext ? `<button class="btnsec" style="flex:none;padding:7px 12px" onclick="MZ.cancelarOrden(${Number(o.id)}, '${esc(o.orden_id_ext)}')">Cancelar</button>` : ''}</div>
+    ${ov.length ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">override: ${esc(ov.join(' · '))}</div>` : ''}
+  </div>`;
+}
+async function cancelarOrden(id, orderId) {
+  if (!confirm('¿Cancelar en E*TRADE la orden #' + orderId + '?')) return;
+  const cr = etCreds();
+  if (!cr) { toast('Conecta E*TRADE primero'); return; }
+  if (etDiaVencido()) { toast('Sesión de E*TRADE expirada — reconecta'); return; }
+  toast('Cancelando en E*TRADE…');
+  try {
+    const accountIdKey = await etCuentaKey(cr);
+    const r = await etPost(cr, '/etrade/orden/cancel', { accountIdKey, orderId: Number(orderId) });
+    const d = r.data || {}, C = d.CancelOrderResponse || d;
+    const em = mensajeError(r);
+    if (r.status >= 400 || em) { toast('E*TRADE: ' + (em || 'HTTP ' + r.status)); return; }
+    await sb.from('ordenes').update({ estado: 'cancelada', respuesta: recortarJson(C, 4096), actualizado_at: new Date().toISOString() }).eq('id', id);
+    toast('Orden cancelada');
+    ruta();
+  } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); }
+}
+// Cruza las órdenes 'enviadas' con E*TRADE (abiertas + ejecutadas de los últimos
+// 7 días) y actualiza estados; una ENTRADA ejecutada crea la posición y una
+// SALIDA ejecutada cierra la suya.
+async function ordenesActualizar() {
+  const cr = etCreds();
+  if (!cr) { toast('Conecta E*TRADE primero'); return; }
+  if (etDiaVencido()) { toast('Sesión de E*TRADE expirada — reconecta'); return; }
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid) { toast('Sin sesión. Sal y vuelve a entrar.'); return; }
+  toast('Consultando E*TRADE…');
+  try {
+    const accountIdKey = await etCuentaKey(cr);
+    const mmdd = (ymd) => ymd.slice(5, 7) + ymd.slice(8, 10) + ymd.slice(0, 4);
+    const hoy = hoyNY(), desde = ymdNY(new Date(Date.now() - 7 * 86400000).toISOString());
+    const [ab, ej] = await Promise.all([
+      etPost(cr, '/etrade/ordenes', { accountIdKey, query: { status: 'OPEN', count: 50 } }),
+      etPost(cr, '/etrade/ordenes', { accountIdKey, query: { status: 'EXECUTED', fromDate: mmdd(desde), toDate: mmdd(hoy), count: 50 } }),
+    ]);
+    for (const r of [ab, ej]) { const em = mensajeError(r); if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status); }
+    const lista = (r) => { const d = r.data || {}, O = d.OrdersResponse || d; const a = O.Order || []; return Array.isArray(a) ? a : [a]; };
+    const remotas = {};
+    for (const o of [...lista(ab), ...lista(ej)]) if (o && o.orderId != null) remotas[String(o.orderId)] = o;
+    const { data, error } = await sb.from('ordenes').select('*').eq('estado', 'enviada').not('orden_id_ext', 'is', null);
+    if (error) throw new Error(error.message);
+    let cambios = 0;
+    for (const loc of data || []) {
+      const rem = remotas[String(loc.orden_id_ext)]; if (!rem) continue;
+      const det = (Array.isArray(rem.OrderDetail) ? rem.OrderDetail[0] : rem.OrderDetail) || {};
+      const st = String(det.status || '').toUpperCase();
+      const nuevo = /EXECUTED/.test(st) ? 'ejecutada' : st === 'CANCELLED' ? 'cancelada' : st === 'EXPIRED' ? 'expirada' : st === 'REJECTED' ? 'rechazada' : null;
+      if (!nuevo) continue;
+      const upd = { estado: nuevo, respuesta: recortarJson(rem, 4096), actualizado_at: new Date().toISOString() };
+      if (nuevo === 'ejecutada') {
+        const ins = (Array.isArray(det.Instrument) ? det.Instrument[0] : det.Instrument) || {};
+        const fill = Number(ins.averageExecutionPrice), qty = Number(ins.filledQuantity) || Number(loc.cantidad) || 1;
+        const ejecutadaAt = det.executedTime ? new Date(Number(det.executedTime)).toISOString() : new Date().toISOString();
+        const esVenta = /^SELL/.test(String(loc.accion || ''));
+        if (!esVenta && loc.proposito === 'entrada' && !loc.posicion_id && fill > 0 && loc.security_type === 'OPTN' && loc.direccion) {
+          const mz = (loc.preview && loc.preview._mz) || {};
+          const sem = ['ok', 'aviso', 'alto'].includes(mz.semaforo) ? mz.semaforo
+            : (loc.overrides || []).some(t => /FUERA del rango/.test(String(t))) ? 'alto' : null;
+          const p = { user_id: uid, symbol: loc.symbol, direccion: loc.direccion, strike: loc.strike, expiracion: loc.expiracion,
+            contratos: qty, prima_fill: fill, plan_pct: PLAN_PCT, broker: 'etrade', senal_id: loc.senal_id || null,
+            abierta_at: ejecutadaAt, abierta_fecha_ny: ymdNY(ejecutadaAt) || hoyNY(),
+            entrada_semaforo: sem, fuera_de_rango: sem === 'alto' };
+          const pi = await sb.from('posiciones').insert(p).select('id').single();
+          if (!pi.error && pi.data) upd.posicion_id = pi.data.id;
+        } else if (esVenta && loc.posicion_id && Number.isFinite(fill)) {
+          const { data: pos } = await sb.from('posiciones').select('contratos,prima_fill,estado').eq('id', loc.posicion_id).maybeSingle();
+          if (pos && pos.estado === 'abierta') {
+            const res = Math.round((fill - Number(pos.prima_fill)) * (Number(pos.contratos) || 1) * 100 * 100) / 100;
+            await sb.from('posiciones').update({ estado: fill > 0 ? 'cerrada' : 'expirada', prima_salida: fill,
+              resultado_usd: res, cerrada_at: ejecutadaAt }).eq('id', loc.posicion_id);
+          }
+        }
+      }
+      const { error: e2 } = await sb.from('ordenes').update(upd).eq('id', loc.id);
+      if (!e2) cambios++;
+    }
+    toast(cambios ? `${cambios} orden${cambios > 1 ? 'es' : ''} actualizada${cambios > 1 ? 's' : ''}` : 'Sin cambios en E*TRADE');
+    ruta();
+  } catch (e) { toast('No pude actualizar: ' + ((e && e.message) || e)); }
+}
+window.MZ = Object.assign(window.MZ || {}, {
+  abrirOrden, cerrarOrden, ordenPreview, ordenPlace, ordenEditar, cancelarOrden, ordenesActualizar,
+  pinOrdenes: async () => { await modalPinOrdenes(pinHash() ? 'cambiar' : 'crear'); pintarOrdenesCuenta(); },
+  armar: async () => { if (armadoHasta()) desarmar(); else await pedirPin(); pintarOrdenesCuenta(); },
 });
 
 // ---------- Disciplina ----------
