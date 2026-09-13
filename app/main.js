@@ -1488,6 +1488,33 @@ function bandaDelDia(rango, dia) {
   if (dia === 2) return { banda: [lo + t, hi - t], parte: 'media' };
   return { banda: [hi - t, hi], parte: 'alta' };
 }
+// Rango óptimo del ticker para la app: manda el MÉTODO DE LA ACADEMIA
+// (ticker_estado.payload.rango_academia, ver rango_academia.py del worker); el
+// rango por delta (rango_vivo) queda de referencia y aporta exp/strikes sugeridos.
+function componerRango(rv, ra) {
+  if (ra && ra.lo != null && ra.hi != null) return Object.assign({}, rv || {}, { lo: Number(ra.lo), hi: Number(ra.hi), fuente: 'academia', academia: ra, delta: rv || null });
+  if (rv) return Object.assign({}, rv, { fuente: 'delta', academia: null, delta: rv });
+  return null;
+}
+// Spread bid/ask (doctrina 1-12, Joel): «NUNCA comprar un contrato con una
+// diferencia entre bid y ask del 10 % o más»; lo normal es $1-5 por contrato
+// (hasta $10 en algunas compañías). Se avisa (con override, regla de Andrés).
+const SPREAD_MAX_PCT = 10;
+function spreadPct(bid, ask) {
+  bid = Number(bid); ask = Number(ask);
+  if (!(ask > 0) || !(bid >= 0) || bid > ask) return null;
+  return (ask - bid) / ask * 100;
+}
+// bid/ask del contrato que hay en el formulario, leídos de la cadena en vivo
+function spreadDeForm(f, cadena) {
+  if (!f || !cadena || !Array.isArray(cadena.filas) || f.tipo === 'EQ') return null;
+  const k = Number(f.strike); if (!(k > 0)) return null;
+  const fila = cadena.filas.find(r => Number(r.strike) === k); if (!fila) return null;
+  const o = f.tipo === 'PUT' ? fila.put : fila.call;
+  if (!o || o.bid == null || o.ask == null) return null;
+  const pct = spreadPct(o.bid, o.ask);
+  return pct == null ? null : { bid: Number(o.bid), ask: Number(o.ask), pct };
+}
 // Texto (HTML) del rango de precio de un ticker para el formulario de orden:
 // rango VIVO del worker + tabla de la academia con la parte del día.
 function textoRangoOrden(sym, vivo, tabla, dia) {
@@ -1495,13 +1522,20 @@ function textoRangoOrden(sym, vivo, tabla, dia) {
   if (!sym) return '';
   const d$ = (v) => '$' + Math.round(Number(v));
   const partes = [];
-  if (vivo && vivo.lo != null && vivo.hi != null) {
-    let extra = vivo.exp ? ' · vence ' + esc(String(vivo.exp).slice(5)) : '';
-    if (vivo.strike_put != null && vivo.prima_put != null) extra += ` · PUT ${esc(vivo.strike_put)} ${d$(vivo.prima_put)}`;
-    if (vivo.strike_call != null && vivo.prima_call != null) extra += ` · CALL ${esc(vivo.strike_call)} ${d$(vivo.prima_call)}`;
-    partes.push(`<b style="color:var(--oro)">Rango óptimo vivo ${d$(vivo.lo)}–${d$(vivo.hi)}</b> por contrato${extra}`);
+  const ra = vivo && vivo.academia ? vivo.academia : null;
+  const delta = vivo && vivo.delta ? vivo.delta : (vivo && !vivo.academia ? vivo : null);
+  if (ra && ra.lo != null) {
+    const fecha = ra.fecha ? esc(fmtFechaNY(String(ra.fecha) + 'T12:00:00Z')) : '';
+    const el = Array.isArray(ra.elegidos) ? ra.elegidos.map(e => `${esc(e.strike)} (${d$(e.ask)}, +${esc(Math.round(Number(e.pct) || 0))}%)`).join(' y ') : '';
+    partes.push(`<b style="color:var(--oro)">Rango óptimo ${d$(ra.lo)}–${d$(ra.hi)}</b> por contrato · método de la academia · con ${esc(String(ra.lado || '').toUpperCase())}s${fecha ? ' del ' + fecha : ''}${ra.exp ? ' · exp ' + esc(String(ra.exp).slice(5)) : ''}${el ? ' · más valorizados: ' + el : ''}`);
   } else {
-    partes.push('Rango óptimo vivo: el worker aún no lo publicó para ' + esc(sym));
+    partes.push('Rango óptimo (método academia): el worker aún no lo calculó para ' + esc(sym));
+  }
+  if (delta && delta.lo != null && delta.hi != null) {
+    let extra = delta.exp ? ' · vence ' + esc(String(delta.exp).slice(5)) : '';
+    if (delta.strike_put != null && delta.prima_put != null) extra += ` · PUT ${esc(delta.strike_put)} ${d$(delta.prima_put)}`;
+    if (delta.strike_call != null && delta.prima_call != null) extra += ` · CALL ${esc(delta.strike_call)} ${d$(delta.prima_call)}`;
+    partes.push(`Referencia por delta 0.15–0.30: ${d$(delta.lo)}–${d$(delta.hi)}${extra}`);
   }
   if (tabla) {
     // fin de semana: la parte que aplica es la del LUNES (próxima sesión)
@@ -1571,6 +1605,9 @@ function avisosOrden(f, ctx) {
   if (precio > 0 && qty > 0 && saldo > 0) {
     const costo = precio * qty * (esOpt ? 100 : 1), tope = saldo * TAMANO_PCT / 100;
     if (costo > tope) av.push(`Costo ${usd(costo)}: más del ${TAMANO_PCT}% de la cuenta (${usd(tope)})`);
+  }
+  if (ctx.spread && ctx.spread.pct != null && ctx.spread.pct >= SPREAD_MAX_PCT) {
+    av.push(`Spread bid/ask $${(ctx.spread.bid * 100).toFixed(0)}→$${(ctx.spread.ask * 100).toFixed(0)} = ${ctx.spread.pct.toFixed(0)}%: la academia dice NO comprar con ${SPREAD_MAX_PCT}% o más (desde la compra vas en negativo)`);
   }
   if (ctx.antes1030) av.push('Antes de las 10:30 ET: la doctrina espera a que el mercado defina');
   return av;
@@ -1939,7 +1976,7 @@ async function cargarCadena(forzar) {
   } catch (e) { o.cadenaErr = textoErrorCadena(e); }
   o.cadenaCargando = false;
   if (!vigente()) { if (_ord === o) cargarCadena(true); return; }
-  pintarCadena();
+  pintarCadena(); pintarAvisosOrden();
   // se refresca sola mientras el formulario esté abierto y sin vista previa en curso
   if (!o.cadenaTimer) o.cadenaTimer = setInterval(() => { if (_ord === o && $('#modalOrden') && !o.orden) cargarCadena(true); }, CADENA_REFRESCO_MS);
 }
@@ -1959,7 +1996,7 @@ function pintarCadena() {
   const sel = vs.length ? `<select id="oCadExp" onchange="MZ.cadenaExp(this.value)" style="width:auto;padding:5px 7px;font-size:12px">${
     vs.slice(0, 14).map(v => `<option value="${v.ymd}" ${v.ymd === _ord.cadenaExp ? 'selected' : ''}>${v.ymd.slice(5)}${/WEEK/i.test(v.tipo) ? ' s' : ''}</option>`).join('')}</select>` : '';
   const rango = (_ord.ctx && _ord.ctx.rangos[f.symbol]) || null;
-  const rangoTxt = rango && rango.lo != null ? ` · rango óptimo $${Math.round(rango.lo)}–$${Math.round(rango.hi)}` : '';
+  const rangoTxt = rango && rango.lo != null ? ` · rango óptimo $${Math.round(rango.lo)}–$${Math.round(rango.hi)}${rango.fuente === 'academia' ? ' (academia)' : ' (delta)'}` : '';
   let h = `<div class="cadena"><div class="fila" style="margin-bottom:4px">
     <span class="mut"><b style="color:var(--tx)">${esc(f.symbol)}</b> ${q.last != null ? '$' + q.last.toFixed(2) : ''} ${(q.bid != null && q.ask != null) ? `<span class="fresco">${q.bid.toFixed(2)}/${q.ask.toFixed(2)}</span>` : ''} ${vivo}</span>
     <span style="display:flex;gap:8px;align-items:center">${sel}<a href="#" onclick="MZ.cadenaRefrescar();return false" style="font-size:13px">↻</a></span></div>`;
@@ -1979,7 +2016,9 @@ function pintarCadena() {
       const cls = (itm ? ' itm' : '') + (r === 'ok' ? ' en-rango' : r === 'borde' ? ' borde' : '');
       const precio = (o.bid != null && o.ask != null) ? `${o.bid.toFixed(2)}/${o.ask.toFixed(2)}` : (o.last != null ? o.last.toFixed(2) : '—');
       const dl = o.delta != null ? ` <small>δ${Math.abs(o.delta).toFixed(2)}</small>` : '';
-      return `<td class="cel${cls}" onclick="MZ.cadenaElegir('${lado}',${strike},${o.ask != null ? o.ask : 'null'},${o.bid != null ? o.bid : 'null'})">${precio}${dl}</td>`;
+      const sp = spreadPct(o.bid, o.ask);
+      const spTxt = (sp != null && sp >= SPREAD_MAX_PCT) ? ` <small class="sp">▲${sp.toFixed(0)}%</small>` : '';
+      return `<td class="cel${cls}" onclick="MZ.cadenaElegir('${lado}',${strike},${o.ask != null ? o.ask : 'null'},${o.bid != null ? o.bid : 'null'})">${precio}${dl}${spTxt}</td>`;
     };
     const lineaAtm = spot != null ? `<tr class="atm-linea"><td colspan="3"><span>ATM · $${spot.toFixed(2)}</span></td></tr>` : '';
     const filas = []; let lineaPuesta = spot == null;
@@ -1989,7 +2028,7 @@ function pintarCadena() {
     }
     if (!lineaPuesta) filas.push(lineaAtm);
     h += `<table><thead><tr><th>PUT bid/ask</th><th>strike</th><th>CALL bid/ask</th></tr></thead><tbody>${filas.join('')}</tbody></table>
-      <div class="fresco leyenda" style="margin-top:5px"><span class="sw itm"></span> in the money · <span class="sw otm"></span> out of the money · <span style="color:var(--oro);font-weight:700">━</span> at the money${spot != null ? ' $' + spot.toFixed(2) : ''} · <span class="sw rango"></span> prima en rango${rangoTxt}</div>
+      <div class="fresco leyenda" style="margin-top:5px"><span class="sw itm"></span> in the money · <span class="sw otm"></span> out of the money · <span style="color:var(--oro);font-weight:700">━</span> at the money${spot != null ? ' $' + spot.toFixed(2) : ''} · <span class="sw rango"></span> prima en rango${rangoTxt} · <span style="color:var(--rojo);font-weight:700">▲</span> spread ≥${SPREAD_MAX_PCT}% (no comprar)</div>
       <div class="fresco" style="margin-top:3px">toca un precio para llenar la orden · vence ${esc(_ord.cadenaExp || '')} · ${esc(horaNY(_ord.cadenaTs))}</div>`;
   }
   box.innerHTML = h + '</div>';
@@ -2021,7 +2060,7 @@ async function cargarCtxOrden() {
   const est = te.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
   const rangos = {};
-  est.forEach(e => { rangos[e.symbol] = e.payload && e.payload.rango_vivo ? e.payload.rango_vivo : null; });
+  est.forEach(e => { const p = e.payload || {}; rangos[e.symbol] = componerRango(p.rango_vivo || null, p.rango_academia || null); });
   const lun = lunesNY();
   const opsSemana = unirOperaciones(pos.data || [], bt.data || []).ops.filter(p => (p.abierta_fecha_ny || '') >= lun).length;
   // saldo por bróker (una fila por bróker en cuenta_snapshots) + total
@@ -2086,7 +2125,8 @@ function pintarAvisosOrden() {
   const box = $('#oAvisos'); if (!box) return;
   const f = leerFormOrden();
   const c = _ord.ctx;
-  const av = c ? avisosOrden(f, { rango: c.rangos[f.symbol] || null, opsSemana: c.opsSemana, saldo: c.saldo, saldoBroker: c.saldoBroker, antes1030: c.antes1030 }) : [];
+  const cad = (_ord.cadena && String(_ord.cadenaClave || '').split('|')[0] === f.symbol) ? _ord.cadena : null;
+  const av = c ? avisosOrden(f, { rango: c.rangos[f.symbol] || null, opsSemana: c.opsSemana, saldo: c.saldo, saldoBroker: c.saldoBroker, antes1030: c.antes1030, spread: spreadDeForm(f, cad) }) : [];
   _ord.avisos = av;
   const txt = av.join('\n');
   if (txt === _ord.avisosTxt) return;   // sin cambios: no tocar el checkbox
