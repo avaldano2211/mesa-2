@@ -531,33 +531,60 @@ async function pintarAvisos() {
   btn.textContent = s.activo ? 'Desactivar' : 'Activar';
   btn.dataset.activo = s.activo ? '1' : '';
 }
+// Diagnóstico de la activación al proxy (solo paso/booleanos/mensaje; jamás
+// llaves, endpoint ni tokens): para ver desde el servidor dónde falla en iOS.
+function avisosDiag(paso, extra) {
+  try { etProxy('/diag', Object.assign({ que: 'avisos', paso, ios: esIOS(), standalone: esStandalone(),
+    perm: (typeof Notification !== 'undefined' && Notification.permission) || 'n/a' }, extra || {})).catch(() => {}); } catch (_) {}
+}
+// Guardado por REST directo con el JWT del storage (respaldo al cliente
+// supabase-js, que en iOS a veces no «ve» la sesión).
+async function pushUpsertRest(fila) {
+  const j = JSON.parse(localStorage.getItem(claveSesion()) || 'null');
+  const jwt = j && j.access_token;
+  if (!jwt) throw new Error('sin sesión en el storage');
+  const r = await fetch(SUPABASE_URL + '/rest/v1/push_suscripciones?on_conflict=user_id,endpoint', {
+    method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + jwt,
+      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify([fila]) });
+  if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('REST ' + r.status + ' ' + t.slice(0, 120)); }
+}
 async function avisosActivar() {
   const est = $('#avEstado'), btn = $('#avBtn');
   if (!VAPID_PUBLIC_KEY) { est.textContent = 'Falta la llave VAPID pública en config.js.'; return; }
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
-  if (!uid) { est.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
+  if (!uid) { est.textContent = 'Sin sesión. Sal y vuelve a entrar.'; avisosDiag('sin_uid'); return; }
   btn.disabled = true; est.style.color = ''; est.textContent = 'Pidiendo permiso…';
   let perm = 'default';
   try { perm = await Notification.requestPermission(); } catch (_) { perm = Notification.permission; }
   if (perm !== 'granted') {
     est.textContent = perm === 'denied' ? 'Permiso denegado. Actívalo en los ajustes del navegador/sitio.' : 'No concediste el permiso.';
-    btn.disabled = false; return;
+    avisosDiag('permiso', { perm }); btn.disabled = false; return;
   }
   est.textContent = 'Suscribiendo…';
-  let sub = null;
+  let sub = null, paso = 'sw';
   try {
     const reg = await conTope(navigator.serviceWorker.ready, 8000, 'el service worker no está listo');
+    paso = 'subscribe';
     sub = await reg.pushManager.subscribe({ userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
     const j = sub.toJSON();
     if (!j || !j.endpoint || !j.keys || !j.keys.p256dh || !j.keys.auth) throw new Error('suscripción incompleta');
-    const { error } = await sb.from('push_suscripciones').upsert({
-      user_id: uid, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth,
-      ua: navigator.userAgent.slice(0, 120), fallos: 0,
-    }, { onConflict: 'user_id,endpoint' });
-    if (error) throw new Error('no se guardó en la nube: ' + error.message);
+    paso = 'guardar';
+    const fila = { user_id: uid, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth,
+      ua: navigator.userAgent.slice(0, 120), fallos: 0 };
+    let guardado = 'sb';
+    try {
+      const { error } = await conTope(sb.from('push_suscripciones').upsert(fila, { onConflict: 'user_id,endpoint' }), 10000, 'supabase-js no respondió');
+      if (error) throw new Error(error.message);
+    } catch (e1) {
+      guardado = 'rest';
+      await pushUpsertRest(fila);   // respaldo: REST directo con el JWT del storage
+    }
+    avisosDiag('ok', { guardado });
     toast('Avisos activados ✓');
   } catch (e) {
+    avisosDiag('error', { paso, msg: String((e && e.message) || e).slice(0, 160) });
     // Si la nube no la guardó, la suscripción local no sirve: se deshace para
     // que el estado no mienta («activos» sin que el worker sepa a dónde mandar).
     if (sub) { try { await sub.unsubscribe(); } catch (_) {} }
