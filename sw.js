@@ -2,7 +2,7 @@
    de la mesa privada: JAMÁS cachear datos de mercado. Toda petición a
    *.supabase.co se deja pasar a la red SIEMPRE — una foto vieja no puede
    disfrazarse del mercado de ahora. Offline: abre el shell y falla honesto. */
-const VER = 'mesa2-v14';
+const VER = 'mesa2-v15';
 const SHELL = [
   './', './index.html', './app/main.js',
   './vendor/supabase.js', './manifest.webmanifest',
@@ -44,7 +44,8 @@ self.addEventListener('push', (e) => {
   if (!d || typeof d !== 'object') d = { cuerpo: String(d == null ? '' : d) };
   const op = {
     body: String(d.cuerpo || ''),
-    data: { url: (typeof d.url === 'string' && d.url) ? d.url : '#/copiloto' },
+    // solo rutas internas de la app (#/…): nunca un destino externo del payload
+    data: { url: (typeof d.url === 'string' && d.url.startsWith('#/')) ? d.url : '#/copiloto' },
     icon: './icon-192.png', badge: './icon-192.png',
   };
   // renotify exige tag no vacío (si no, el navegador lanza TypeError).
@@ -54,8 +55,9 @@ self.addEventListener('push', (e) => {
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  const url = (e.notification.data && e.notification.data.url) || '#/copiloto';
-  const abs = /^https?:/.test(url) ? url : new URL('./' + url.replace(/^\.?\//, ''), self.registration.scope).href;
+  const u0 = (e.notification.data && e.notification.data.url) || '#/copiloto';
+  const url = (typeof u0 === 'string' && u0.startsWith('#/')) ? u0 : '#/copiloto';
+  const abs = new URL('./' + url, self.registration.scope).href;   // siempre dentro de la app
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => {
     const c = cs.find(x => x.url && x.url.startsWith(self.registration.scope)) || cs[0];
     if (!c) return self.clients.openWindow(abs);
@@ -63,8 +65,19 @@ self.addEventListener('notificationclick', (e) => {
     // recibir el mensaje; si la ruta no es un hash, se navega de verdad.
     return Promise.resolve(c.focus ? c.focus() : c).then(w => {
       const cli = w || c;
-      if (url.startsWith('#/')) { cli.postMessage({ tipo: 'navegar', url }); return cli; }
-      return cli.navigate ? cli.navigate(abs) : self.clients.openWindow(abs);
+      cli.postMessage({ tipo: 'navegar', url }); return cli;
     }).catch(() => self.clients.openWindow(abs));
   }));
+});
+
+// El navegador puede rotar la suscripción push: se vuelve a suscribir con la
+// misma llave y se avisa a la app para que guarde el endpoint nuevo en la nube.
+self.addEventListener('pushsubscriptionchange', (e) => {
+  const key = e.oldSubscription && e.oldSubscription.options && e.oldSubscription.options.applicationServerKey;
+  e.waitUntil(
+    (key ? self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }) : Promise.resolve())
+      .catch(() => null)
+      .then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+      .then(cs => cs.forEach(c => c.postMessage({ tipo: 'resuscribir' })))
+  );
 });
