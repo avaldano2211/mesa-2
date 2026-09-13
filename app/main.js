@@ -76,6 +76,7 @@ function suscribir() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'senales' }, ruta)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'ticker_estado' }, ruta)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'worker_heartbeat' }, ruta)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'posiciones' }, ruta) // marks del worker
     .subscribe();
 }
 
@@ -92,6 +93,12 @@ function fechaNY() {
   return new Intl.DateTimeFormat('es', { weekday: 'long', day: 'numeric',
     month: 'short', timeZone: 'America/New_York' }).format(new Date()).toUpperCase();
 }
+// Fecha YYYY-MM-DD en Nueva York de un instante (ISO) — o de ahora.
+function ymdNY(iso) {
+  try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(iso ? new Date(iso) : new Date()); }
+  catch (_) { return ''; }
+}
+const hoyNY = () => ymdNY();
 
 async function estadoWorker() {
   const { data } = await sb.from('worker_heartbeat').select('*')
@@ -284,15 +291,33 @@ function tarjetaSenal(s, posic) {
   </div>`;
 }
 
+// P&L vivo de una posición abierta: el worker escribe posiciones.mark (prima
+// actual por contrato), mark_at, y mfe/mae (mejor y peor P&L en USD desde la
+// apertura). Sin mark todavía → se dice honesto, nunca se inventa.
+function pnlVivo(p) {
+  if (p.mark == null || !Number.isFinite(Number(p.mark))) {
+    return `<div class="mut" style="margin-top:6px;font-size:11.5px">P&amp;L vivo: aún sin mark (el worker lo calcula cada 5 min en sesión)</div>`;
+  }
+  const c = Number(p.contratos) || 1, fill = Number(p.prima_fill) || 0, mark = Number(p.mark);
+  const pnl = Math.round((mark - fill) * c * 100 * 100) / 100;
+  const pct = fill > 0 ? (mark - fill) / fill * 100 : null;
+  const col = pnl > 0 ? 'var(--verde)' : pnl < 0 ? 'var(--rojo)' : 'var(--tx2)';
+  const conSigno = (n) => (n > 0 ? '+' : '') + usd(n);
+  const exc = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : conSigno(Number(v));
+  return `<div class="mut mono" style="margin-top:6px;font-size:11.5px">mark <b style="color:var(--tx)">$${esc(mark.toFixed(2))}</b>
+    · P&amp;L <b style="color:${col}">${conSigno(pnl)}${pct != null ? ` (${pct > 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}</b>
+    · MFE <span style="color:var(--verde)">${exc(p.mfe)}</span> / MAE <span style="color:var(--rojo)">${exc(p.mae)}</span>
+    · ${esc(haceCuanto(p.mark_at).txt)}</div>`;
+}
+
 function tarjetaPosicion(p) {
-  const pnl = p.prima_salida != null
-    ? ((p.prima_salida - p.prima_fill) / p.prima_fill * 100) : null;
   return `<div class="card">
     <div class="fila"><h3>${esc(p.symbol)} ${esc(p.direccion)}${p.strike ? ' ' + esc(p.strike) : ''}</h3>
       <span class="fresco">×${esc(p.contratos)} · ${esc(p.broker || '—')}</span></div>
     <div class="fila" style="margin-top:6px">
       <span class="mut">fill <b class="mono" style="color:var(--tx)">$${esc(p.prima_fill)}</b></span>
       <span class="mut">límite GTC <b class="mono" style="color:var(--oro)">$${esc(p.gtc_limite)}</b></span></div>
+    ${pnlVivo(p)}
     <div class="fila" style="margin-top:9px;gap:8px">
       <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
       <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button></div>
@@ -423,11 +448,123 @@ function abrirCuenta() {
     <div class="dos" style="margin-top:6px">
       <button class="btnsec" onclick="MZ.cerrarCuenta()">Cancelar</button>
       <button class="pri" onclick="MZ.cambiarPass()">Cambiar contraseña</button></div>
+    <div class="sec" style="margin-top:14px">AVISOS EN ESTE DISPOSITIVO</div>
+    <div class="fila" style="align-items:flex-start">
+      <div class="mut" id="avEstado" style="flex:1">consultando…</div>
+      <button class="btnsec oculto" id="avBtn" style="flex:none;padding:8px 14px" onclick="MZ.avisos()">Activar</button></div>
     <button class="btnsec" style="width:100%;margin-top:12px" onclick="MZ.salir()">Salir de la Mesa</button>
   </div>`;
   document.body.appendChild(m);
   diagSesion().then(t => { const d = $('#cpDiag'); if (d) d.textContent = t; });
+  pintarAvisos();
   setTimeout(() => { const i = $('#cpActual'); if (i) i.focus(); }, 60);
+}
+
+// ---------- Avisos push (Web Push con VAPID; el worker del VPS los manda) ----------
+// La suscripción del navegador se guarda en push_suscripciones (RLS: solo tú).
+// iOS solo permite push a apps añadidas a la pantalla de inicio (16.4+).
+const VAPID_PUBLIC_KEY = (window.MESA2 && window.MESA2.VAPID_PUBLIC_KEY) || '';
+function urlBase64ToUint8Array(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+const esIOS = () => /iPhone|iPad/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);   // iPad «de escritorio»
+const esStandalone = () => !!(navigator.standalone
+  || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+const avisosSoportado = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const conTope = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg || 'tiempo agotado')), ms))]);
+const MSG_IOS_INICIO = 'En iPhone: añade la Mesa a la pantalla de inicio (Compartir → Añadir a inicio) y actívalos desde ahí.';
+
+// Estado de los avisos en ESTE dispositivo: {txt, activo, puede}
+async function avisosEstado() {
+  if (esIOS() && !esStandalone()) return { txt: MSG_IOS_INICIO, puede: false };
+  if (!avisosSoportado()) return { txt: 'Este navegador no soporta avisos push.', puede: false };
+  if (Notification.permission === 'denied') return { txt: 'Permiso denegado en este navegador. Actívalo en los ajustes del sitio y vuelve a intentarlo.', puede: false };
+  try {
+    const reg = await conTope(navigator.serviceWorker.ready, 5000, 'el service worker no está listo');
+    const sub = await reg.pushManager.getSubscription();
+    return sub ? { txt: 'activos en este dispositivo', activo: true, puede: true }
+      : { txt: 'desactivados', activo: false, puede: true };
+  } catch (e) { return { txt: 'No pude consultar el estado: ' + ((e && e.message) || e), puede: false }; }
+}
+async function pintarAvisos() {
+  const est = $('#avEstado'), btn = $('#avBtn');
+  if (!est || !btn) return;
+  const s = await avisosEstado();
+  if (!$('#avEstado')) return;   // el modal se cerró mientras tanto
+  est.textContent = s.txt;
+  est.style.color = s.activo ? 'var(--verde)' : '';
+  btn.classList.toggle('oculto', !s.puede);
+  btn.textContent = s.activo ? 'Desactivar' : 'Activar';
+  btn.dataset.activo = s.activo ? '1' : '';
+}
+async function avisosActivar() {
+  const est = $('#avEstado'), btn = $('#avBtn');
+  if (!VAPID_PUBLIC_KEY) { est.textContent = 'Falta la llave VAPID pública en config.js.'; return; }
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid) { est.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
+  btn.disabled = true; est.style.color = ''; est.textContent = 'Pidiendo permiso…';
+  let perm = 'default';
+  try { perm = await Notification.requestPermission(); } catch (_) { perm = Notification.permission; }
+  if (perm !== 'granted') {
+    est.textContent = perm === 'denied' ? 'Permiso denegado. Actívalo en los ajustes del navegador/sitio.' : 'No concediste el permiso.';
+    btn.disabled = false; return;
+  }
+  est.textContent = 'Suscribiendo…';
+  let sub = null;
+  try {
+    const reg = await conTope(navigator.serviceWorker.ready, 8000, 'el service worker no está listo');
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
+    const j = sub.toJSON();
+    if (!j || !j.endpoint || !j.keys || !j.keys.p256dh || !j.keys.auth) throw new Error('suscripción incompleta');
+    const { error } = await sb.from('push_suscripciones').upsert({
+      user_id: uid, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth,
+      ua: navigator.userAgent.slice(0, 120), fallos: 0,
+    }, { onConflict: 'user_id,endpoint' });
+    if (error) throw new Error('no se guardó en la nube: ' + error.message);
+    toast('Avisos activados ✓');
+  } catch (e) {
+    // Si la nube no la guardó, la suscripción local no sirve: se deshace para
+    // que el estado no mienta («activos» sin que el worker sepa a dónde mandar).
+    if (sub) { try { await sub.unsubscribe(); } catch (_) {} }
+    const m = (e && e.message) || String(e);
+    est.textContent = /permission|denied|permiso/i.test(m) ? 'Permiso denegado por el navegador.'
+      : /AbortError|push service|registration failed/i.test(m) ? 'El servicio de push del navegador no respondió. Inténtalo de nuevo.'
+      : 'No pude activar los avisos: ' + m;
+    est.style.color = 'var(--rojo)';
+  }
+  btn.disabled = false;
+  if (!est.style.color) pintarAvisos();
+}
+async function avisosDesactivar() {
+  const est = $('#avEstado'), btn = $('#avBtn');
+  btn.disabled = true; est.style.color = ''; est.textContent = 'Desactivando…';
+  try {
+    const reg = await conTope(navigator.serviceWorker.ready, 8000, 'el service worker no está listo');
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      const endpoint = sub.endpoint;
+      await sub.unsubscribe();
+      const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+      let q = sb.from('push_suscripciones').delete().eq('endpoint', endpoint);
+      if (uid) q = q.eq('user_id', uid);
+      const { error } = await q;
+      if (error) throw new Error('no se borró en la nube: ' + error.message);
+    }
+    toast('Avisos desactivados');
+  } catch (e) { est.textContent = 'No pude desactivar: ' + ((e && e.message) || e); est.style.color = 'var(--rojo)'; }
+  btn.disabled = false;
+  if (!est.style.color) pintarAvisos();
+}
+function avisosToggle() {
+  const btn = $('#avBtn');
+  if (!btn) return;
+  return btn.dataset.activo ? avisosDesactivar() : avisosActivar();
 }
 const claveSesion = () => 'sb-' + new URL(SUPABASE_URL).hostname.split('.')[0] + '-auth-token';
 // Diagnóstico corto (sin tokens) del estado de la sesión en ESTE dispositivo.
@@ -487,7 +624,7 @@ async function salir() {
   location.hash = '';
   location.reload();
 }
-window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir });
+window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir, avisos: avisosToggle });
 
 // ---------- Cuentas y diario (historial + resúmenes) ----------
 let _periodoSel = 'semana';   // semana | mes | ytd
@@ -525,8 +662,13 @@ const BROKERS = [
 // Opción B: el proxy del VPS solo FIRMA con el secreto de app; el token con
 // poder (oauth_token + secret) se guarda aquí en localStorage y jamás se sube a
 // la nube. E*TRADE lo caduca cada medianoche ET → login casi diario, con PIN.
-const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2' };
+const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2', dia: 'mz_et_dia' };
 const num2 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+// El token de E*TRADE muere a medianoche ET: si el login fue otro día NY, está
+// expirado seguro y no vale la pena molestar al proxy (mz_et_dia = día del login).
+function etDiaVencido() {
+  try { const d = localStorage.getItem(ET_K.dia); return !!d && d !== hoyNY(); } catch (_) { return false; }
+}
 function etCreds() {
   try {
     const t = localStorage.getItem(ET_K.tok), s = localStorage.getItem(ET_K.sec);
@@ -574,6 +716,7 @@ function etError(r) {
 async function etradeSaldo(forzar) {
   const cr = etCreds();
   if (!cr) return null;
+  if (etDiaVencido()) return { _expirado: true };   // murió a medianoche ET: sin llamar al proxy
   if (!forzar) {
     try {
       const c = JSON.parse(localStorage.getItem(ET_K.cache) || 'null');
@@ -650,7 +793,11 @@ async function etradePinEnviar(rt) {
   if (!d.token) { err.textContent = d.error || 'No pude conectar. Revisa el código.'; return; }
   etGuardar(d.token, d.token_secret);
   const m = $('#modalPin'); if (m) m.remove();
-  try { localStorage.removeItem(ET_K.sync); } catch (_) {}   // fuerza sincronizar historial
+  try {
+    localStorage.setItem(ET_K.dia, hoyNY());   // el token vale solo hasta medianoche ET
+    localStorage.removeItem(ET_K.sync);        // fuerza sincronizar historial
+    localStorage.removeItem(ET_K.cache);
+  } catch (_) {}
   toast('E*TRADE conectada ✓');
   vistaCuentas();
 }
@@ -758,9 +905,18 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
 
 // Sincroniza (con tope de 10 min por dispositivo). Devuelve el resumen para la
 // vista y `cambio` = true si escribió algo nuevo (para re-dibujar).
-async function etradeSincronizar(forzar) {
+// Guarda de concurrencia: si ya hay una sincronización en vuelo (la vista se
+// re-dibuja por Realtime, el timer o «sincronizar»), todos esperan la misma.
+let _etSyncEnVuelo = null;
+function etradeSincronizar(forzar) {
+  if (_etSyncEnVuelo) return _etSyncEnVuelo;
+  _etSyncEnVuelo = etradeSincronizarImpl(forzar).finally(() => { _etSyncEnVuelo = null; });
+  return _etSyncEnVuelo;
+}
+async function etradeSincronizarImpl(forzar) {
   const cr = etCreds();
   if (!cr) return { estado: 'sin' };
+  if (etDiaVencido()) return { estado: 'expirado', cambio: false };   // sin llamar al proxy
   let prev = null;
   try { prev = JSON.parse(localStorage.getItem(ET_K.sync) || 'null'); } catch (_) {}
   if (!forzar && prev && Date.now() - prev.ts < ET_SYNC_TTL) return { ...prev.resumen, estado: prev.resumen.estado, cambio: false };
@@ -973,57 +1129,132 @@ window.MZ = Object.assign(window.MZ || {}, {
 function nombreMesNY() {
   return new Intl.DateTimeFormat('es', { timeZone: 'America/New_York', month: 'long' }).format(new Date());
 }
+// Une las operaciones manuales (posiciones) con los round-trips reales de los
+// brókeres (broker_trades) en UN conjunto sin duplicados, para la Disciplina.
+//  · Los round-trips del bróker se agrupan por contrato + día NY de apertura:
+//    una entrada vendida en dos partes es UNA operación, no dos.
+//  · Una posición manual que coincide con un grupo del bróker (symbol, dirección,
+//    strike, expiración y mismo día NY de apertura) cuenta una sola vez: el
+//    bróker manda en los $; la manual aporta su veredicto de rango
+//    (entrada_semaforo / fuera_de_rango). Strike/expiración vacíos en la manual
+//    no impiden el emparejamiento.
+function unirOperaciones(posic, trades) {
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const grupos = {};
+  for (const t of trades || []) {
+    const dia = ymdNY(t.abierta_at);
+    const k = [t.symbol, t.direccion, num(t.strike), t.expiracion || '', dia].join('|');
+    const g = grupos[k] || (grupos[k] = {
+      symbol: t.symbol, direccion: t.direccion, strike: num(t.strike), expiracion: t.expiracion || null,
+      abierta_fecha_ny: dia, abierta_at: t.abierta_at || null, cerrada_at: t.cerrada_at || null,
+      contratos: 0, _costo: 0, resultado_usd: 0, estado: 'cerrada', broker: t.broker,
+      _fuente: t.broker, fuera_de_rango: false, entrada_semaforo: null, _partes: 0,
+    });
+    const c = num(t.contratos) || 0;
+    g.contratos += c; g._costo += (num(t.prima_fill) || 0) * c; g.resultado_usd += num(t.resultado_usd) || 0;
+    if (t.abierta_at && (!g.abierta_at || t.abierta_at < g.abierta_at)) g.abierta_at = t.abierta_at;
+    if (t.cerrada_at && (!g.cerrada_at || t.cerrada_at > g.cerrada_at)) g.cerrada_at = t.cerrada_at;
+    g._partes++;
+  }
+  const delBroker = Object.values(grupos).map(g => ({ ...g,
+    prima_fill: g.contratos ? Math.round(g._costo / g.contratos * 10000) / 10000 : null,
+    resultado_usd: r2(g.resultado_usd) }));
+  const usados = new Set(); let fusionadas = 0; const manual = [];
+  for (const p of posic || []) {
+    const dia = p.abierta_fecha_ny || ymdNY(p.abierta_at);
+    const i = delBroker.findIndex((g, j) => !usados.has(j) && g.symbol === p.symbol && g.direccion === p.direccion
+      && g.abierta_fecha_ny === dia && (p.strike == null || num(p.strike) === g.strike)
+      && (!p.expiracion || p.expiracion === g.expiracion));
+    if (i >= 0) {
+      usados.add(i); fusionadas++;
+      const g = delBroker[i];
+      g.fuera_de_rango = !!p.fuera_de_rango; g.entrada_semaforo = p.entrada_semaforo || null; g._manual_id = p.id;
+      continue;
+    }
+    manual.push({ ...p, abierta_fecha_ny: dia, _fuente: 'manual' });
+  }
+  const ops = [...manual, ...delBroker].sort((a, b) => (a.abierta_at || '').localeCompare(b.abierta_at || ''));
+  const cuenta = (b) => (trades || []).filter(t => t.broker === b).length;
+  return { ops, fusionadas, fuentes: { manual: (posic || []).length, etrade: cuenta('etrade'), tasty: cuenta('tasty'), schwab: cuenta('schwab') } };
+}
+
+const TAMANO_PCT = 10;   // doctrina: máximo 10% de la cuenta por operación
 async function vistaDisciplina() {
-  const { data } = await sb.from('posiciones').select('*').order('abierta_at', { ascending: false });
-  const pos = data || [];
+  const [posR, btR, csR] = await Promise.all([
+    sb.from('posiciones').select('*'),
+    sb.from('broker_trades').select('*'),
+    sb.from('cuenta_snapshots').select('broker,saldo_neto,capturado_at'),
+  ]);
+  const { ops, fusionadas, fuentes } = unirOperaciones(posR.data || [], btR.data || []);
+  const snaps = csR.data || [];
+  const saldo = snaps.reduce((s, c) => s + (Number(c.saldo_neto) || 0), 0);
+  const haySaldo = snaps.length > 0 && saldo > 0;
+  const tope = haySaldo ? saldo * TAMANO_PCT / 100 : null;
   const inicioMes = inicioPeriodo('mes');
   const lun = lunesNY();
-  const cerradas = pos.filter(p => p.estado === 'cerrada' || p.estado === 'expirada');
-  const delMes = pos.filter(p => (p.abierta_fecha_ny || '') >= inicioMes);
-  const cerradasSem = cerradas.filter(p => (p.abierta_fecha_ny || '') >= lun);
+  const esCerrada = (p) => p.estado === 'cerrada' || p.estado === 'expirada';
+  const delMes = ops.filter(p => (p.abierta_fecha_ny || '') >= inicioMes);
+  const semana = ops.filter(p => (p.abierta_fecha_ny || '') >= lun);   // ya viene en orden de apertura
+  const cerradasSem = semana.filter(esCerrada);
+  const costoEntrada = (p) => (Number(p.prima_fill) || 0) * (Number(p.contratos) || 0) * 100;
 
-  // cupo de la semana
-  const semana = pos.filter(p => (p.abierta_fecha_ny || '') >= lun);
+  // cupo de la semana (conjunto deduplicado; el excedente = más allá de la 3ª)
   const usadas = semana.length;
   const colCupo = usadas > OPS_SEMANA ? 'var(--rojo)' : usadas === OPS_SEMANA ? 'var(--oro)' : 'var(--verde)';
+  const extraSem = semana.slice(OPS_SEMANA);
 
-  // excedente a retirar (resultado cerrado positivo de la semana)
+  // excedente a retirar (resultado cerrado positivo de la semana, bróker incluido)
   const resSem = cerradasSem.reduce((s, p) => s + (Number(p.resultado_usd) || 0), 0);
   const excedente = Math.max(0, resSem);
 
   // reglas rotas del mes
   const rotas = [];
-  // (1) entrar FUERA del rango
+  const etiqueta = (p) => `${p.symbol} ${p.direccion}${p.strike ? ' ' + p.strike : ''} · ${fmtFechaNY(p.abierta_at)} · ${p._fuente === 'manual' ? 'manual' : p._fuente}`;
+  // (1) entrar FUERA del rango (veredicto que solo existe en el registro manual)
   for (const p of delMes.filter(p => p.fuera_de_rango)) {
-    const r = Number(p.resultado_usd);
-    rotas.push({ regla: 'Entró FUERA del rango óptimo',
-      det: `${p.symbol} ${p.direccion} · ${fmtFechaNY(p.abierta_at)}`,
-      costo: (r != null && r < 0) ? r : 0, gano: r != null && r > 0 });
+    const r = esCerrada(p) ? Number(p.resultado_usd) : NaN;
+    rotas.push({ regla: 'Entró FUERA del rango óptimo', det: etiqueta(p),
+      costo: (Number.isFinite(r) && r < 0) ? r : 0, gano: Number.isFinite(r) && r > 0 });
   }
-  // (2) 4ª+ operación de una semana (cupo excedido) — agrupar por semana ISO
+  // (2) 4ª+ operación de una semana (cupo excedido) — agrupar por semana (lunes NY)
   const porSemana = {};
   for (const p of delMes) {
     const d = new Date((p.abierta_fecha_ny || '') + 'T12:00:00Z');
+    if (isNaN(d)) continue;
     const wk = new Date(d); wk.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
     const key = wk.toISOString().slice(0, 10);
     (porSemana[key] = porSemana[key] || []).push(p);
   }
-  for (const [wk, ops] of Object.entries(porSemana)) {
-    if (ops.length > OPS_SEMANA) {
-      const extra = ops.slice(OPS_SEMANA); // las que sobraron
-      const costo = extra.reduce((s, p) => s + Math.min(0, Number(p.resultado_usd) || 0), 0);
-      rotas.push({ regla: `${ops.length} operaciones esa semana (plan: ${OPS_SEMANA})`,
-        det: `semana del ${fmtFechaNY(wk + 'T12:00:00Z')}`, costo, gano: false });
+  for (const [wk, lista] of Object.entries(porSemana)) {
+    if (lista.length > OPS_SEMANA) {
+      const extra = lista.slice(OPS_SEMANA);   // las que sobraron (ya en orden de apertura)
+      const costo = extra.reduce((s, p) => s + Math.min(0, esCerrada(p) ? (Number(p.resultado_usd) || 0) : 0), 0);
+      rotas.push({ regla: `${lista.length} operaciones esa semana (plan: ${OPS_SEMANA})`,
+        det: `semana del ${fmtFechaNY(wk + 'T12:00:00Z')} · sobraron: ${extra.map(p => p.symbol + ' ' + p.direccion).join(', ')}`,
+        costo, gano: false });
+    }
+  }
+  // (3) tamaño > 10% del saldo (costo de entrada = prima × contratos × 100)
+  if (tope != null) {
+    for (const p of delMes.filter(p => costoEntrada(p) > tope)) {
+      const r = esCerrada(p) ? Number(p.resultado_usd) : NaN;
+      rotas.push({ regla: `Tamaño ${usd(costoEntrada(p))}: más del ${TAMANO_PCT}% de la cuenta (${usd(tope)})`,
+        det: etiqueta(p), costo: (Number.isFinite(r) && r < 0) ? r : 0, gano: Number.isFinite(r) && r > 0 });
     }
   }
   const costoTotal = rotas.reduce((s, r) => s + (r.costo || 0), 0);
 
   let h = '';
   // cumplimiento del plan (semana)
+  const costoExtraSem = extraSem.reduce((s, p) => s + Math.min(0, esCerrada(p) ? (Number(p.resultado_usd) || 0) : 0), 0);
   h += `<div class="card">
     <div class="fila"><h3>Plan de la semana</h3>
       <span style="font-weight:800;font-size:20px;color:${colCupo}">${usadas} / ${OPS_SEMANA}</span></div>
-    <div class="mut" style="margin-top:3px">3 operaciones por semana · 10% de la cuenta por operación · solo tus 4 tickers. El plan manda.</div></div>`;
+    <div class="mut" style="margin-top:3px">3 operaciones por semana · ${TAMANO_PCT}% de la cuenta por operación · solo tus 4 tickers. El plan manda.</div>
+    ${extraSem.length ? `<div class="mut" style="margin-top:6px;color:var(--rojo)">Excedente: ${extraSem.length} op${extraSem.length > 1 ? 's' : ''} más allá de la 3ª (${esc(extraSem.map(p => p.symbol + ' ' + p.direccion).join(', '))})${costoExtraSem < 0 ? ' · te costaron ' + usd(costoExtraSem) : ''}</div>` : ''}
+    ${haySaldo ? `<div class="fresco" style="margin-top:6px">saldo ${usd(saldo)} · tope por operación ${usd(tope)}</div>`
+      : `<div class="fresco" style="margin-top:6px">sin saldo de cuenta todavía (cuenta_snapshots): la regla del ${TAMANO_PCT}% no se evalúa</div>`}</div>`;
 
   // excedente a retirar
   if (excedente > 0) {
@@ -1049,6 +1280,7 @@ async function vistaDisciplina() {
   } else {
     h += `<div class="card vacio">Ninguna regla rota este mes. 🎯<br>Así se construye la cuenta.</div>`;
   }
+  h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">fuentes: manual ${fuentes.manual} · E*TRADE ${fuentes.etrade} · tasty ${fuentes.tasty}${fuentes.schwab ? ' · Schwab ' + fuentes.schwab : ''}${fusionadas ? ` · ${fusionadas} manual${fusionadas > 1 ? 'es' : ''} fusionada${fusionadas > 1 ? 's' : ''} con el bróker` : ''}</div>`;
   $('#vista').innerHTML = h;
 }
 
@@ -1059,7 +1291,14 @@ function vistaProx(tab) {
   $('#vista').innerHTML = `<div class="prox">${esc(txt)}</div>`;
 }
 
-// registrar el service worker (shell-only)
+// registrar el service worker (shell-only + avisos push)
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // Al tocar un aviso, el SW enfoca esta ventana y pide ir a la ruta (sin recargar).
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.tipo === 'navegar' && typeof d.url === 'string' && d.url.startsWith('#/')) {
+      if (location.hash === d.url) ruta(); else location.hash = d.url;
+    }
+  });
 }

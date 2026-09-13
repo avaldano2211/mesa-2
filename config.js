@@ -5,5 +5,7 @@ window.MESA2 = {
   SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBjc2xobm5hb2hzZG91ZGRsZnl2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkyMjMxMzYsImV4cCI6MjEwNDc5OTEzNn0.uoASP55AbyZKSyIHuIMsMo-RJ8YbaikbhKyzoiTsZXA",
   // Proxy de firma de brókeres (VPS, expuesto por Tailscale Funnel). Solo firma
   // OAuth de lectura; el token del usuario vive en ESTE dispositivo, no aquí.
-  PROXY_URL: "https://mesa2.taila0d73b.ts.net"
+  PROXY_URL: "https://mesa2.taila0d73b.ts.net",
+  // Llave PÚBLICA VAPID de los avisos push (la privada vive solo en el VPS).
+  VAPID_PUBLIC_KEY: "BBeuYBHA_5UY83jBzX8RZs2tAuFp_mDlwbySAEtej_nXy-56683fuZVKjICIzMRSLyxPhNK6mOMIKLDd3rY8ijo"
 };
