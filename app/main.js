@@ -1414,6 +1414,35 @@ function semaforoRango(prima, rango) {
 // Avisos de doctrina EN VIVO (amarillos; nunca bloquean). ctx: {rango, opsSemana,
 // saldo, antes1030}. La regla del ticker aplica a toda orden; las demás solo a
 // ENTRADAS (una salida no abre operación ni gasta cupo).
+// ---- presupuesto por ticket (regla personal de Andrés, 2026-09-13): el 35% del
+// saldo del BRÓKER de la orden (E*TRADE hoy; Schwab/tasty con su propio saldo
+// cuando operen). La cantidad se prearma sola: presupuesto ÷ valor del contrato.
+// Es sizing personal, NO doctrina: la regla del 10% (TAMANO_PCT) sigue avisando.
+const PRESUPUESTO_PCT_DEFECTO = 35;
+const PRESUP_K = 'mz_presup_pct';
+function presupuestoPct() {
+  try { const v = Number(localStorage.getItem(PRESUP_K)); return (v > 0 && v <= 100) ? v : PRESUPUESTO_PCT_DEFECTO; } catch (_) { return PRESUPUESTO_PCT_DEFECTO; }
+}
+// Presupuesto en $ para este ticket a partir del saldo del bróker (null si no se conoce).
+function presupuestoTicket(ctx, pct) {
+  const saldo = Number(ctx && ctx.saldoBroker) || 0;
+  if (!(saldo > 0)) return null;
+  return Math.round(saldo * (pct || presupuestoPct()) / 100);
+}
+// Contratos (o acciones) que caben en el presupuesto: ⌊presupuesto ÷ valor⌋, mínimo 1.
+function cantidadPorPresupuesto(presupuesto, precio, esOpcion) {
+  const p = Number(precio), b = Number(presupuesto);
+  if (!(p > 0) || !(b > 0)) return null;
+  return Math.max(1, Math.floor(b / (p * (esOpcion ? 100 : 1))));
+}
+// Valor total de la orden (cantidad × precio × 100 en opciones); null si no hay precio.
+function totalOrden(f) {
+  f = f || {};
+  const qty = Number(f.cantidad) || 0;
+  const precio = f.priceType === 'LIMIT' ? Number(f.limitPrice) : f.priceType === 'STOP' ? Number(f.stopPrice) : null;
+  if (!(qty > 0) || !(precio > 0)) return null;
+  return Math.round(qty * precio * (f.tipo === 'EQ' ? 1 : 100) * 100) / 100;
+}
 function avisosOrden(f, ctx) {
   f = f || {}; ctx = ctx || {};
   const av = [];
@@ -1429,7 +1458,9 @@ function avisosOrden(f, ctx) {
   }
   const ops = Number(ctx.opsSemana) || 0;
   if (ops >= OPS_SEMANA) av.push(`Sería la ${ops + 1}ª operación de la semana (plan: ${OPS_SEMANA})`);
-  const saldo = Number(ctx.saldo) || 0;
+  // la regla del 10% se mide contra la cuenta del BRÓKER de la orden (E*TRADE);
+  // si no se conoce, contra el total de cuentas
+  const saldo = Number(ctx.saldoBroker != null ? ctx.saldoBroker : ctx.saldo) || 0;
   if (precio > 0 && qty > 0 && saldo > 0) {
     const costo = precio * qty * (esOpt ? 100 : 1), tope = saldo * TAMANO_PCT / 100;
     if (costo > tope) av.push(`Costo ${usd(costo)}: más del ${TAMANO_PCT}% de la cuenta (${usd(tope)})`);
@@ -1633,6 +1664,9 @@ function abrirOrden(pre) {
       <div><label>Término</label><select id="oTerm">
         <option value="DAY" ${!gtc ? 'selected' : ''}>DAY (hoy)</option>
         <option value="GTC" ${gtc ? 'selected' : ''}>GTC</option></select></div></div>
+    <div class="fila" style="margin:2px 0 8px;font-size:12px">
+      <span class="mut">Presupuesto <a href="#" id="oPresup" onclick="MZ.presupuestoPct();return false">${presupuestoPct()}%</a></span>
+      <b class="mono" id="oTotal">Total —</b></div>
     <div class="dos">
       <div><label>Precio</label><select id="oPt">
         <option value="LIMIT" ${pt === 'LIMIT' ? 'selected' : ''}>Límite</option>
@@ -1649,16 +1683,22 @@ function abrirOrden(pre) {
   </div>`;
   document.body.appendChild(m);
   _ord = { pre, ctx: null, f: null, orden: null, previewIds: null, filaId: null, accountIdKey: null, caduca: 0, timer: null, avisos: [], avisosTxt: '',
-    cadena: null, cadenaSym: null, cadenaExp: null, cadenaClave: '', cadenaTs: 0, cadenaTimer: null, cadenaErr: null, cadenaCargando: false, cadenaGen: 0, cotiz: null, cotizTs: 0, vencs: [] };
-  m.addEventListener('input', () => { ajustarFormOrden(); pintarAvisosOrden(); });
+    cadena: null, cadenaSym: null, cadenaExp: null, cadenaClave: '', cadenaTs: 0, cadenaTimer: null, cadenaErr: null, cadenaCargando: false, cadenaGen: 0, cotiz: null, cotizTs: 0, vencs: [],
+    qtyManual: pre.cantidad != null };            // cantidad explícita (p. ej. salida de una posición) → no se prearma
+  m.addEventListener('input', (e) => {
+    const id = e && e.target && e.target.id;
+    if (id === 'oQty') _ord.qtyManual = true;                       // el usuario manda: no se vuelve a prearmar
+    if (id === 'oPrecio') autoCantidad();
+    ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden();
+  });
   m.addEventListener('change', (e) => {
-    ajustarFormOrden(); pintarAvisosOrden();
+    ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden();
     const id = e && e.target && e.target.id;
     if (id === 'oSym') _ord.cadenaSym = null;                      // símbolo nuevo → cotización y vencimientos de nuevo
     if (['oSym', 'oTipo', 'oExp', 'oAcc'].includes(id)) { _ord.cadenaGen++; cargarCadena(true); }   // gen++: una carga en vuelo se descarta y se relanza
   });
-  ajustarFormOrden(); pintarArmadoOrden();
-  cargarCtxOrden().then(() => { pintarAvisosOrden(); pintarCadena(); });
+  ajustarFormOrden(); pintarArmadoOrden(); pintarTotalOrden();
+  cargarCtxOrden().then(() => { autoCantidad(); pintarAvisosOrden(); pintarTotalOrden(); pintarCadena(); });
   cargarCadena();
   setTimeout(() => { const i = $('#oSym'); if (i && !i.value) i.focus(); }, 60);
 }
@@ -1858,7 +1898,8 @@ function cadenaElegir(lado, strike, ask, bid) {
   // compra: al ask (se llena); venta: al bid — editable después
   const p = f.accion === 'venta' ? (bid != null ? bid : ask) : (ask != null ? ask : bid);
   if (pr && pt && pt.value === 'LIMIT' && p != null) pr.value = Number(p).toFixed(2);
-  ajustarFormOrden(); pintarAvisosOrden(); pintarCadena();
+  autoCantidad();                                   // prearma la cantidad con el presupuesto (35% del saldo)
+  ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden(); pintarCadena();
 }
 // Contexto de doctrina (rango por ticker, cupo semanal, saldo, hora): una consulta.
 async function cargarCtxOrden() {
@@ -1874,8 +1915,36 @@ async function cargarCtxOrden() {
   est.forEach(e => { rangos[e.symbol] = e.payload && e.payload.rango_vivo ? e.payload.rango_vivo : null; });
   const lun = lunesNY();
   const opsSemana = unirOperaciones(pos.data || [], bt.data || []).ops.filter(p => (p.abierta_fecha_ny || '') >= lun).length;
-  const saldo = (cs.data || []).reduce((s, c) => s + (Number(c.saldo_neto) || 0), 0);
-  if (_ord) _ord.ctx = { rangos, opsSemana, saldo, antes1030: antesDe1030NY(merc) };
+  // saldo por bróker (una fila por bróker en cuenta_snapshots) + total
+  const saldos = {};
+  (cs.data || []).forEach(c => { if (c.broker) saldos[c.broker] = Number(c.saldo_neto) || 0; });
+  // E*TRADE: si hay saldo vivo reciente en este equipo (caché de 5 min), manda ese
+  try { const c = JSON.parse(localStorage.getItem(ET_K.cache) || 'null'); if (c && c.snap && Number(c.snap.saldo_neto) > 0) saldos.etrade = Number(c.snap.saldo_neto); } catch (_) {}
+  const saldo = Object.values(saldos).reduce((s, v) => s + v, 0);
+  const broker = 'etrade';                               // las órdenes de la Mesa salen por E*TRADE (Schwab/tasty después)
+  const saldoBroker = saldos[broker] > 0 ? saldos[broker] : null;
+  if (_ord) _ord.ctx = { rangos, opsSemana, saldo, saldos, broker, saldoBroker, antes1030: antesDe1030NY(merc) };
+}
+// Cantidad prearmada: presupuesto (35% del saldo del bróker) ÷ valor del contrato.
+// Solo en compras, solo si el usuario no tocó la cantidad a mano y hay precio.
+function autoCantidad() {
+  if (!_ord || _ord.qtyManual) return;
+  const f = leerFormOrden(); const q = $('#oQty'); if (!q) return;
+  if (f.accion === 'venta' || f.priceType !== 'LIMIT') return;
+  const n = cantidadPorPresupuesto(presupuestoTicket(_ord.ctx), f.limitPrice, f.tipo !== 'EQ');
+  if (n != null && String(n) !== String(q.value)) { q.value = n; pintarAvisosOrden(); }
+}
+function pintarTotalOrden() {
+  if (!_ord) return; const el = $('#oTotal'), pr = $('#oPresup'); if (!el || !pr) return;
+  const f = leerFormOrden();
+  const pct = presupuestoPct(), presup = presupuestoTicket(_ord.ctx, pct);
+  const brokerTxt = (_ord.ctx && _ord.ctx.broker === 'etrade') ? 'E*TRADE' : 'la cuenta';
+  pr.textContent = presup != null ? `${pct}% de ${brokerTxt} = ${usd(presup)}` : `${pct}% de ${brokerTxt} (sin saldo aún)`;
+  const t = totalOrden(f);
+  const qty = Number(f.cantidad) || 0, precio = f.priceType === 'LIMIT' ? Number(f.limitPrice) : Number(f.stopPrice);
+  el.textContent = t == null ? 'Total —'
+    : `Total ${usd(t)}${qty > 0 && precio > 0 ? ` = ${qty} × $${precio.toFixed(2)}${f.tipo === 'EQ' ? '' : ' × 100'}` : ''}`;
+  el.style.color = (t != null && presup != null && t > presup * 1.001) ? 'var(--rojo)' : '';
 }
 function leerFormOrden() {
   const g = (id) => { const el = $('#' + id); return el ? String(el.value || '') : ''; };
@@ -2268,6 +2337,15 @@ async function ordenesActualizar(opts) {
 window.MZ = Object.assign(window.MZ || {}, {
   abrirOrden, cerrarOrden, ordenPreview, ordenPlace, ordenEditar, cancelarOrden, ordenesActualizar,
   cadenaElegir, cadenaRefrescar: () => { if (_ord) _ord.cadenaGen++; cargarCadena(true); },
+  presupuestoPct: () => {
+    const v = prompt('Presupuesto por ticket: % del saldo del bróker de la orden (E*TRADE)', String(presupuestoPct()));
+    if (v == null) return;
+    const n = Number(String(v).replace(',', '.').replace('%', '').trim());
+    if (!(n > 0 && n <= 100)) { toast('Pon un porcentaje entre 1 y 100'); return; }
+    try { localStorage.setItem(PRESUP_K, String(n)); } catch (_) {}
+    if (_ord) { _ord.qtyManual = false; autoCantidad(); pintarAvisosOrden(); pintarTotalOrden(); }
+    toast(`Presupuesto por ticket: ${n}% del saldo`);
+  },
   cadenaExp: (v) => { const ex = $('#oExp'); if (ex) ex.value = v; if (_ord) { _ord.cadenaExp = v; _ord.cadenaGen++; } cargarCadena(true); },
   pinOrdenes: async () => { await modalPinOrdenes(pinHash() ? 'cambiar' : 'crear'); pintarOrdenesCuenta(); },
   armar: async () => { if (armadoHasta()) desarmar(); else await pedirPin(); pintarOrdenesCuenta(); },
