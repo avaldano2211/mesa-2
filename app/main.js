@@ -300,8 +300,7 @@ function tarjetaSenal(s, posic) {
         <button class="btnsec" onclick='MZ.abrirFill(${JSON.stringify({
           senal_id: s.id, symbol: s.symbol, direccion: s.direccion }).replace(/'/g, "&#39;")})'>Registrar mi fill</button>
         <button class="pri" onclick='MZ.abrirOrden(${JSON.stringify({
-          senal_id: s.id, symbol: s.symbol, direccion: s.direccion, proposito: 'entrada',
-          strike: s.strike == null ? undefined : s.strike, expiracion: s.expiracion || undefined }).replace(/'/g, "&#39;")})'>Operar en E*TRADE</button></div>`}
+          senal_id: s.id, symbol: s.symbol, direccion: s.direccion, proposito: 'entrada' }).replace(/'/g, "&#39;")})'>Operar en E*TRADE</button></div>`}
   </div>`;
 }
 
@@ -1536,7 +1535,15 @@ function abrirOrden(pre) {
   cargarCtxOrden().then(() => pintarAvisosOrden());
   setTimeout(() => { const i = $('#oSym'); if (i && !i.value) i.focus(); }, 60);
 }
+// Una vista previa que no se envía (caduca, se edita o se cierra) queda 'expirada'
+// en la bitácora, para que el Copiloto no se llene de previews muertas.
+function expirarPreviewHuerfana() {
+  if (!_ord || !_ord.filaId || _ord.estadoFila !== 'preview') return;
+  _ord.estadoFila = 'expirada';
+  sb.from('ordenes').update({ estado: 'expirada', actualizado_at: new Date().toISOString() }).eq('id', _ord.filaId).then(() => {}, () => {});
+}
 function cerrarOrden() {
+  expirarPreviewHuerfana();
   if (_ord && _ord.timer) clearInterval(_ord.timer);
   _ord = null;
   const m = $('#modalOrden'); if (m) m.remove();
@@ -1593,8 +1600,10 @@ function pintarAvisosOrden() {
   _ord.avisos = av;
   const txt = av.join('\n');
   if (txt === _ord.avisosTxt) return;   // sin cambios: no tocar el checkbox
-  _ord.avisosTxt = txt;
-  const marcado = !!($('#oOverride') && $('#oOverride').checked);
+  // Un aviso NUEVO exige volver a aceptar: el override es explícito por aviso.
+  const nuevos = av.some(a => !(_ord.avisosPrev || []).includes(a));
+  _ord.avisosTxt = txt; _ord.avisosPrev = av.slice();
+  const marcado = !nuevos && !!($('#oOverride') && $('#oOverride').checked);
   box.innerHTML = av.length ? `<div class="aviso"><div style="font-weight:700;margin-bottom:3px">Avisos de doctrina</div>
     ${av.map(a => `<div>· ${esc(a)}</div>`).join('')}
     <label class="check"><input type="checkbox" id="oOverride" ${marcado ? 'checked' : ''}> Entiendo, rompo la regla</label></div>` : '';
@@ -1617,15 +1626,16 @@ async function ordenPreview() {
   if (requiereOverride(av) && !($('#oOverride') && $('#oOverride').checked)) {
     err.textContent = 'Hay avisos de doctrina: marca «Entiendo, rompo la regla» para seguir, o corrige la orden.'; return;
   }
-  // 1) armado por PIN (sin PIN configurado → se crea aquí mismo)
-  if (!(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
-  pintarArmadoOrden();
-  // 2) credenciales de E*TRADE (viven en este dispositivo)
+  // 1) credenciales de E*TRADE (viven en este dispositivo) — antes del PIN,
+  //    para no hacer teclear el PIN si falta el login diario
   const cr = etCreds();
   if (!cr) { err.textContent = 'Conecta E*TRADE primero: Cuentas → E*TRADE → Conectar (login diario).'; return; }
   if (etDiaVencido()) { err.textContent = 'La sesión de E*TRADE expiró a medianoche ET. Reconecta en Cuentas → E*TRADE.'; return; }
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
   if (!uid) { err.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
+  // 2) armado por PIN (sin PIN configurado → se crea aquí mismo)
+  if (!(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
+  pintarArmadoOrden();
   btn.disabled = true; btn.textContent = 'Consultando E*TRADE…';
   const pre = _ord.pre || {};
   const proposito = propositoDe(f);
@@ -1642,6 +1652,9 @@ async function ordenPreview() {
     const em = mensajeError(r);
     const ids = P.PreviewIds ? (Array.isArray(P.PreviewIds) ? P.PreviewIds : [P.PreviewIds]) : [];
     if (r.status >= 400 || em || !ids.length) {
+      // Sesión de E*TRADE muerta (401 aun tras renovar): es un problema de login,
+      // no de la orden → no se anota nada.
+      if (r.status === 401) throw new Error('La sesión de E*TRADE expiró — reconecta en Cuentas → E*TRADE.');
       // E*TRADE la rechazó en la vista previa ({Error:{message}}): queda anotada
       // como rechazada con su respuesta. Un fallo del PROXY (404/403) no se anota.
       if (d.Error && d.Error.message) {
@@ -1655,7 +1668,7 @@ async function ordenPreview() {
       preview: Object.assign({ _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null } }, recortarJson(P, 4000)) };
     const ins = await sb.from('ordenes').insert(fila).select('id').single();
     if (ins.error) throw new Error('No pude guardar la vista previa: ' + ins.error.message);
-    Object.assign(_ord, { f, orden, previewIds, filaId: ins.data.id, accountIdKey, caduca: Date.now() + PREVIEW_SEG * 1000 });
+    Object.assign(_ord, { f, orden, previewIds, filaId: ins.data.id, estadoFila: 'preview', indeterminado: false, accountIdKey, caduca: Date.now() + PREVIEW_SEG * 1000 });
     pintarPreviewOrden(P);
     bloquearFormOrden(true);
   } catch (e) {
@@ -1681,14 +1694,16 @@ function pintarPreviewOrden(P) {
   const tick = () => {
     const b = $('#oBtnPlace'); if (!b || !_ord) return;
     const s = Math.max(0, Math.round((_ord.caduca - Date.now()) / 1000));
-    if (s <= 0) { b.disabled = true; b.textContent = 'Vista previa caducada — vuelve a previsualizar'; _ord.previewIds = null; clearInterval(_ord.timer); return; }
+    if (s <= 0) { b.disabled = true; b.textContent = 'Vista previa caducada — vuelve a previsualizar'; _ord.previewIds = null; clearInterval(_ord.timer); expirarPreviewHuerfana(); return; }
     b.textContent = `Enviar orden (${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')})`;
   };
   tick(); _ord.timer = setInterval(tick, 1000);
 }
 function ordenEditar() {
   if (!_ord) return;
+  if (_ord.indeterminado) { toast('Verifica en E*TRADE si la orden entró antes de editar'); return; }
   if (_ord.timer) clearInterval(_ord.timer);
+  expirarPreviewHuerfana();
   _ord.orden = null; _ord.previewIds = null; _ord.filaId = null; _ord.caduca = 0;
   const p = $('#oPrev'); if (p) p.innerHTML = '';
   bloquearFormOrden(false);
@@ -1699,32 +1714,60 @@ async function ordenPlace() {
   const err = $('#oErr'), b = $('#oBtnPlace');
   if (!err || !b) return;
   err.textContent = '';
+  if (_ord.indeterminado) { err.textContent = 'Verifica en E*TRADE si la orden entró antes de reintentar.'; return; }
   if (!_ord.previewIds || Date.now() > _ord.caduca) { err.textContent = 'La vista previa caducó (3 min). Vuelve a previsualizar.'; return; }
   if (!armadoHasta() && !(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
+  // el PIN pudo tardar: la vista previa debe seguir vigente
+  if (!_ord.previewIds || Date.now() > _ord.caduca) { err.textContent = 'La vista previa caducó mientras tecleabas el PIN. Vuelve a previsualizar.'; return; }
   const cr = etCreds();
   if (!cr) { err.textContent = 'Conecta E*TRADE primero.'; return; }
   const id = _ord.filaId, ahora = () => new Date().toISOString();
+  const anotar = async (estado, extra) => {
+    if (!id) return null;
+    const { error } = await sb.from('ordenes').update(Object.assign({ estado, actualizado_at: ahora() }, extra || {})).eq('id', id);
+    if (!error && _ord) _ord.estadoFila = estado;
+    return error || null;
+  };
   b.disabled = true; b.textContent = 'Enviando a E*TRADE…';
-  let r = null;
+  let r = null, indeterminado = false;
   try {
     r = await etPost(cr, '/etrade/orden/place', { accountIdKey: _ord.accountIdKey, orden: _ord.orden, previewIds: _ord.previewIds });
     const d = r.data || {}, R = d.PlaceOrderResponse || d;
     const em = mensajeError(r);
     const ids = R.OrderIds ? (Array.isArray(R.OrderIds) ? R.OrderIds : [R.OrderIds]) : [];
+    // ¿Quién respondió? Solo es un RECHAZO seguro si habló E*TRADE ({Error} o
+    // PlaceOrderResponse sin OrderIds) o si el proxy la paró ANTES de llamar
+    // (400/401/403 con {error}). Un 5xx o una respuesta sin forma llega DESPUÉS
+    // de que la orden pudo salir hacia E*TRADE → indeterminado: nunca 'rechazada'.
+    const habloEtrade = !!(d.PlaceOrderResponse || (d.Error && d.Error.message));
+    const paroProxy = [400, 401, 403].includes(r.status) && !!d.error && !d.Error;
+    if (r.status >= 500 || (!habloEtrade && !paroProxy)) {
+      indeterminado = true;
+      throw new Error('Sin respuesta clara de E*TRADE al enviar (HTTP ' + r.status + ').');
+    }
     if (r.status >= 400 || em || !ids.length || ids[0].orderId == null) {
-      if (id) await sb.from('ordenes').update({ estado: 'rechazada', respuesta: recortarJson(d, 4096), actualizado_at: ahora() }).eq('id', id);
+      await anotar('rechazada', { respuesta: recortarJson(d, 4096) });
       throw new Error(em || 'E*TRADE no confirmó la orden (HTTP ' + r.status + ').');
     }
-    if (id) await sb.from('ordenes').update({ estado: 'enviada', orden_id_ext: String(ids[0].orderId),
-      respuesta: recortarJson(R, 4096), actualizado_at: ahora() }).eq('id', id);
+    const datos = { orden_id_ext: String(ids[0].orderId), respuesta: recortarJson(R, 4096) };
+    let e2 = await anotar('enviada', datos);
+    if (e2) e2 = await anotar('enviada', datos);   // la orden está viva en E*TRADE: reintento de anotación
+    if (e2) toast('Orden #' + ids[0].orderId + ' enviada, pero no pude anotarla: verifica en E*TRADE');
     if (_ord.timer) clearInterval(_ord.timer);
     toast('Orden enviada a E*TRADE');
     cerrarOrden(); ruta();
   } catch (e) {
-    // Sin respuesta del proxy tras enviar: no se sabe si entró → 'error' y se
-    // pide verificar en E*TRADE (jamás inventar éxito).
-    if (!r && id) await sb.from('ordenes').update({ estado: 'error', respuesta: { error: String((e && e.message) || e), nota: 'sin respuesta al enviar: verifica en E*TRADE' }, actualizado_at: ahora() }).eq('id', id).then(() => {}, () => {});
-    err.textContent = String((e && e.message) || e) + (!r ? ' Verifica en E*TRADE si la orden entró antes de reintentar.' : '');
+    const msg = String((e && e.message) || e);
+    if (!r || indeterminado) {
+      // No se sabe si entró → 'error' y se exige verificar en E*TRADE (jamás
+      // inventar éxito ni permitir un reintento a ciegas que la duplique).
+      if (_ord) _ord.indeterminado = true;
+      try { await anotar('error', { respuesta: { error: msg, nota: 'sin respuesta clara al enviar: verifica en E*TRADE' } }); } catch (_) {}
+      err.textContent = msg + ' Verifica en E*TRADE si la orden entró ANTES de reintentar.';
+      b.disabled = true; b.textContent = 'Verifica en E*TRADE';
+      return;
+    }
+    err.textContent = msg;
     b.disabled = false; b.textContent = 'Enviar orden';
   }
 }
@@ -1781,32 +1824,41 @@ async function ordenesActualizar() {
   if (etDiaVencido()) { toast('Sesión de E*TRADE expirada — reconecta'); return; }
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
   if (!uid) { toast('Sin sesión. Sal y vuelve a entrar.'); return; }
+  const { data, error } = await sb.from('ordenes').select('*').eq('estado', 'enviada').not('orden_id_ext', 'is', null);
+  if (error) { toast('No pude leer tus órdenes: ' + error.message); return; }
+  if (!(data || []).length) { toast('No hay órdenes enviadas pendientes'); return; }
   toast('Consultando E*TRADE…');
   try {
     const accountIdKey = await etCuentaKey(cr);
     const mmdd = (ymd) => ymd.slice(5, 7) + ymd.slice(8, 10) + ymd.slice(0, 4);
-    const hoy = hoyNY(), desde = ymdNY(new Date(Date.now() - 7 * 86400000).toISOString());
-    const [ab, ej] = await Promise.all([
-      etPost(cr, '/etrade/ordenes', { accountIdKey, query: { status: 'OPEN', count: 50 } }),
-      etPost(cr, '/etrade/ordenes', { accountIdKey, query: { status: 'EXECUTED', fromDate: mmdd(desde), toDate: mmdd(hoy), count: 50 } }),
-    ]);
-    for (const r of [ab, ej]) { const em = mensajeError(r); if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status); }
-    const lista = (r) => { const d = r.data || {}, O = d.OrdersResponse || d; const a = O.Order || []; return Array.isArray(a) ? a : [a]; };
+    // rango: desde la enviada más antigua (−1 día), con tope de 30 días
+    const masVieja = data.map(o => o.creado_at).sort()[0];
+    const desdeMs = Math.max(Date.now() - 30 * 86400000, new Date(masVieja).getTime() - 86400000);
+    const hoy = hoyNY(), desde = ymdNY(new Date(desdeMs).toISOString());
+    const rango = { fromDate: mmdd(desde), toDate: mmdd(hoy), count: 100 };
+    // todos los estados finales: canceladas/expiradas/rechazadas en E*TRADE también deben salir de 'enviada'
+    const estados = ['OPEN', 'EXECUTED', 'INDIVIDUAL_FILLS', 'CANCELLED', 'EXPIRED', 'REJECTED'];
+    const rs = await Promise.all(estados.map(s => etPost(cr, '/etrade/ordenes',
+      { accountIdKey, query: s === 'OPEN' ? { status: s, count: 100 } : { status: s, ...rango } })));
+    for (const r of rs) { const em = mensajeError(r); if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status); }
+    const lista = (r) => { const d = r.data || {}, O = d.OrdersResponse || d; const a = O.Order || []; return Array.isArray(a) ? a : (a ? [a] : []); };
     const remotas = {};
-    for (const o of [...lista(ab), ...lista(ej)]) if (o && o.orderId != null) remotas[String(o.orderId)] = o;
-    const { data, error } = await sb.from('ordenes').select('*').eq('estado', 'enviada').not('orden_id_ext', 'is', null);
-    if (error) throw new Error(error.message);
+    for (const r of rs) for (const o of lista(r)) if (o && o.orderId != null) remotas[String(o.orderId)] = o;
     let cambios = 0;
-    for (const loc of data || []) {
+    for (const loc of data) {
       const rem = remotas[String(loc.orden_id_ext)]; if (!rem) continue;
       const det = (Array.isArray(rem.OrderDetail) ? rem.OrderDetail[0] : rem.OrderDetail) || {};
       const st = String(det.status || '').toUpperCase();
-      const nuevo = /EXECUTED/.test(st) ? 'ejecutada' : st === 'CANCELLED' ? 'cancelada' : st === 'EXPIRED' ? 'expirada' : st === 'REJECTED' ? 'rechazada' : null;
+      const nuevo = /EXECUTED|INDIVIDUAL_FILLS/.test(st) ? 'ejecutada' : st === 'CANCELLED' ? 'cancelada' : st === 'EXPIRED' ? 'expirada' : st === 'REJECTED' ? 'rechazada' : null;
       if (!nuevo) continue;
       const upd = { estado: nuevo, respuesta: recortarJson(rem, 4096), actualizado_at: new Date().toISOString() };
       if (nuevo === 'ejecutada') {
-        const ins = (Array.isArray(det.Instrument) ? det.Instrument[0] : det.Instrument) || {};
-        const fill = Number(ins.averageExecutionPrice), qty = Number(ins.filledQuantity) || Number(loc.cantidad) || 1;
+        // varios fills: cantidad = suma; precio = promedio ponderado
+        const insts = Array.isArray(det.Instrument) ? det.Instrument : (det.Instrument ? [det.Instrument] : []);
+        let qty = 0, costo = 0;
+        for (const i of insts) { const q = Number(i.filledQuantity) || 0, p = Number(i.averageExecutionPrice); if (q > 0 && Number.isFinite(p)) { qty += q; costo += q * p; } }
+        let fill = qty > 0 ? Math.round(costo / qty * 10000) / 10000 : Number((insts[0] || {}).averageExecutionPrice);
+        if (!(qty > 0)) qty = Number(loc.cantidad) || 1;
         const ejecutadaAt = det.executedTime ? new Date(Number(det.executedTime)).toISOString() : new Date().toISOString();
         const esVenta = /^SELL/.test(String(loc.accion || ''));
         if (!esVenta && loc.proposito === 'entrada' && !loc.posicion_id && fill > 0 && loc.security_type === 'OPTN' && loc.direccion) {
@@ -1820,11 +1872,21 @@ async function ordenesActualizar() {
           const pi = await sb.from('posiciones').insert(p).select('id').single();
           if (!pi.error && pi.data) upd.posicion_id = pi.data.id;
         } else if (esVenta && loc.posicion_id && Number.isFinite(fill)) {
-          const { data: pos } = await sb.from('posiciones').select('contratos,prima_fill,estado').eq('id', loc.posicion_id).maybeSingle();
+          const { data: pos } = await sb.from('posiciones').select('*').eq('id', loc.posicion_id).maybeSingle();
           if (pos && pos.estado === 'abierta') {
-            const res = Math.round((fill - Number(pos.prima_fill)) * (Number(pos.contratos) || 1) * 100 * 100) / 100;
-            await sb.from('posiciones').update({ estado: fill > 0 ? 'cerrada' : 'expirada', prima_salida: fill,
-              resultado_usd: res, cerrada_at: ejecutadaAt }).eq('id', loc.posicion_id);
+            const tot = Number(pos.contratos) || 1, vend = Math.min(qty, tot);
+            const res = Math.round((fill - Number(pos.prima_fill)) * vend * 100 * 100) / 100;
+            if (vend >= tot) {
+              await sb.from('posiciones').update({ estado: fill > 0 ? 'cerrada' : 'expirada', prima_salida: fill,
+                resultado_usd: res, cerrada_at: ejecutadaAt }).eq('id', loc.posicion_id);
+            } else {
+              // cierre PARCIAL: el tramo vendido se anota cerrado (fila propia) y
+              // la posición sigue abierta con el resto (posiciones como filas-tramo)
+              const { id: _i, gtc_limite: _g, mark: _m, mark_at: _ma, mfe: _f, mae: _e, ...base } = pos;
+              await sb.from('posiciones').insert({ ...base, user_id: uid, contratos: vend, estado: fill > 0 ? 'cerrada' : 'expirada',
+                prima_salida: fill, resultado_usd: res, cerrada_at: ejecutadaAt });
+              await sb.from('posiciones').update({ contratos: tot - vend }).eq('id', loc.posicion_id);
+            }
           }
         }
       }
