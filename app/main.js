@@ -1474,7 +1474,8 @@ const RANGOS_TABLA = {
   WMT: [60, 110, 55, 115, '2026-02-17'],
   XPEV: [50, 70, 45, 75, '2026-05-19'],
 };
-const RANGOS_TABLA_FECHA = '2026-08-26';
+const RANGOS_TABLA_FECHA = '2026-08-26';        // xls de la academia
+const RANGOS_TABLA_ANALISIS = '2026-05-19';     // fecha de análisis del grueso de la tabla: una entrada anterior está vieja (NVDA: 2026-02-17)
 const DIAS_ES = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
 function diaSemanaNY(d) {
   const w = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' }).format(d || new Date());
@@ -1503,9 +1504,11 @@ function textoRangoOrden(sym, vivo, tabla, dia) {
     partes.push('Rango óptimo vivo: el worker aún no lo publicó para ' + esc(sym));
   }
   if (tabla) {
-    const b = bandaDelDia([tabla[0], tabla[1]], dia);
-    const vieja = tabla[4] && tabla[4] < RANGOS_TABLA_FECHA;
-    partes.push(`Tabla Investep ${d$(tabla[0])}–${d$(tabla[1])} (tolerancia ${d$(tabla[2])}–${d$(tabla[3])}) · hoy ${DIAS_ES[dia] || ''}: parte ${b.parte} ${d$(b.banda[0])}–${d$(b.banda[1])}${vieja ? ' · <span style="color:var(--rojo)">tabla de ' + esc(tabla[4]) + ', pide la fresca</span>' : ''}`);
+    // fin de semana: la parte que aplica es la del LUNES (próxima sesión)
+    const finde = dia === 5 || dia === 6, d = finde ? 0 : dia;
+    const b = bandaDelDia([tabla[0], tabla[1]], d);
+    const vieja = tabla[4] && tabla[4] < RANGOS_TABLA_ANALISIS;
+    partes.push(`Tabla Investep ${d$(tabla[0])}–${d$(tabla[1])} (tolerancia ${d$(tabla[2])}–${d$(tabla[3])}) · ${finde ? 'próxima sesión, ' : 'hoy '}${DIAS_ES[d] || ''}: parte ${b.parte} ${d$(b.banda[0])}–${d$(b.banda[1])}${vieja ? ' · <span style="color:var(--rojo)">tabla de ' + esc(tabla[4]) + ', pide la fresca</span>' : ''}`);
   } else {
     partes.push(esc(sym) + ' no está en la tabla de rangos de la academia');
   }
