@@ -65,9 +65,21 @@ function arrancar(session) {
     suscribir();
     if (timer) clearInterval(timer);
     timer = setInterval(ruta, 60000); // respaldo por si Realtime cae
+    setTimeout(reanudarLoginEtrade, 400);   // login de E*TRADE a medias (PWA recargada durante el 2FA)
   } else if (timer) { clearInterval(timer); }
 }
 window.addEventListener('hashchange', ruta);
+// Al volver del fondo (iOS congela la PWA y corta los fetch en vuelo): si estuvo
+// oculta más de 30 s se redibuja la vista y, si hay un formulario de orden
+// abierto, se recarga la cadena.
+let _ocultaDesde = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { _ocultaDesde = Date.now(); return; }
+  if (!sesionActiva || !_ocultaDesde || Date.now() - _ocultaDesde < 30000) return;
+  _ocultaDesde = 0;
+  ruta();
+  if (typeof _ord !== 'undefined' && _ord && $('#modalOrden')) cargarCadena(true);
+});
 
 // Realtime: la campanada (senales), el estado y el pulso llegan al instante.
 function suscribir() {
@@ -747,7 +759,7 @@ const BROKERS = [
 // Opción B: el proxy del VPS solo FIRMA con el secreto de app; el token con
 // poder (oauth_token + secret) se guarda aquí en localStorage y jamás se sube a
 // la nube. E*TRADE lo caduca cada medianoche ET → login casi diario, con PIN.
-const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2', dia: 'mz_et_dia', acct: 'mz_et_acct' };
+const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2', dia: 'mz_et_dia', acct: 'mz_et_acct', login: 'mz_et_login' };
 const num2 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // El token de E*TRADE muere a medianoche ET: si el login fue otro día NY, está
 // expirado seguro y no vale la pena molestar al proxy (mz_et_dia = día del login).
@@ -766,23 +778,65 @@ function etGuardar(t, s) {
 function etOlvidar() {
   try { Object.values(ET_K).forEach(k => localStorage.removeItem(k)); } catch (_) {}
 }
-async function etProxy(path, body) {
+// topeMs: solo para LECTURAS/login/renew (un fetch colgado dejaría la cadena o
+// Cuentas mudas hasta 60 s). Las órdenes NO llevan tope: abortar un place en
+// el cliente dejaría la orden en estado indeterminado.
+async function etProxy(path, body, topeMs) {
   if (!PROXY_URL) throw new Error('proxy sin configurar');
-  const r = await fetch(PROXY_URL + path, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  });
-  return { status: r.status, data: await r.json().catch(() => ({})) };
+  const ctl = (topeMs && typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const t = ctl ? setTimeout(() => ctl.abort(), topeMs) : null;
+  try {
+    const r = await fetch(PROXY_URL + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}), signal: ctl ? ctl.signal : undefined,
+    });
+    return { status: r.status, data: await r.json().catch(() => ({})) };
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('el proxy no respondió a tiempo');
+    throw e;
+  } finally { if (t) clearTimeout(t); }
 }
+const ET_TOPE_MS = 25000;
 
 // Lectura E*TRADE con auto-renovación: si el token quedó INACTIVO (>2 h sin
 // uso) E*TRADE responde 401; renew_access_token lo reactiva sin login. Muere
-// de verdad a medianoche ET (ahí sí toca reconectar).
+// de verdad a medianoche ET (ahí sí toca reconectar). Si E*TRADE RECHAZA la
+// renovación y la lectura sigue en 401, el token está muerto: se marca
+// (mz_et_dia = 'muerto') para que toda la app deje de insistir hasta reconectar
+// (un token de antes de v21 no tenía fecha guardada y nunca se daba por vencido).
+let _etRenovando = null;                 // una sola renovación aunque haya lecturas en paralelo
+// true: reactivado · false: E*TRADE RECHAZÓ el token (4xx explícito) · null: no se
+// pudo saber (proxy caído/5xx, E*TRADE 5xx/429, sin red, tiempo agotado). Solo el
+// `false` autoriza dar el token por muerto: un 5xx del renew con token vivo no
+// debe dejar la app pidiendo reconectar.
+function etRenovar(cr) {
+  if (!_etRenovando) {
+    _etRenovando = etProxy('/etrade/renew', { token: cr.token, token_secret: cr.token_secret }, ET_TOPE_MS)
+      .then(r => {
+        const d = r && r.status === 200 && r.data;
+        if (!d || typeof d.ok !== 'boolean') return null;
+        if (d.ok) return true;
+        return [400, 401, 403].includes(Number(d.status)) ? false : null;
+      }, () => null)
+      .finally(() => { _etRenovando = null; });
+  }
+  return _etRenovando;
+}
+// Solo marca si el token que falló sigue siendo el guardado (un login nuevo
+// mientras había trabajo en vuelo no debe quedar marcado como muerto).
+function etMarcarMuerto(cr) {
+  try {
+    if (cr && cr.token && localStorage.getItem(ET_K.tok) !== cr.token) return;
+    localStorage.setItem(ET_K.dia, 'muerto');
+  } catch (_) {}
+}
 async function etRead(cr, path, query) {
-  let r = await etProxy('/etrade/read', { ...cr, path, query: query || {} });
+  const leer = () => etProxy('/etrade/read', { ...cr, path, query: query || {} }, ET_TOPE_MS);
+  let r = await leer();
   if (r.status === 401) {
-    try { await etProxy('/etrade/renew', { token: cr.token, token_secret: cr.token_secret }); } catch (_) {}
-    r = await etProxy('/etrade/read', { ...cr, path, query: query || {} });
+    const renovado = await etRenovar(cr);
+    r = await leer();
+    if (r.status === 401 && renovado === false) etMarcarMuerto(cr);
   }
   return r;
 }
@@ -836,26 +890,58 @@ async function etradeSaldo(forzar) {
     etradeGuardarSnapshot(snap);
     return snap;
   } catch (_) {
-    return null;  // proxy inalcanzable (¿Funnel apagado?) → se ofrece Conectar
+    return { _sinRed: true };  // proxy inalcanzable / fetch cortado por iOS: NO es «sin token» → Cuentas ofrece reintentar, no Conectar
   }
 }
 
 async function conectarEtrade() {
   if (!PROXY_URL) { toast('Falta configurar el proxy'); return; }
+  // iOS Safari solo deja abrir pestañas DENTRO del toque (no después de un
+  // await): se abre vacía ya mismo y se le pone la URL cuando responda el proxy.
+  // Si igual no se abre, el modal del PIN trae un enlace para abrirla a mano.
+  let w = null;
+  try {
+    w = window.open('', '_blank');
+    if (w) {
+      w.opener = null;
+      // que la hoja en blanco diga algo mientras responde el proxy (1-4 s)
+      try { w.document.write('<p style="font-family:-apple-system,system-ui;padding:28px;color:#555">Conectando con E*TRADE…</p>'); } catch (_) {}
+    }
+  } catch (_) { w = null; }
+  const cerrarVacia = () => { if (w) { try { w.close(); } catch (_) {} } };
   toast('Preparando login de E*TRADE…');
   let r;
-  try { r = await etProxy('/etrade/login/start', {}); }
-  catch (_) { toast('No pude contactar el proxy (¿Funnel activo?)'); return; }
+  try { r = await etProxy('/etrade/login/start', {}, ET_TOPE_MS); }
+  catch (_) { cerrarVacia(); toast('No pude contactar el proxy (¿Funnel activo?)'); return; }
   const d = r.data || {};
-  if (!d.authorize_url) { toast('E*TRADE no respondió: ' + (d.error || 'error')); return; }
-  window.open(d.authorize_url, '_blank', 'noopener');
-  modalPin(d.rt);
+  if (!d.authorize_url) { cerrarVacia(); toast('E*TRADE no respondió: ' + (d.error || 'error')); return; }
+  let abierta = false;
+  if (w && !w.closed) { try { w.location.href = d.authorize_url; abierta = true; } catch (_) {} }
+  // el login queda anotado 9 min: si iOS recarga la PWA mientras estás en E*TRADE,
+  // al volver se vuelve a ofrecer el cuadro del código (el request token vive 10 min en el proxy)
+  try { localStorage.setItem(ET_K.login, JSON.stringify({ rt: d.rt, url: d.authorize_url, ts: Date.now() })); } catch (_) {}
+  modalPin(d.rt, d.authorize_url, abierta);
 }
-function modalPin(rt) {
+const ET_LOGIN_TTL = 9 * 60 * 1000;
+function etLoginOlvidar() { try { localStorage.removeItem(ET_K.login); } catch (_) {} }
+// Al arrancar: si había un login de E*TRADE a medias (PWA recargada en medio del
+// 2FA), se vuelve a mostrar el cuadro del código en vez de obligar a empezar de cero.
+function reanudarLoginEtrade() {
+  let p = null;
+  try { p = JSON.parse(localStorage.getItem(ET_K.login) || 'null'); } catch (_) {}
+  if (!p || !p.rt) return;
+  if (!(Date.now() - (p.ts || 0) < ET_LOGIN_TTL)) { etLoginOlvidar(); return; }
+  if ($('#modalPin')) return;
+  if (etCreds() && !etDiaVencido()) { etLoginOlvidar(); return; }   // ya hay sesión válida
+  modalPin(p.rt, p.url, false);
+  toast('Tenías un login de E*TRADE a medias: pega el código o cancela');
+}
+function modalPin(rt, url, abierta) {
   const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalPin';
   m.innerHTML = `<div class="hoja">
     <h3 style="margin:0 0 6px">Conectar E*TRADE</h3>
-    <div class="mut" style="font-size:12.5px;line-height:1.45">Se abrió E*TRADE en otra pestaña. Inicia sesión, <b>autoriza el acceso</b> y copia el <b>código de verificación</b> que te muestra. Pégalo aquí:</div>
+    <div class="mut" style="font-size:12.5px;line-height:1.45">${abierta ? 'Se abrió E*TRADE en otra pestaña.' : 'Abre E*TRADE con el botón de abajo.'} Inicia sesión, <b>autoriza el acceso</b> y copia el <b>código de verificación</b> que te muestra. Pégalo aquí:</div>
+    ${url ? `<div style="margin:8px 0 2px"><a class="btnsec" href="${esc(url)}" target="_blank" rel="noopener" style="display:inline-block;text-decoration:none;padding:7px 12px">Abrir E*TRADE ↗</a> <span class="mut" style="font-size:11.5px">${abierta ? '(si no se abrió sola)' : ''}</span></div>` : ''}
     <label>Código de verificación</label>
     <input id="etPin" inputmode="numeric" autocomplete="off" placeholder="pega el código" style="text-align:center;letter-spacing:.12em;font-size:16px">
     <div class="err" id="etErr"></div>
@@ -877,6 +963,7 @@ async function etradePinEnviar(rt) {
   const d = r.data || {};
   if (!d.token) { err.textContent = d.error || 'No pude conectar. Revisa el código.'; return; }
   etGuardar(d.token, d.token_secret);
+  etLoginOlvidar();
   const m = $('#modalPin'); if (m) m.remove();
   try {
     localStorage.setItem(ET_K.dia, hoyNY());   // el token vale solo hasta medianoche ET
@@ -884,6 +971,7 @@ async function etradePinEnviar(rt) {
     localStorage.removeItem(ET_K.cache);
   } catch (_) {}
   toast('E*TRADE conectada ✓');
+  if (_ord && $('#modalOrden')) { cargarCadena(true); return; }   // reconectó desde el formulario de orden: la cadena sigue ahí
   ruta();
 }
 
@@ -1096,7 +1184,8 @@ async function vistaCuentas() {
   // proxy; si hay una foto guardada desde otro equipo, la viva la reemplaza.
   const etSnap = await etradeSaldo();
   const etExpirado = !!(etSnap && etSnap._expirado);
-  if (etSnap && !etSnap._expirado) {
+  const etSinRed = !!(etSnap && etSnap._sinRed);     // proxy inalcanzable o fetch cortado por iOS: hay token, no hay lectura
+  if (etSnap && !etSnap._expirado && !etSnap._sinRed) {
     const i = saldos.findIndex(x => x.broker === 'etrade');
     if (i >= 0) saldos[i] = etSnap; else saldos.push(etSnap);
   }
@@ -1135,10 +1224,12 @@ async function vistaCuentas() {
       <span class="mono" style="font-weight:700;font-size:15px">${usd(c.saldo_neto)}</span></div></div>`;
     }
     const sub = b.k === 'tasty' ? 'conectando…'
+      : (b.k === 'etrade' && etSinRed) ? 'sin conexión con el proxy — E*TRADE sigue conectada en este equipo'
       : (b.k === 'etrade' && etExpirado) ? 'sesión expirada — vuelve a entrar'
       : b.k === 'etrade' ? 'inicia sesión (login diario, con PIN)'
       : b.k === 'schwab' ? 'en aprobación de Schwab' : 'requiere tu login';
     const btn = b.k === 'tasty' ? ''
+      : (b.k === 'etrade' && etSinRed) ? `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.etReintentar()">Reintentar</button>`
       : `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.conectar('${b.k}')">Conectar</button>`;
     return `<div class="card"><div class="fila">
       <div><b style="font-size:14px;color:var(--tx2)">${esc(b.n)}</b>
@@ -1209,7 +1300,8 @@ window.MZ = Object.assign(window.MZ || {}, {
     toast('Bróker no soportado');
   },
   pinEnviar: (rt) => etradePinEnviar(rt),
-  pinCancelar: () => { const m = $('#modalPin'); if (m) m.remove(); },
+  pinCancelar: () => { etLoginOlvidar(); const m = $('#modalPin'); if (m) m.remove(); },
+  etReintentar: () => ruta(),
   etSync: () => etSyncAhora(),
   etOlvidar: () => { etOlvidar(); toast('E*TRADE olvidada en este equipo'); ruta(); },
 });
@@ -1474,10 +1566,16 @@ async function etPost(cr, path, body) {
   };
   let r = await llamar();
   if (r.status === 401) {
-    try { await etProxy('/etrade/renew', { token: cr.token, token_secret: cr.token_secret }); } catch (_) {}
+    const renovado = await etRenovar(cr);            // misma renovación compartida que etRead
     r = await llamar();
+    if (r.status === 401 && renovado === false) etMarcarMuerto(cr);
   }
   return r;
+}
+// Texto para un 401 de E*TRADE en órdenes: reconectar si el token murió; si no, el motivo literal.
+function texto401Ordenes(msgEtrade) {
+  return etDiaVencido() ? 'La sesión de E*TRADE expiró — reconecta en Cuentas → E*TRADE.'
+    : 'E*TRADE rechazó la llamada (401): ' + (msgEtrade || 'sin detalle');
 }
 
 // ---- modal «Orden E*TRADE» ----
@@ -1530,13 +1628,13 @@ function abrirOrden(pre) {
   </div>`;
   document.body.appendChild(m);
   _ord = { pre, ctx: null, f: null, orden: null, previewIds: null, filaId: null, accountIdKey: null, caduca: 0, timer: null, avisos: [], avisosTxt: '',
-    cadena: null, cadenaSym: null, cadenaExp: null, cadenaClave: '', cadenaTs: 0, cadenaTimer: null, cadenaErr: null, cadenaCargando: false, cotiz: null, cotizTs: 0, vencs: [] };
+    cadena: null, cadenaSym: null, cadenaExp: null, cadenaClave: '', cadenaTs: 0, cadenaTimer: null, cadenaErr: null, cadenaCargando: false, cadenaGen: 0, cotiz: null, cotizTs: 0, vencs: [] };
   m.addEventListener('input', () => { ajustarFormOrden(); pintarAvisosOrden(); });
   m.addEventListener('change', (e) => {
     ajustarFormOrden(); pintarAvisosOrden();
     const id = e && e.target && e.target.id;
     if (id === 'oSym') _ord.cadenaSym = null;                      // símbolo nuevo → cotización y vencimientos de nuevo
-    if (['oSym', 'oTipo', 'oExp', 'oAcc'].includes(id)) cargarCadena(true);
+    if (['oSym', 'oTipo', 'oExp', 'oAcc'].includes(id)) { _ord.cadenaGen++; cargarCadena(true); }   // gen++: una carga en vuelo se descarta y se relanza
   });
   ajustarFormOrden(); pintarArmadoOrden();
   cargarCtxOrden().then(() => { pintarAvisosOrden(); pintarCadena(); });
@@ -1559,6 +1657,20 @@ function cerrarOrden() {
 }
 
 // ---- Cadena de opciones EN VIVO (E*TRADE, con tu login diario) ----
+// 401 de mercado: si etRead ya dio el token por muerto → 'RECONECTAR' (la vista
+// pone el enlace); si no (token vivo pero E*TRADE restringe el endpoint), se
+// muestra el motivo literal que dio E*TRADE para poder actuar.
+function errorCadena401(msgEtrade) {
+  return etDiaVencido() ? 'RECONECTAR' : 'E*TRADE rechazó la lectura de mercado (401): ' + (msgEtrade || 'sin detalle');
+}
+// Texto para la vista a partir de la excepción: los fallos de red de Safari/Chrome
+// ("Load failed", "Failed to fetch") se traducen; iOS corta los fetch en curso
+// al mandar la app al fondo, y eso NO es un error de E*TRADE.
+function textoErrorCadena(e) {
+  const msg = String((e && e.message) || e || 'error');
+  if (/load failed|failed to fetch|networkerror|network request failed|the internet connection appears to be offline/i.test(msg)) return 'sin conexión con el proxy — revisa la red y toca ↻';
+  return msg;
+}
 // Para elegir strike y precio sin salir de la Mesa: cotización del subyacente,
 // vencimientos y la cadena (bid/ask/delta de CALL y PUT) alrededor del spot,
 // con el rango óptimo de Sardiñas marcado. Tocar un precio llena la orden.
@@ -1604,31 +1716,39 @@ async function cargarCadena(forzar) {
   const f = leerFormOrden();
   if (f.tipo === 'EQ' || !f.symbol) { box.innerHTML = ''; return; }
   const cr = etCreds();
-  if (!cr) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: conecta E*TRADE (Cuentas) para ver aquí los precios de calls y puts.</div>`; return; }
-  if (etDiaVencido()) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: la sesión de E*TRADE expiró a medianoche — reconecta en Cuentas.</div>`; return; }
+  if (!cr) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: <a href="#" onclick="MZ.conectar('etrade');return false">conecta E*TRADE</a> para ver aquí los precios de calls y puts.</div>`; return; }
+  if (etDiaVencido()) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: la sesión de E*TRADE expiró (muere a medianoche ET) — <a href="#" onclick="MZ.conectar('etrade');return false">reconectar E*TRADE</a>.</div>`; return; }
   const clave = f.symbol + '|' + (f.expiracion || '');
   if (!forzar && _ord.cadena && _ord.cadenaClave === clave && Date.now() - _ord.cadenaTs < 5000) return;
   if (_ord.cadenaCargando) return;
-  _ord.cadenaCargando = true;
-  if (!_ord.cadena || _ord.cadenaClave !== clave) box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: consultando E*TRADE…</div>`;
+  // Generación: si durante un await el usuario cambia ticker/vencimiento (gen++)
+  // o cierra/reabre el modal (_ord distinto), ESTA carga se descarta y no toca
+  // nada; si el modal sigue, se relanza con el formulario actual.
+  const o = _ord, gen = o.cadenaGen;
+  const vigente = () => _ord === o && o.cadenaGen === gen;
+  const descartar = () => { o.cadenaCargando = false; if (_ord === o) cargarCadena(true); };
+  o.cadenaCargando = true;
+  if (!o.cadena || o.cadenaClave !== clave) box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: consultando E*TRADE…</div>`;
   try {
     const sym = f.symbol;
-    if (_ord.cadenaSym !== sym) {                       // símbolo nuevo: cotización + vencimientos
+    if (o.cadenaSym !== sym) {                          // símbolo nuevo: cotización + vencimientos
       const [rq, rv] = await Promise.all([
         etRead(cr, `/v1/market/quote/${encodeURIComponent(sym)}.json`, { detailFlag: 'INTRADAY' }),
         etRead(cr, '/v1/market/optionexpiredate.json', { symbol: sym, expiryType: 'ALL' }),
       ]);
-      if (rq.status === 401 || rv.status === 401) throw new Error('sesión de E*TRADE expirada — reconecta en Cuentas');
+      if (!vigente()) return descartar();
+      if (rq.status === 401 || rv.status === 401) throw new Error(errorCadena401(etError(rq) || etError(rv)));
       const e1 = etError(rq) || etError(rv); if (e1) throw new Error(e1);
-      _ord.cotiz = parsearCotizacion(rq); _ord.vencs = parsearVencimientos(rv); _ord.cadenaSym = sym;
+      o.cotiz = parsearCotizacion(rq); o.vencs = parsearVencimientos(rv); o.cadenaSym = sym;
     } else if (forzar) {
       const rq = await etRead(cr, `/v1/market/quote/${encodeURIComponent(sym)}.json`, { detailFlag: 'INTRADAY' });
-      if (rq.status < 400 && !etError(rq)) _ord.cotiz = parsearCotizacion(rq);
+      if (!vigente()) return descartar();
+      if (rq.status < 400 && !etError(rq)) o.cotiz = parsearCotizacion(rq);
     }
-    _ord.cotizTs = Date.now();
+    o.cotizTs = Date.now();
     // vencimiento: el del formulario si existe en la lista; si no, el del rango vivo; si no, el más cercano
-    const vs = _ord.vencs || [], hoy = hoyNY();
-    const rango = (_ord.ctx && _ord.ctx.rangos[sym]) || null;
+    const vs = o.vencs || [], hoy = hoyNY();
+    const rango = (o.ctx && o.ctx.rangos[sym]) || null;
     const exp = (f.expiracion && vs.some(v => v.ymd === f.expiracion)) ? f.expiracion
       : (rango && rango.exp && vs.some(v => v.ymd === rango.exp)) ? rango.exp
       : ((vs.find(v => v.ymd >= hoy) || vs[0] || {}).ymd || f.expiracion || null);
@@ -1638,18 +1758,20 @@ async function cargarCadena(forzar) {
       const [y, m, d] = exp.split('-').map(Number);
       const q = { symbol: sym, expiryYear: y, expiryMonth: m, expiryDay: d, noOfStrikes: CADENA_STRIKES,
         includeWeekly: 'true', chainType: 'CALLPUT', priceType: 'ALL', skipAdjusted: 'true' };
-      const near = _ord.cotiz && (_ord.cotiz.last || _ord.cotiz.bid); if (near) q.strikePriceNear = near;
+      const near = o.cotiz && (o.cotiz.last || o.cotiz.bid); if (near) q.strikePriceNear = near;
       const rc = await etRead(cr, '/v1/market/optionchains.json', q);
-      if (rc.status === 401) throw new Error('sesión de E*TRADE expirada — reconecta en Cuentas');
+      if (!vigente()) return descartar();
+      if (rc.status === 401) throw new Error(errorCadena401(etError(rc)));
       const e2 = etError(rc); if (e2) throw new Error(e2);
       cadena = parsearCadena(rc);
     }
-    Object.assign(_ord, { cadena, cadenaExp: exp, cadenaClave: sym + '|' + (exp || ''), cadenaTs: Date.now(), cadenaErr: null });
-  } catch (e) { _ord.cadenaErr = String((e && e.message) || e); }
-  _ord.cadenaCargando = false;
+    Object.assign(o, { cadena, cadenaExp: exp, cadenaClave: sym + '|' + (exp || ''), cadenaTs: Date.now(), cadenaErr: null });
+  } catch (e) { o.cadenaErr = textoErrorCadena(e); }
+  o.cadenaCargando = false;
+  if (!vigente()) { if (_ord === o) cargarCadena(true); return; }
   pintarCadena();
   // se refresca sola mientras el formulario esté abierto y sin vista previa en curso
-  if (!_ord.cadenaTimer) _ord.cadenaTimer = setInterval(() => { if (_ord && $('#modalOrden') && !_ord.orden) cargarCadena(true); }, CADENA_REFRESCO_MS);
+  if (!o.cadenaTimer) o.cadenaTimer = setInterval(() => { if (_ord === o && $('#modalOrden') && !o.orden) cargarCadena(true); }, CADENA_REFRESCO_MS);
 }
 function pintarCadena() {
   if (!_ord) return; const box = $('#oCadena'); if (!box) return;
@@ -1666,7 +1788,8 @@ function pintarCadena() {
   let h = `<div class="cadena"><div class="fila" style="margin-bottom:4px">
     <span class="mut"><b style="color:var(--tx)">${esc(f.symbol)}</b> ${q.last != null ? '$' + q.last.toFixed(2) : ''} ${(q.bid != null && q.ask != null) ? `<span class="fresco">${q.bid.toFixed(2)}/${q.ask.toFixed(2)}</span>` : ''} ${vivo}</span>
     <span style="display:flex;gap:8px;align-items:center">${sel}<a href="#" onclick="MZ.cadenaRefrescar();return false" style="font-size:13px">↻</a></span></div>`;
-  if (err) h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: ${esc(err)}</div>`;
+  if (err === 'RECONECTAR') h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: la sesión de E*TRADE expiró — <a href="#" onclick="MZ.conectar('etrade');return false">reconectar E*TRADE</a></div>`;
+  else if (err) h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: ${esc(err)}</div>`;
   else if (!c) h += `<div class="mut" style="font-size:11.5px">consultando E*TRADE…</div>`;
   else if (!c.filas.length) h += `<div class="mut" style="font-size:11.5px">E*TRADE no devolvió strikes para ese vencimiento.</div>`;
   else {
@@ -1805,7 +1928,7 @@ async function ordenPreview() {
     if (r.status >= 400 || em || !ids.length) {
       // Sesión de E*TRADE muerta (401 aun tras renovar): es un problema de login,
       // no de la orden → no se anota nada.
-      if (r.status === 401) throw new Error('La sesión de E*TRADE expiró — reconecta en Cuentas → E*TRADE.');
+      if (r.status === 401) throw new Error(texto401Ordenes(em));
       // E*TRADE la rechazó en la vista previa ({Error:{message}}): queda anotada
       // como rechazada con su respuesta. Un fallo del PROXY (404/403) no se anota.
       if (d.Error && d.Error.message) {
@@ -1960,6 +2083,7 @@ async function cancelarOrden(id, orderId) {
     const r = await etPost(cr, '/etrade/orden/cancel', { accountIdKey, orderId: Number(orderId) });
     const d = r.data || {}, C = d.CancelOrderResponse || d;
     const em = mensajeError(r);
+    if (r.status === 401) { toast(texto401Ordenes(em)); return; }
     if (r.status >= 400 || em) { toast('E*TRADE: ' + (em || 'HTTP ' + r.status)); return; }
     await sb.from('ordenes').update({ estado: 'cancelada', respuesta: recortarJson(C, 4096), actualizado_at: new Date().toISOString() }).eq('id', id);
     toast('Orden cancelada');
@@ -1991,7 +2115,7 @@ async function ordenesActualizar() {
     const estados = ['OPEN', 'EXECUTED', 'INDIVIDUAL_FILLS', 'CANCELLED', 'EXPIRED', 'REJECTED'];
     const rs = await Promise.all(estados.map(s => etPost(cr, '/etrade/ordenes',
       { accountIdKey, query: s === 'OPEN' ? { status: s, count: 100 } : { status: s, ...rango } })));
-    for (const r of rs) { const em = mensajeError(r); if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status); }
+    for (const r of rs) { const em = mensajeError(r); if (r.status === 401) throw new Error(texto401Ordenes(em)); if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status); }
     const lista = (r) => { const d = r.data || {}, O = d.OrdersResponse || d; const a = O.Order || []; return Array.isArray(a) ? a : (a ? [a] : []); };
     const remotas = {};
     for (const r of rs) for (const o of lista(r)) if (o && o.orderId != null) remotas[String(o.orderId)] = o;
@@ -2050,8 +2174,8 @@ async function ordenesActualizar() {
 }
 window.MZ = Object.assign(window.MZ || {}, {
   abrirOrden, cerrarOrden, ordenPreview, ordenPlace, ordenEditar, cancelarOrden, ordenesActualizar,
-  cadenaElegir, cadenaRefrescar: () => cargarCadena(true),
-  cadenaExp: (v) => { const ex = $('#oExp'); if (ex) ex.value = v; if (_ord) _ord.cadenaExp = v; cargarCadena(true); },
+  cadenaElegir, cadenaRefrescar: () => { if (_ord) _ord.cadenaGen++; cargarCadena(true); },
+  cadenaExp: (v) => { const ex = $('#oExp'); if (ex) ex.value = v; if (_ord) { _ord.cadenaExp = v; _ord.cadenaGen++; } cargarCadena(true); },
   pinOrdenes: async () => { await modalPinOrdenes(pinHash() ? 'cambiar' : 'crear'); pintarOrdenesCuenta(); },
   armar: async () => { if (armadoHasta()) desarmar(); else await pedirPin(); pintarOrdenesCuenta(); },
 });
