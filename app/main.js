@@ -185,7 +185,7 @@ async function vistaInforme(hb) {
       ${s.instruccion_gtc ? `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${esc(s.instruccion_gtc)}</div>` : ''}
     </div>`).join('');
   } else {
-    h += `<div class="card vacio">Sin señales todavía hoy.<br>E5 evalúa la apertura de las 9:30 ET.</div>`;
+    h += `<div class="card vacio">Sin señales todavía hoy.<br>CT15A / CT15B (cambio de tendencia en 15 min) y E5 vigilan la apertura de las 9:30 ET; el aviso llega al teléfono.</div>`;
   }
 
   // tickers resumidos
@@ -279,7 +279,7 @@ async function vistaCopiloto() {
   if (senales.length) {
     h += senales.map(s => tarjetaSenal(s, posic)).join('');
   } else {
-    h += `<div class="card vacio">Sin señales todavía hoy.<br>E5 evalúa la apertura de las 9:30 ET.</div>`;
+    h += `<div class="card vacio">Sin señales todavía hoy.<br>CT15A / CT15B (cambio de tendencia en 15 min) y E5 vigilan la apertura de las 9:30 ET; el aviso llega al teléfono.</div>`;
   }
 
   // registrar a mano (útil siempre) · nueva orden en E*TRADE (vista previa primero)
@@ -302,19 +302,38 @@ async function vistaCopiloto() {
   if ((ord.data || []).some(x => x.estado === 'enviada' && x.orden_id_ext)) ordenesActualizar({ silencioso: true });
 }
 
+// Ticket armado por el worker en la señal (payload.ticket: strike/exp/ask del
+// rango vivo): el botón «Operar en E*TRADE» abre la orden ya llena; la cadena
+// en vivo permite ajustar con un toque.
+function preOrdenDeSenal(s) {
+  const pre = { senal_id: s.id, symbol: s.symbol, direccion: s.direccion, proposito: 'entrada' };
+  const tk = (s.payload && s.payload.ticket) || null;
+  if (tk) {
+    if (tk.strike != null && Number.isFinite(Number(tk.strike))) pre.strike = Number(tk.strike);
+    if (tk.exp && /^\d{4}-\d{2}-\d{2}$/.test(String(tk.exp))) pre.expiracion = tk.exp;
+    if (tk.ask != null && Number(tk.ask) > 0) pre.limitPrice = Number(tk.ask).toFixed(2);
+  }
+  return pre;
+}
+function textoTicket(s) {
+  const tk = (s.payload && s.payload.ticket) || null;
+  if (!tk || tk.strike == null) return '';
+  const rango = (tk.rango && tk.rango[0] != null) ? ` · rango $${Math.round(tk.rango[0])}–$${Math.round(tk.rango[1])}` : '';
+  return `<div class="mut mono" style="margin-top:6px">Ticket armado: ${esc(s.symbol)} ${esc(s.direccion || '')} ${esc(tk.strike)} · vence ${esc(tk.exp || '—')}${tk.ask != null ? ' · ask $' + Number(tk.ask).toFixed(2) : ''}${rango}</div>`;
+}
 function tarjetaSenal(s, posic) {
   const yaReg = posic.some(p => p.senal_id === s.id);
   return `<div class="card" style="border-color:rgba(231,181,77,.45)">
     <div class="fila"><span style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>
       <span class="fresco">${esc(haceCuanto(s.creado_at).txt)}</span></div>
     <div class="mut" style="margin-top:5px">${esc(s.motivo || '')}</div>
+    ${textoTicket(s)}
     ${s.instruccion_gtc ? `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${esc(s.instruccion_gtc)}</div>` : ''}
     ${yaReg ? `<div class="mut" style="margin-top:8px;color:var(--verde)">✓ ya registraste tu fill</div>`
       : `<div class="dos" style="margin-top:9px">
         <button class="btnsec" onclick='MZ.abrirFill(${JSON.stringify({
           senal_id: s.id, symbol: s.symbol, direccion: s.direccion }).replace(/'/g, "&#39;")})'>Registrar mi fill</button>
-        <button class="pri" onclick='MZ.abrirOrden(${JSON.stringify({
-          senal_id: s.id, symbol: s.symbol, direccion: s.direccion, proposito: 'entrada' }).replace(/'/g, "&#39;")})'>Operar en E*TRADE</button></div>`}
+        <button class="pri" onclick='MZ.abrirOrden(${JSON.stringify(preOrdenDeSenal(s)).replace(/'/g, "&#39;")})'>Operar en E*TRADE</button></div>`}
   </div>`;
 }
 
