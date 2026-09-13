@@ -14,19 +14,19 @@
   :root{
     --bg:#0B0E14; --bg2:#0D1119; --card:#141A26; --line:rgba(255,255,255,.07);
     --tx:#E9EDF5; --tx2:#8C96AB; --tx3:#5C6678; --oro:#E7B54D;
-    --verde:#45D08C; --rojo:#F26D5F; --azul:#6FA8F5;
+    --verde:#45D08C; --rojo:#F26D5F; --azul:#6FA8F5; --itm:rgba(111,168,245,.16);
     --mono:ui-monospace,'SF Mono',Menlo,monospace;
     --sans:'Instrument Sans',system-ui,-apple-system,sans-serif;
   }
   @media(prefers-color-scheme:light){:root:not([data-theme="dark"]){
     --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
     --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
-    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7;
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --itm:rgba(46,107,199,.11);
   }}
   :root[data-theme="light"]{
     --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
     --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
-    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7;
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --itm:rgba(46,107,199,.11);
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--sans);
@@ -137,9 +137,18 @@
   .cadena td.k{text-align:center;font-weight:700;color:var(--tx)}
   .cadena td.cel{cursor:pointer}
   .cadena td.cel small{color:var(--tx3);font-size:9.5px}
-  .cadena td.en-rango{background:rgba(231,181,77,.16);color:var(--oro);font-weight:700}
-  .cadena td.borde{background:rgba(231,181,77,.07)}
+  .cadena td.itm{background:var(--itm)}
+  .cadena td.en-rango{color:var(--oro);font-weight:700}
+  .cadena td.en-rango:not(.itm){background:rgba(231,181,77,.16)}
+  .cadena td.borde:not(.itm){background:rgba(231,181,77,.07)}
+  .cadena td.itm.en-rango{box-shadow:inset 0 0 0 1.5px var(--oro)}
   .cadena tr.atm td.k{color:var(--oro)}
+  .cadena tr.atm-linea td{padding:0;height:0;border-top:2px solid var(--oro);text-align:center;line-height:0}
+  .cadena tr.atm-linea span{display:inline-block;background:var(--card);color:var(--oro);font-size:9.5px;font-weight:700;letter-spacing:.08em;padding:0 7px;line-height:13px;transform:translateY(-7px);border:1px solid var(--oro);border-radius:8px}
+  .cadena .leyenda .sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;border:1px solid var(--line)}
+  .cadena .leyenda .sw.itm{background:var(--itm)}
+  .cadena .leyenda .sw.otm{background:transparent}
+  .cadena .leyenda .sw.rango{background:rgba(231,181,77,.16);border-color:var(--oro)}
   .prevbox{margin-top:10px;padding:11px 12px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:13px}
   .prevbox .fila{padding:2px 0}
   .hoja input.pin{text-align:center;letter-spacing:.3em;font-size:18px}
@@ -182,7 +191,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=28"></script>
-  <script src="./app/main.js?v=28"></script>
+  <script src="./config.js?v=29"></script>
+  <script src="./app/main.js?v=29"></script>
 </body>
 </html>

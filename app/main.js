@@ -258,7 +258,7 @@ async function vistaCopiloto() {
     sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }),
     sb.from('posiciones').select('*').order('abierta_at', { ascending: false }),
     sb.from('broker_trades').select('*'),
-    sb.from('ordenes').select('*').order('creado_at', { ascending: false }).limit(10),
+    sb.from('ordenes').select('*').in('estado', ['enviada', 'error']).order('creado_at', { ascending: false }).limit(20),   // solo ACTIVAS (y las que no se pudo confirmar)
   ]);
   const senales = sen.data || [];
   const posic = pos.data || [];
@@ -295,9 +295,11 @@ async function vistaCopiloto() {
     h += `<div class="card vacio">Sin posiciones abiertas.</div>`;
   }
 
-  // órdenes anotadas en E*TRADE (últimas 10)
+  // órdenes ACTIVAS en E*TRADE (las canceladas/ejecutadas/expiradas ya no salen aquí)
   h += seccionOrdenes(ord.data || []);
   $('#vista').innerHTML = h;
+  // sincronización silenciosa con E*TRADE (cada 60 s mientras haya activas; ruta() corre cada 60 s)
+  if ((ord.data || []).some(x => x.estado === 'enviada' && x.orden_id_ext)) ordenesActualizar({ silencioso: true });
 }
 
 function tarjetaSenal(s, posic) {
@@ -1779,9 +1781,12 @@ function pintarCadena() {
   // solo se dibuja la cadena que corresponde al ticker del formulario; si no coincide (cambio en curso), «consultando…»
   const deEsteTicker = String(_ord.cadenaClave || '').split('|')[0] === f.symbol;
   const c = deEsteTicker ? _ord.cadena : null, q = (deEsteTicker || _ord.cadenaSym === f.symbol) ? (_ord.cotiz || {}) : {}, err = deEsteTicker ? _ord.cadenaErr : null;
+  // quoteStatus/quoteType de E*TRADE: REALTIME · DELAYED · CLOSING (cierre del
+  // día) · EH_* (fuera de horario). Solo DELAYED significa que faltan los acuerdos.
   const est = (c && c.estado) || q.estado || '';
-  const vivo = /REAL/i.test(est) ? '<span style="color:var(--verde)">en vivo</span>'
-    : est ? '<span style="color:var(--oro)">retrasado — activa cotizaciones en tiempo real en E*TRADE</span>' : '';
+  const vivo = /DELAY/i.test(est) ? '<span style="color:var(--oro)">retrasado — activa cotizaciones en tiempo real en E*TRADE</span>'
+    : /REALTIME/i.test(est) ? '<span style="color:var(--verde)">en vivo</span>'
+    : /CLOS|EH_/i.test(est) ? '<span class="mut">mercado cerrado · último precio</span>' : '';
   const vs = _ord.vencs || [];
   const sel = vs.length ? `<select id="oCadExp" onchange="MZ.cadenaExp(this.value)" style="width:auto;padding:5px 7px;font-size:12px">${
     vs.slice(0, 14).map(v => `<option value="${v.ymd}" ${v.ymd === _ord.cadenaExp ? 'selected' : ''}>${v.ymd.slice(5)}${/WEEK/i.test(v.tipo) ? ' s' : ''}</option>`).join('')}</select>` : '';
@@ -1797,17 +1802,27 @@ function pintarCadena() {
   else {
     const spot = q.last != null ? q.last : c.near;
     const dist = spot != null ? Math.min(...c.filas.map(x => Math.abs(x.strike - spot))) : null;
+    // in the money: CALL con strike por DEBAJO del precio; PUT con strike por ENCIMA.
+    // La línea ATM se traza entre los dos strikes que encierran el precio actual.
     const celda = (o, lado, strike) => {
       if (!o) return '<td></td>';
       const r = enRangoCadena(o, rango);
-      const cls = r === 'ok' ? ' en-rango' : r === 'borde' ? ' borde' : '';
+      const itm = spot != null && (lado === 'CALL' ? strike < spot : strike > spot);
+      const cls = (itm ? ' itm' : '') + (r === 'ok' ? ' en-rango' : r === 'borde' ? ' borde' : '');
       const precio = (o.bid != null && o.ask != null) ? `${o.bid.toFixed(2)}/${o.ask.toFixed(2)}` : (o.last != null ? o.last.toFixed(2) : '—');
       const dl = o.delta != null ? ` <small>δ${Math.abs(o.delta).toFixed(2)}</small>` : '';
       return `<td class="cel${cls}" onclick="MZ.cadenaElegir('${lado}',${strike},${o.ask != null ? o.ask : 'null'},${o.bid != null ? o.bid : 'null'})">${precio}${dl}</td>`;
     };
-    h += `<table><thead><tr><th>PUT bid/ask</th><th>strike</th><th>CALL bid/ask</th></tr></thead><tbody>` +
-      c.filas.map(r => `<tr class="${dist != null && Math.abs(r.strike - spot) === dist ? 'atm' : ''}">${celda(r.put, 'PUT', r.strike)}<td class="k">${r.strike}</td>${celda(r.call, 'CALL', r.strike)}</tr>`).join('') +
-      `</tbody></table><div class="fresco" style="margin-top:4px">toca un precio para llenar la orden · vence ${esc(_ord.cadenaExp || '')}${rangoTxt} · <span style="color:var(--oro)">■</span> prima dentro del rango · ${esc(horaNY(_ord.cadenaTs))}</div>`;
+    const lineaAtm = spot != null ? `<tr class="atm-linea"><td colspan="3"><span>ATM · $${spot.toFixed(2)}</span></td></tr>` : '';
+    const filas = []; let lineaPuesta = spot == null;
+    for (const r of c.filas) {
+      if (!lineaPuesta && r.strike >= spot) { filas.push(lineaAtm); lineaPuesta = true; }
+      filas.push(`<tr class="${dist != null && Math.abs(r.strike - spot) === dist ? 'atm' : ''}">${celda(r.put, 'PUT', r.strike)}<td class="k">${r.strike}</td>${celda(r.call, 'CALL', r.strike)}</tr>`);
+    }
+    if (!lineaPuesta) filas.push(lineaAtm);
+    h += `<table><thead><tr><th>PUT bid/ask</th><th>strike</th><th>CALL bid/ask</th></tr></thead><tbody>${filas.join('')}</tbody></table>
+      <div class="fresco leyenda" style="margin-top:5px"><span class="sw itm"></span> in the money · <span class="sw otm"></span> out of the money · <span style="color:var(--oro);font-weight:700">━</span> at the money${spot != null ? ' $' + spot.toFixed(2) : ''} · <span class="sw rango"></span> prima en rango${rangoTxt}</div>
+      <div class="fresco" style="margin-top:3px">toca un precio para llenar la orden · vence ${esc(_ord.cadenaExp || '')} · ${esc(horaNY(_ord.cadenaTs))}</div>`;
   }
   box.innerHTML = h + '</div>';
 }
@@ -2052,10 +2067,21 @@ async function ordenPlace() {
 
 // ---- Copiloto: ÓRDENES EN E*TRADE ----
 function seccionOrdenes(filas) {
-  let h = `<div class="sec fila" style="margin-top:8px">ÓRDENES EN E*TRADE
-    <a href="#" onclick="MZ.ordenesActualizar();return false">Actualizar desde E*TRADE</a></div>`;
-  if (!filas.length) return h + `<div class="card vacio">Sin órdenes anotadas. Las que previsualices o envíes desde aquí quedan registradas.</div>`;
-  return h + filas.map(tarjetaOrden).join('');
+  const sinc = _ordSync.err ? `<span style="color:var(--rojo)">sin consultar E*TRADE: ${esc(_ordSync.err)}</span>`
+    : _ordSync.ts ? `sincronizado con E*TRADE ${esc(horaNY(_ordSync.ts))} NY · se actualiza sola` : 'se sincroniza sola con E*TRADE';
+  let h = `<div class="sec fila" style="margin-top:8px">ÓRDENES ACTIVAS EN E*TRADE
+    <a href="#" onclick="MZ.ordenesActualizar();return false">Actualizar ahora</a></div>`;
+  if (!filas.length) return h + `<div class="card vacio">Sin órdenes activas en E*TRADE.<br><span class="fresco">${sinc}</span></div>`;
+  return h + filas.map(tarjetaOrden).join('') + `<div class="fresco" style="margin:2px 4px 6px">${sinc}</div>`;
+}
+// Estado que muestra la tarjeta: 'enviada' = ACTIVA en E*TRADE (o CANCELANDO /
+// PARCIAL según el último detalle sincronizado); 'error' = no se pudo confirmar.
+function etiquetaOrden(o) {
+  const det = (((o.respuesta || {})._etrade || {}).OrderDetail || [])[0] || {};
+  const st = String(det.status || '').toUpperCase();
+  if (o.estado === 'enviada') return st === 'CANCEL_REQUESTED' ? 'CANCELANDO' : st === 'PARTIAL' ? 'PARCIAL' : 'ACTIVA';
+  if (o.estado === 'error') return 'VERIFICA';
+  return String(o.estado || '').toUpperCase();
 }
 function tarjetaOrden(o) {
   const chip = { preview: 'c-esp', enviada: 'c-vig', ejecutada: 'c-op', cancelada: 'c-esp', expirada: 'c-esp', rechazada: 'c-vet', error: 'c-vet' }[o.estado] || 'c-esp';
@@ -2067,8 +2093,9 @@ function tarjetaOrden(o) {
   const prop = { entrada: 'entrada', salida_gtc: 'salida GTC', salida_stop: 'salida stop', cancelar: 'cancelar', otro: 'otra' }[o.proposito] || o.proposito;
   const ov = Array.isArray(o.overrides) ? o.overrides : [];
   return `<div class="card">
-    <div class="fila"><span class="chip ${chip}">${esc(String(o.estado || '').toUpperCase())}</span>
+    <div class="fila"><span class="chip ${chip}">${esc(etiquetaOrden(o))}</span>
       <span class="fresco">${esc(fmtFechaNY(o.creado_at, true))} NY</span></div>
+    ${o.estado === 'error' ? `<div class="mut" style="margin-top:4px;color:var(--rojo);font-size:11px">No se pudo confirmar si E*TRADE la recibió: revísala en la app de E*TRADE antes de repetirla.</div>` : ''}
     <div class="fila" style="margin-top:6px"><b style="font-size:13.5px">${esc(contrato)}</b>
       <span class="mut mono">${esc(o.accion)} ×${esc(Number(o.cantidad))}</span></div>
     <div class="fila" style="margin-top:3px"><span class="mut">${esc(prop)} · ${precio} · ${o.order_term === 'GOOD_UNTIL_CANCEL' ? 'GTC' : 'DAY'}${o.orden_id_ext ? ' · #' + esc(o.orden_id_ext) : ''}</span>
@@ -2088,25 +2115,47 @@ async function cancelarOrden(id, orderId) {
     const d = r.data || {}, C = d.CancelOrderResponse || d;
     const em = mensajeError(r);
     if (r.status === 401) { toast(texto401Ordenes(em)); return; }
-    if (r.status >= 400 || em) { toast('E*TRADE: ' + (em || 'HTTP ' + r.status)); return; }
+    // E*TRADE la rechaza (p. ej. ya estaba cancelada desde su app): se avisa y se
+    // sincroniza enseguida para que la tarjeta refleje el estado real.
+    if (r.status >= 400 || em) { toast('E*TRADE: ' + (em || 'HTTP ' + r.status)); ordenesActualizar({ silencioso: true, forzar: true }); return; }
     await sb.from('ordenes').update({ estado: 'cancelada', respuesta: recortarJson(C, 4096), actualizado_at: new Date().toISOString() }).eq('id', id);
     toast('Orden cancelada');
     ruta();
+    setTimeout(() => ordenesActualizar({ silencioso: true, forzar: true }), 4000);   // «being processed» → confirmar CANCELLED
   } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); }
 }
 // Cruza las órdenes 'enviadas' con E*TRADE (abiertas + ejecutadas de los últimos
 // 7 días) y actualiza estados; una ENTRADA ejecutada crea la posición y una
 // SALIDA ejecutada cierra la suya.
-async function ordenesActualizar() {
+// Sincroniza las órdenes 'enviada' con el estado REAL en E*TRADE. Manual (enlace
+// «Actualizar ahora») o silenciosa (al abrir Copiloto, cada 60 s mientras haya
+// activas, al volver del fondo y tras cancelar). Dos fases para no castigar la
+// API: primero OPEN + CANCEL_REQUESTED (lo vivo); solo si alguna local no aparece
+// ahí se piden los estados finales (EXECUTED/INDIVIDUAL_FILLS/CANCELLED/EXPIRED/
+// REJECTED). Una cancelada desde la app de E*TRADE deja de ser 'enviada' sola.
+const _ordSync = { ts: 0, enCurso: false, err: null };
+const ORD_SYNC_MS = 60000;
+const ORD_ESTADOS_VIVOS = ['OPEN', 'CANCEL_REQUESTED'];
+const ORD_ESTADOS_FINALES = ['EXECUTED', 'INDIVIDUAL_FILLS', 'CANCELLED', 'EXPIRED', 'REJECTED'];
+// Estado local que corresponde al status de E*TRADE; null = sigue activa.
+function estadoLocalDe(st) {
+  st = String(st || '').toUpperCase();
+  return /EXECUTED|INDIVIDUAL_FILLS/.test(st) ? 'ejecutada' : st === 'CANCELLED' ? 'cancelada' : st === 'EXPIRED' ? 'expirada' : st === 'REJECTED' ? 'rechazada' : null;
+}
+async function ordenesActualizar(opts) {
+  const op = opts || {}, silencioso = !!op.silencioso;
+  const aviso = (t) => { if (!silencioso) toast(t); };
+  if (silencioso && (_ordSync.enCurso || (!op.forzar && Date.now() - _ordSync.ts < ORD_SYNC_MS))) return;
   const cr = etCreds();
-  if (!cr) { toast('Conecta E*TRADE primero'); return; }
-  if (etDiaVencido()) { toast('Sesión de E*TRADE expirada — reconecta'); return; }
+  if (!cr) { aviso('Conecta E*TRADE primero'); return; }
+  if (etDiaVencido()) { aviso('Sesión de E*TRADE expirada — reconecta'); return; }
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
-  if (!uid) { toast('Sin sesión. Sal y vuelve a entrar.'); return; }
+  if (!uid) { aviso('Sin sesión. Sal y vuelve a entrar.'); return; }
   const { data, error } = await sb.from('ordenes').select('*').eq('estado', 'enviada').not('orden_id_ext', 'is', null);
-  if (error) { toast('No pude leer tus órdenes: ' + error.message); return; }
-  if (!(data || []).length) { toast('No hay órdenes enviadas pendientes'); return; }
-  toast('Consultando E*TRADE…');
+  if (error) { aviso('No pude leer tus órdenes: ' + error.message); return; }
+  if (!(data || []).length) { _ordSync.ts = Date.now(); _ordSync.err = null; aviso('No hay órdenes activas que consultar'); return; }
+  aviso('Consultando E*TRADE…');
+  _ordSync.enCurso = true;
   try {
     const accountIdKey = await etCuentaKey(cr);
     const mmdd = (ymd) => ymd.slice(5, 7) + ymd.slice(8, 10) + ymd.slice(0, 4);
@@ -2115,21 +2164,37 @@ async function ordenesActualizar() {
     const desdeMs = Math.max(Date.now() - 30 * 86400000, new Date(masVieja).getTime() - 86400000);
     const hoy = hoyNY(), desde = ymdNY(new Date(desdeMs).toISOString());
     const rango = { fromDate: mmdd(desde), toDate: mmdd(hoy), count: 100 };
-    // todos los estados finales: canceladas/expiradas/rechazadas en E*TRADE también deben salir de 'enviada'
-    const estados = ['OPEN', 'EXECUTED', 'INDIVIDUAL_FILLS', 'CANCELLED', 'EXPIRED', 'REJECTED'];
-    const rs = await Promise.all(estados.map(s => etPost(cr, '/etrade/ordenes',
-      { accountIdKey, query: s === 'OPEN' ? { status: s, count: 100 } : { status: s, ...rango } })));
-    for (const r of rs) { const em = mensajeError(r); if (r.status === 401) throw new Error(texto401Ordenes(em)); if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status); }
     const lista = (r) => { const d = r.data || {}, O = d.OrdersResponse || d; const a = O.Order || []; return Array.isArray(a) ? a : (a ? [a] : []); };
     const remotas = {};
-    for (const r of rs) for (const o of lista(r)) if (o && o.orderId != null) remotas[String(o.orderId)] = o;
+    const pedir = async (estados, conRango) => {
+      const rs = await Promise.all(estados.map(s => etPost(cr, '/etrade/ordenes',
+        { accountIdKey, query: conRango ? { status: s, ...rango } : { status: s, count: 100 } })));
+      for (const r of rs) {
+        const em = mensajeError(r);
+        if (r.status === 401) throw new Error(texto401Ordenes(em));
+        if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status);
+        for (const x of lista(r)) if (x && x.orderId != null) remotas[String(x.orderId)] = x;
+      }
+    };
+    await pedir(ORD_ESTADOS_VIVOS, false);                                         // fase 1: lo que sigue vivo
+    if (data.some(l => !remotas[String(l.orden_id_ext)])) await pedir(ORD_ESTADOS_FINALES, true);   // fase 2: solo si alguna desapareció
     let cambios = 0;
     for (const loc of data) {
       const rem = remotas[String(loc.orden_id_ext)]; if (!rem) continue;
       const det = (Array.isArray(rem.OrderDetail) ? rem.OrderDetail[0] : rem.OrderDetail) || {};
       const st = String(det.status || '').toUpperCase();
-      const nuevo = /EXECUTED|INDIVIDUAL_FILLS/.test(st) ? 'ejecutada' : st === 'CANCELLED' ? 'cancelada' : st === 'EXPIRED' ? 'expirada' : st === 'REJECTED' ? 'rechazada' : null;
-      if (!nuevo) continue;
+      const nuevo = estadoLocalDe(st);
+      if (!nuevo) {
+        // sigue activa (OPEN / CANCEL_REQUESTED / PARTIAL): se guarda el detalle solo si
+        // cambió, para que la tarjeta diga ACTIVA / CANCELANDO / PARCIAL
+        const prev = ((((loc.respuesta || {})._etrade || {}).OrderDetail) || [])[0] || {};
+        if (String(prev.status || '').toUpperCase() !== st) {
+          const resp = Object.assign({}, loc.respuesta || {}, { _etrade: recortarJson(rem, 3000) });
+          const { error: e3 } = await sb.from('ordenes').update({ respuesta: resp, actualizado_at: new Date().toISOString() }).eq('id', loc.id);
+          if (!e3) cambios++;
+        }
+        continue;
+      }
       const upd = { estado: nuevo, respuesta: recortarJson(rem, 4096), actualizado_at: new Date().toISOString() };
       if (nuevo === 'ejecutada') {
         // varios fills: cantidad = suma; precio = promedio ponderado
@@ -2172,9 +2237,14 @@ async function ordenesActualizar() {
       const { error: e2 } = await sb.from('ordenes').update(upd).eq('id', loc.id);
       if (!e2) cambios++;
     }
-    toast(cambios ? `${cambios} orden${cambios > 1 ? 'es' : ''} actualizada${cambios > 1 ? 's' : ''}` : 'Sin cambios en E*TRADE');
-    ruta();
-  } catch (e) { toast('No pude actualizar: ' + ((e && e.message) || e)); }
+    _ordSync.ts = Date.now(); _ordSync.err = null;
+    if (cambios) { toast(`${cambios} orden${cambios > 1 ? 'es' : ''} actualizada${cambios > 1 ? 's' : ''} desde E*TRADE`); ruta(); }
+    else { aviso('Sin cambios en E*TRADE'); if (!silencioso) ruta(); }
+  } catch (e) {
+    _ordSync.ts = Date.now(); _ordSync.err = String((e && e.message) || e);
+    aviso('No pude actualizar: ' + _ordSync.err);
+  }
+  _ordSync.enCurso = false;
 }
 window.MZ = Object.assign(window.MZ || {}, {
   abrirOrden, cerrarOrden, ordenPreview, ordenPlace, ordenEditar, cancelarOrden, ordenesActualizar,
