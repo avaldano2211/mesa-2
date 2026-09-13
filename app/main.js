@@ -1977,7 +1977,7 @@ function pintarAvisosOrden() {
   const box = $('#oAvisos'); if (!box) return;
   const f = leerFormOrden();
   const c = _ord.ctx;
-  const av = c ? avisosOrden(f, { rango: c.rangos[f.symbol] || null, opsSemana: c.opsSemana, saldo: c.saldo, antes1030: c.antes1030 }) : [];
+  const av = c ? avisosOrden(f, { rango: c.rangos[f.symbol] || null, opsSemana: c.opsSemana, saldo: c.saldo, saldoBroker: c.saldoBroker, antes1030: c.antes1030 }) : [];
   _ord.avisos = av;
   const txt = av.join('\n');
   if (txt === _ord.avisosTxt) return;   // sin cambios: no tocar el checkbox
