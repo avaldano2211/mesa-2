@@ -2059,10 +2059,11 @@ function pintarCadena() {
     const filas = []; let lineaPuesta = spot == null;
     for (const r of c.filas) {
       if (!lineaPuesta && r.strike >= spot) { filas.push(lineaAtm); lineaPuesta = true; }
-      filas.push(`<tr class="${dist != null && Math.abs(r.strike - spot) === dist ? 'atm' : ''}">${celda(r.put, 'PUT', r.strike)}<td class="k">${r.strike}</td>${celda(r.call, 'CALL', r.strike)}</tr>`);
+      // CALLS a la IZQUIERDA y PUTS a la DERECHA: la convención de E*TRADE, TC2000 y la academia
+      filas.push(`<tr class="${dist != null && Math.abs(r.strike - spot) === dist ? 'atm' : ''}">${celda(r.call, 'CALL', r.strike)}<td class="k">${r.strike}</td>${celda(r.put, 'PUT', r.strike)}</tr>`);
     }
     if (!lineaPuesta) filas.push(lineaAtm);
-    h += `<table><thead><tr><th>PUT bid/ask</th><th>strike</th><th>CALL bid/ask</th></tr></thead><tbody>${filas.join('')}</tbody></table>
+    h += `<table><thead><tr><th style="color:var(--verde)">▲ CALL bid/ask</th><th>strike</th><th style="color:var(--rojo)">▼ PUT bid/ask</th></tr></thead><tbody>${filas.join('')}</tbody></table>
       <div class="fresco leyenda" style="margin-top:5px"><span class="sw itm"></span> in the money · <span class="sw otm"></span> out of the money · <span style="color:var(--oro);font-weight:700">━</span> at the money${spot != null ? ' $' + spot.toFixed(2) : ''} · <span class="sw rango"></span> prima en rango${rangoTxt} · <span style="color:var(--rojo);font-weight:700">▲</span> spread ≥${SPREAD_MAX_PCT}% (no comprar)</div>
       <div class="fresco" style="margin-top:3px">toca un precio para llenar la orden · vence ${esc(_ord.cadenaExp || '')} · ${esc(horaNY(_ord.cadenaTs))}</div>`;
   }
@@ -2083,6 +2084,7 @@ function cadenaElegir(lado, strike, ask, bid) {
   if (pr && pt && pt.value === 'LIMIT' && p != null) pr.value = Number(p).toFixed(2);
   autoCantidad();                                   // prearma la cantidad con el presupuesto (35% del saldo)
   ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden(); pintarCadena();
+  toast(`${lado} ${strike} elegido${p != null ? ' a $' + Number(p).toFixed(2) : ''}`);
 }
 // Contexto de doctrina (rango por ticker, cupo semanal, saldo, hora): una consulta.
 async function cargarCtxOrden() {
@@ -2368,6 +2370,7 @@ function tarjetaOrden(o) {
     <div class="fila"><span class="chip ${chip}">${esc(etiquetaOrden(o))}</span>
       <span class="fresco">${esc(fmtFechaNY(o.creado_at, true))} NY</span></div>
     ${o.estado === 'error' ? `<div class="mut" style="margin-top:4px;color:var(--rojo);font-size:11px">No se pudo confirmar si E*TRADE la recibió: revísala en la app de E*TRADE antes de repetirla.</div>` : ''}
+    ${o.estado === 'enviada' && /^BUY/.test(String(o.accion || '')) && o.limit_price ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">Cuando se llene, la Mesa te abre sola la venta GTC +${PLAN_PCT}% (≈ $${gtcDe(Number(o.limit_price)).toFixed(2)}) lista para enviar.</div>` : ''}
     <div class="fila" style="margin-top:6px"><b style="font-size:13.5px">${esc(contrato)}</b>
       <span class="mut mono">${esc(o.accion)} ×${esc(Number(o.cantidad))}</span></div>
     <div class="fila" style="margin-top:3px"><span class="mut">${esc(prop)} · ${precio} · ${o.order_term === 'GOOD_UNTIL_CANCEL' ? 'GTC' : 'DAY'}${o.orden_id_ext ? ' · #' + esc(o.orden_id_ext) : ''}</span>
