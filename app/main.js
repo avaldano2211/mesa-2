@@ -1244,7 +1244,7 @@ function swGuardar(d) {
     localStorage.removeItem(SW_K.muerto); localStorage.removeItem(SW_K.cache);
   } catch (_) {}
 }
-function swOlvidar() { try { Object.values(SW_K).forEach(k => localStorage.removeItem(k)); } catch (_) {} }
+function swOlvidar() { try { Object.values(SW_K).forEach(k => localStorage.removeItem(k)); localStorage.removeItem('mz_sw_sync'); } catch (_) {} }
 // vencido: refresh token de más de 7 días, o Schwab rechazó la renovación
 function swVencido() {
   try {
@@ -1388,7 +1388,7 @@ async function swCodigoEnviar() {
   const d = r.data || {};
   if (!d.token) { err.textContent = d.error || 'Código inválido o caducado (vale 5 min).'; return; }
   swGuardar(Object.assign({ nuevo_login: true }, d));
-  try { localStorage.removeItem(SW_K.acct); localStorage.removeItem(SW_K.num); } catch (_) {}
+  try { localStorage.removeItem(SW_K.acct); localStorage.removeItem(SW_K.num); localStorage.removeItem(SW_K_SYNC); } catch (_) {}
   const m = $('#modalSw'); if (m) m.remove();
   toast('Schwab conectada ✓');
   if (_ord && $('#modalOrden')) { cargarCadena(true); return; }
@@ -1503,6 +1503,142 @@ async function etSyncAhora() {
   ruta();
 }
 
+
+// ---------- Historial Schwab: órdenes llenas → ejecuciones → round-trips → Supabase ----------
+// Mismo camino que E*TRADE (token en ESTE dispositivo, round-trips en broker_trades
+// con RLS) y el mismo método que la mesa local (SchwabBroker.fills): órdenes con
+// status FILLED de opciones, precio/hora reales de cada ejecución si vienen
+// (orderActivityCollection.executionLegs), si no los campos de la orden.
+// Schwab acota el rango por consulta: se pide en tramos de 60 días hacia atrás.
+const SW_DIAS_HIST = 180, SW_TRAMO_DIAS = 60;
+const SW_K_SYNC = 'mz_sw_sync';
+
+function fillsDeOrdenesSchwab(ordenes) {
+  const out = [];
+  for (const o of (Array.isArray(ordenes) ? ordenes : [])) {
+    if (!o || String(o.status || '').toUpperCase() !== 'FILLED') continue;
+    const leg = ((o.orderLegCollection || [])[0]) || {}; const inst = leg.instrument || {};
+    if (String(inst.assetType || '').toUpperCase() !== 'OPTION') continue;
+    const d = desOsi(inst.symbol); if (!d) continue;
+    const side = /BUY/.test(String(leg.instruction || '').toUpperCase()) ? 'BUY' : 'SELL';
+    const partes = [];
+    for (const act of (o.orderActivityCollection || [])) for (const el of ((act && act.executionLegs) || [])) {
+      const q = Number(el.quantity) || 0, px = Number(el.price);
+      if (q > 0 && Number.isFinite(px)) partes.push({ qty: q, price: px, ts: el.time || o.closeTime || o.enteredTime });
+    }
+    if (!partes.length) {
+      const q = Number(o.filledQuantity) || 0, px = Number(o.price);
+      if (q > 0 && Number.isFinite(px)) partes.push({ qty: q, price: px, ts: o.closeTime || o.enteredTime });
+    }
+    partes.forEach((pt, i) => {
+      const t = new Date(pt.ts || 0); if (Number.isNaN(t.getTime())) return;
+      out.push({ osi: String(inst.symbol).trim(), symbol: d.symbol, expiracion: d.expiracion, direccion: d.direccion, strike: d.strike,
+        side, qty: pt.qty, price: pt.price, ts: t.toISOString(), fee: 0, id: `${o.orderId}${partes.length > 1 ? '.' + i : ''}` });
+    });
+  }
+  return out;
+}
+// Ejecuciones {osi, symbol, expiracion, direccion, strike, side, qty, price, ts, fee, id}
+// → round-trips FIFO por contrato (el mismo criterio que E*TRADE, tasty y moomoo).
+// Schwab no manda comisiones en las órdenes: fees = 0 (igual que moomoo).
+function emparejarFillsSchwab(fills) {
+  const orden = (fills || []).slice().sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1
+    : (a.side === 'BUY' && b.side !== 'BUY') ? -1 : (a.side !== 'BUY' && b.side === 'BUY') ? 1 : String(a.id).localeCompare(String(b.id))));
+  const abiertos = {}, salidas = [];
+  for (const f of orden) {
+    if (f.side === 'BUY') { (abiertos[f.osi] = abiertos[f.osi] || []).push({ qty: f.qty, precio: f.price, ts: f.ts, fee: f.fee || 0, id: f.id }); continue; }
+    let rest = f.qty; const cola = abiertos[f.osi] || [];
+    while (rest > 0 && cola.length) {
+      const ap = cola[0], usa = Math.min(rest, ap.qty);
+      const feeAp = ap.fee * (ap.qty ? usa / ap.qty : 1), feeCi = (f.fee || 0) * (f.qty ? usa / f.qty : 1);
+      salidas.push({ broker: 'schwab', symbol: f.symbol, osi: f.osi, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion,
+        contratos: usa, prima_fill: ap.precio, prima_salida: f.price, abierta_at: ap.ts, cerrada_at: f.ts,
+        resultado_usd: Math.round(((f.price - ap.precio) * usa * 100 - feeAp - feeCi) * 100) / 100,
+        fees: Math.round((feeAp + feeCi) * 100) / 100,
+        clave_ext: `${f.osi}#${ap.id}>${f.id}#${usa}`,
+        raw: { abre: ap.id, cierra: f.id } });
+      ap.qty -= usa; ap.fee -= feeAp; rest -= usa;
+      if (ap.qty <= 1e-9) cola.shift();
+    }
+  }
+  return salidas;
+}
+// Órdenes de Schwab en tramos de 60 días hacia atrás (hasta `dias`). Si un tramo
+// antiguo falla (Schwab limita la antigüedad), se conserva lo ya traído.
+async function schwabOrdenesHistoricas(hash, dias) {
+  const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, '.000Z');
+  const ordenes = []; let hasta = new Date(), cubiertos = 0;
+  while (cubiertos < dias) {
+    const desde = new Date(hasta.getTime() - SW_TRAMO_DIAS * 86400000);
+    const r = await swLlamar('/schwab/ordenes', { hash, query: { fromEnteredTime: iso(desde), toEnteredTime: iso(hasta), maxResults: 3000 } }, ET_TOPE_MS);
+    if (r.status === 401) return { expirado: true, ordenes, dias: cubiertos };
+    const em = swMensajeError(r);
+    if (em || r.status >= 400 || !Array.isArray(r.data)) {
+      if (!cubiertos) return { error: em || ('HTTP ' + r.status), ordenes, dias: 0 };
+      break;
+    }
+    ordenes.push(...r.data);
+    hasta = desde; cubiertos += SW_TRAMO_DIAS;
+  }
+  return { expirado: false, ordenes, dias: Math.min(cubiertos, dias) };
+}
+let _swSyncEnVuelo = null;
+function schwabSincronizar(forzar) {
+  if (_swSyncEnVuelo) return _swSyncEnVuelo;
+  _swSyncEnVuelo = schwabSincronizarImpl(forzar).finally(() => { _swSyncEnVuelo = null; });
+  return _swSyncEnVuelo;
+}
+async function schwabSincronizarImpl(forzar) {
+  if (!swCreds()) return { estado: 'sin' };
+  if (swVencido()) return { estado: 'expirado', cambio: false };
+  let prev = null;
+  try { prev = JSON.parse(localStorage.getItem(SW_K_SYNC) || 'null'); } catch (_) {}
+  if (!forzar && prev && Date.now() - prev.ts < ET_SYNC_TTL) return { ...prev.resumen, cambio: false };
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  const fin = (resumen) => {
+    resumen.ts = Date.now();
+    try { localStorage.setItem(SW_K_SYNC, JSON.stringify({ ts: resumen.ts, resumen })); } catch (_) {}
+    try { etProxy('/diag', { que: 'schwab_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}   // solo contadores, jamás tokens
+    return resumen;
+  };
+  try {
+    const hash = await swCuenta();
+    const res = await schwabOrdenesHistoricas(hash, SW_DIAS_HIST);
+    if (res.expirado) return fin({ estado: 'expirado' });
+    if (res.error) return fin({ estado: 'error', detalle: String(res.error).slice(0, 80) });
+    const fills = fillsDeOrdenesSchwab(res.ordenes);
+    const rts = emparejarFillsSchwab(fills);
+    let nuevos = 0;
+    if (rts.length && uid) {
+      const { error, data } = await sb.from('broker_trades')
+        .upsert(rts.map(r => ({ ...r, user_id: uid })), { onConflict: 'user_id,broker,clave_ext', ignoreDuplicates: true }).select('id');
+      if (error) return fin({ estado: 'error', detalle: String(error.message || error).slice(0, 80) });
+      nuevos = (data || []).length;
+    }
+    const llenas = res.ordenes.filter(o => o && String(o.status || '').toUpperCase() === 'FILLED').length;
+    const resumen = fin({ estado: 'ok', ordenes: llenas, fills: fills.length, rts: rts.length, nuevos, dias: res.dias });
+    return { ...resumen, cambio: nuevos > 0 };
+  } catch (e) {
+    if (/caducó|sin sesión/i.test(String(e && e.message))) return fin({ estado: 'expirado' });
+    return fin({ estado: 'error', detalle: String((e && e.message) || 'fallo').slice(0, 80) });
+  }
+}
+function schwabLineaHistorial(s) {
+  if (!s || s.estado === 'sin') return '';
+  const sync = ` · <a href="#" onclick="MZ.swSync();return false" style="color:var(--oro)">sincronizar</a>`;
+  if (s.estado === 'expirado') return 'historial: login semanal de Schwab caducado — reconecta';
+  if (s.estado === 'error') return 'historial: no pude sincronizar' + (s.detalle ? ' (' + esc(s.detalle) + ')' : '') + sync;
+  if (s.estado === 'sincronizando') return 'historial: sincronizando…';
+  const hace = s.ts ? haceCuanto(new Date(s.ts).toISOString()).txt : '';
+  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.ordenes} órdenes llenas · ${s.fills} ejecuciones de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hace ? ' · ' + hace : ''}${sync}`;
+}
+async function swSyncAhora() {
+  try { localStorage.removeItem(SW_K_SYNC); } catch (_) {}
+  toast('Sincronizando Schwab…');
+  await schwabSincronizar(true);
+  ruta();
+}
+
 async function vistaCuentas() {
   const [posR, btR, csR] = await Promise.all([
     sb.from('posiciones').select('*'),
@@ -1537,7 +1673,7 @@ async function vistaCuentas() {
   }
   // Historial E*TRADE: se muestra el resumen cacheado y se sincroniza en segundo
   // plano; se re-dibuja al terminar (el tope de 10 min evita bucles).
-  let etHist = null;
+  let etHist = null, swHist = null;
   try { const p = JSON.parse(localStorage.getItem(ET_K.sync) || 'null'); etHist = p ? p.resumen : null; } catch (_) {}
   if (etCreds() && !etExpirado) {
     const enCurso = !etHist || Date.now() - (etHist.ts || 0) >= ET_SYNC_TTL;
@@ -1545,6 +1681,14 @@ async function vistaCuentas() {
     // Solo se re-dibuja si el usuario sigue en Cuentas (la sincronización tarda).
     const enCuentas = () => (location.hash.replace('#/', '') || 'informe') === 'cuentas';
     etradeSincronizar().then(s => { if (s && (s.cambio || enCurso) && enCuentas()) vistaCuentas(); });
+  }
+  // Historial Schwab: mismo esquema (resumen cacheado, sincroniza en segundo plano).
+  try { const p = JSON.parse(localStorage.getItem(SW_K_SYNC) || 'null'); swHist = p ? p.resumen : null; } catch (_) {}
+  if (swCreds() && !swExpirado) {
+    const enCursoSw = !swHist || Date.now() - (swHist.ts || 0) >= ET_SYNC_TTL;
+    if (enCursoSw) swHist = { estado: 'sincronizando' };
+    const enCuentasSw = () => (location.hash.replace('#/', '') || 'informe') === 'cuentas';
+    schwabSincronizar().then(s => { if (s && (s.cambio || enCursoSw) && enCuentasSw()) vistaCuentas(); });
   }
   let h = '';
 
@@ -1562,7 +1706,7 @@ async function vistaCuentas() {
       const reconn = (b.k === 'etrade' || b.k === 'schwab')
         ? ` · <a href="#" onclick="MZ.conectar('${b.k}');return false" style="color:var(--oro)">reconectar</a>`
           + ` · <a href="#" onclick="MZ.olvidar('${b.k}');return false" style="color:var(--tx3)">olvidar en este equipo</a>` : '';
-      const hist = b.k === 'etrade' ? etradeLineaHistorial(etHist) : '';
+      const hist = b.k === 'etrade' ? etradeLineaHistorial(etHist) : b.k === 'schwab' ? schwabLineaHistorial(swHist) : '';
       return `<div class="card"><div class="fila">
       <div><b style="font-size:14px">${esc(b.n)}</b> <span class="mut">${esc(c.numero_mascara||'')}</span>
         <div class="fresco">${orig} · ${esc(haceCuanto(c.capturado_at).txt)}${reconn}</div>
@@ -1656,6 +1800,7 @@ window.MZ = Object.assign(window.MZ || {}, {
   swCancelar: () => { const m = $('#modalSw'); if (m) m.remove(); },
   olvidar: (b) => { if (b === 'schwab') { swOlvidar(); toast('Schwab olvidada en este equipo'); ruta(); } else if (window.MZ.etOlvidar) window.MZ.etOlvidar(); },
   etSync: () => etSyncAhora(),
+  swSync: () => swSyncAhora(),
   etOlvidar: () => { etOlvidar(); toast('E*TRADE olvidada en este equipo'); ruta(); },
 });
 
