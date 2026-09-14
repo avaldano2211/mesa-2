@@ -823,6 +823,7 @@ const colUtil = (n) => n == null ? 'var(--tx2)' : n > 0 ? 'var(--verde)' : n < 0
 const BROKERS = [
   { k: 'etrade', n: 'E*TRADE' }, { k: 'tasty', n: 'tastytrade' },
   { k: 'schwab', n: 'Charles Schwab' },
+  { k: 'moomoo', n: 'moomoo' },   // vuelve 2026-09-13 «por si acaso»: OpenD headless en el VPS; el worker publica saldo y trades cada 30 min
 ];
 
 // ---------- Conexión E*TRADE (OAuth 1.0a; el token vive en ESTE dispositivo) ----------
@@ -1297,7 +1298,8 @@ async function vistaCuentas() {
       : (b.k === 'etrade' && etSinRed) ? 'sin conexión con el proxy — E*TRADE sigue conectada en este equipo'
       : (b.k === 'etrade' && etExpirado) ? 'sesión expirada — vuelve a entrar'
       : b.k === 'etrade' ? 'inicia sesión (login diario, con PIN)'
-      : b.k === 'schwab' ? 'en aprobación de Schwab' : 'requiere tu login';
+      : b.k === 'schwab' ? 'en aprobación de Schwab'
+      : b.k === 'moomoo' ? 'pendiente del login de OpenD en el servidor (se lee 24/7, sin tu Mac)' : 'requiere tu login';
     const btn = b.k === 'tasty' ? ''
       : (b.k === 'etrade' && etSinRed) ? `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.etReintentar()">Reintentar</button>`
       : `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.conectar('${b.k}')">Conectar</button>`;
@@ -1367,6 +1369,7 @@ window.MZ = Object.assign(window.MZ || {}, {
     if (b === 'tasty') { toast('tastytrade ya está conectada (en vivo)'); return; }
     if (b === 'etrade') { conectarEtrade(); return; }
     if (b === 'schwab') { toast('Schwab: la activamos en cuanto apruebe tu app'); return; }
+    if (b === 'moomoo') { toast('moomoo: se lee desde el servidor (OpenD); el login se hace una vez desde el Mac con mesa2_moomoo_login.command'); return; }
     toast('Bróker no soportado');
   },
   pinEnviar: (rt) => etradePinEnviar(rt),
