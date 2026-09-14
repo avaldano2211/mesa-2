@@ -1,8 +1,8 @@
-/* Service worker de Mesa 2.0 — SOLO el envoltorio (shell). Criterio heredado
+/* Service worker de Mesa de Mercado 2.0 — SOLO el envoltorio (shell). Criterio heredado
    de la mesa privada: JAMÁS cachear datos de mercado. Toda petición a
    *.supabase.co se deja pasar a la red SIEMPRE — una foto vieja no puede
    disfrazarse del mercado de ahora. Offline: abre el shell y falla honesto. */
-const VER = 'mesa2-v27';
+const VER = 'mesa2-v28';
 const SHELL = [
   './', './index.html', './app/main.js',
   './vendor/supabase.js', './manifest.webmanifest',
@@ -50,7 +50,7 @@ self.addEventListener('push', (e) => {
   };
   // renotify exige tag no vacío (si no, el navegador lanza TypeError).
   if (d.tag) { op.tag = String(d.tag); op.renotify = true; }
-  e.waitUntil(self.registration.showNotification(String(d.titulo || 'Mesa 2.0'), op));
+  e.waitUntil(self.registration.showNotification(String(d.titulo || 'Mesa de Mercado 2.0'), op));
 });
 
 self.addEventListener('notificationclick', (e) => {

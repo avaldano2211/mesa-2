@@ -1,4 +1,4 @@
-# Mesa 2.0 — app
+# Mesa de Mercado 2.0 — app
 
 PWA del analista Sardiñas 24/5. Estática (GitHub Pages), se conecta en vivo a
 Supabase (proyecto personal). La muralla es RLS + whitelist; la anon key es

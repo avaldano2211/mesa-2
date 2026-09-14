@@ -1,4 +1,4 @@
-/* Mesa 2.0 — app (PWA). Lee en vivo de Supabase; la muralla es RLS + whitelist.
+/* Mesa de Mercado 2.0 — app (PWA). Lee en vivo de Supabase; la muralla es RLS + whitelist.
    Doctrina heredada: JAMÁS presentar un dato viejo como fresco — cada dato
    lleva su antigüedad, y el badge distingue «mercado cerrado» de «worker caído». */
 'use strict';
@@ -145,7 +145,7 @@ async function ruta() {
   const hb = await estadoWorker();
   const titulos = { informe: 'El informe de la mañana', tickers: 'Tus tickers',
     copiloto: 'Copiloto', cuentas: 'Cuentas y diario', disciplina: 'Disciplina' };
-  $('#titulo').textContent = titulos[tab] || 'Mesa 2.0';
+  $('#titulo').textContent = titulos[tab] || 'Mesa de Mercado 2.0';
   if (tab === 'informe') return vistaInforme(hb);
   if (tab === 'tickers') return vistaTickers();
   if (tab === 'copiloto') return vistaCopiloto();
