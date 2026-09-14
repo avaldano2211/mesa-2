@@ -2,7 +2,7 @@
    de la mesa privada: JAMÁS cachear datos de mercado. Toda petición a
    *.supabase.co se deja pasar a la red SIEMPRE — una foto vieja no puede
    disfrazarse del mercado de ahora. Offline: abre el shell y falla honesto. */
-const VER = 'mesa2-v32';
+const VER = 'mesa2-v33';
 const SHELL = [
   './', './index.html', './app/main.js',
   './vendor/supabase.js', './manifest.webmanifest',
@@ -22,6 +22,8 @@ self.addEventListener('fetch', (e) => {
   // Datos de mercado / auth / proxy de brókeres: SIEMPRE a la red, nunca caché.
   if (url.hostname.endsWith('supabase.co') || url.hostname.endsWith('fonts.gstatic.com')
       || url.hostname.endsWith('ts.net')) return;
+  // la página de retorno del OAuth de Schwab va SIEMPRE a la red: nunca cachear ?code=
+  if (url.pathname.endsWith('/oauth-schwab.html')) return;
   // Shell: network-first con respaldo a caché (offline abre la app).
   e.respondWith(
     fetch(e.request).then(r => {

@@ -13,6 +13,7 @@
   .btn{display:inline-block;background:#A97A18;color:#fff;border:none;border-radius:12px;padding:13px 22px;font-size:15px;font-weight:700;text-decoration:none;margin:6px;cursor:pointer}
   .sec{background:#fff;color:#1B2333;border:1px solid rgba(24,32,48,.12)}
   .err{color:#D5453B}
+  .ok{color:#178A54;font-weight:700}
 </style>
 </head>
 <body>
@@ -21,41 +22,72 @@
 <script src="./config.js"></script>
 <script>
 (async () => {
-  // Página de retorno del OAuth de Schwab: recibe ?code=, lo canjea en el proxy
-  // (que aporta el app secret) y muestra un código de 6 dígitos para pegar en
-  // la Mesa (la PWA del iPhone no comparte almacenamiento con Safari). Si este
-  // navegador ES el de la Mesa (Mac), deja el token guardado y la app lo toma.
+  // Página de retorno del OAuth de Schwab. Recibe ?code=&state=, canjea el código
+  // en el proxy (que aporta el app secret) y obtiene un código de 6 dígitos atado
+  // al secreto del dispositivo que INICIÓ el login (mz_sw_login):
+  //  · si este navegador es el de la Mesa (Mac), tiene ese secreto → reclama los
+  //    tokens aquí mismo y los guarda: la Mesa queda conectada sin teclear nada;
+  //  · si no (PWA del iPhone, que no comparte almacenamiento con Safari), muestra
+  //    el código para pegarlo en la Mesa, que sí tiene el secreto.
   const out = document.getElementById('out');
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const PROXY_URL = (window.MESA2 && window.MESA2.PROXY_URL) || '';
+  const volver = '<br><br><a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>';
+  if (!PROXY_URL) { out.innerHTML = '<span class="err">Falta la URL del proxy (config.js).</span>' + volver; return; }
   const p = new URLSearchParams(location.search);
-  const code = p.get('code'), error = p.get('error');
+  const code = p.get('code'), state = p.get('state') || '', error = p.get('error');
+  history.replaceState(null, '', location.pathname);   // que el código no se quede en la barra ni en el historial
   if (error || !code) {
-    out.innerHTML = '<span class="err">Schwab no devolvió un código' + (error ? ': ' + esc(error) : '') + '.</span><br>Vuelve a la Mesa e inténtalo de nuevo.<br><br><a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>';
+    out.innerHTML = '<span class="err">Schwab no devolvió un código' + (error ? ': ' + esc(error) : '') + '.</span><br>Vuelve a la Mesa e inténtalo de nuevo.' + volver;
     return;
   }
-  history.replaceState(null, '', location.pathname);   // que el código no se quede en la barra ni en el historial
-  try {
-    const r = await fetch(PROXY_URL + '/schwab/login/finish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
-    const d = await r.json().catch(() => ({}));
-    if (!d.token || !d.handoff) throw new Error(d.error ? d.error + (d.detalle ? ' — ' + d.detalle : '') : ('HTTP ' + r.status));
+  let login = null;
+  try { login = JSON.parse(localStorage.getItem('mz_sw_login') || 'null'); } catch (_) {}
+  const mismoNavegador = !!(login && login.claim_secret && login.state && login.state === state);
+  const post = async (ruta, cuerpo) => {
+    const r = await fetch(PROXY_URL + ruta, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
+    return { status: r.status, data: await r.json().catch(() => ({})) };
+  };
+  let handoff = null;
+  const terminar = async () => {
+    out.innerHTML = 'Conectando con Schwab…';
     try {
-      localStorage.setItem('mz_sw_tok', d.token);
-      if (d.refresh_token) localStorage.setItem('mz_sw_ref', d.refresh_token);
-      localStorage.setItem('mz_sw_exp', String(Date.now() + (Number(d.expires_in) || 1800) * 1000 - 60000));
-      localStorage.setItem('mz_sw_ref_ts', String(Date.now()));
-      ['mz_sw_muerto', 'mz_sw_cache', 'mz_sw_acct', 'mz_sw_num'].forEach(k => localStorage.removeItem(k));
-    } catch (_) {}
-    out.innerHTML = '<div class="mut">Schwab autorizó la conexión. En la Mesa, pega este código (vale 5 minutos, una sola vez):</div>'
-      + '<div class="cod" id="cod">' + esc(d.handoff) + '</div>'
-      + '<button class="btn" id="cop">Copiar código</button> <a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>'
-      + '<div class="mut" style="margin-top:16px">Si abriste Schwab desde la Mesa del iPhone, vuelve a la Mesa: el cuadro «Conectar Charles Schwab» sigue ahí esperando el código. Si estás en el mismo navegador que la Mesa, ya quedó conectada.</div>';
-    document.getElementById('cop').onclick = function () {
-      const b = this;
-      if (navigator.clipboard) navigator.clipboard.writeText(d.handoff).then(() => { b.textContent = 'Copiado ✓'; }, () => { b.textContent = 'Cópialo a mano'; });
-    };
-  } catch (e) {
-    out.innerHTML = '<span class="err">No pude terminar la conexión: ' + esc(e && e.message || e) + '</span><br>Vuelve a la Mesa e inténtalo de nuevo.<br><br><a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>';
-  }
+      if (!handoff) {
+        const r = await post('/schwab/login/finish', { code, state });
+        const d = r.data || {};
+        if (!d.handoff) throw new Error(d.error ? d.error + (d.detalle ? ' — ' + d.detalle : '') : ('HTTP ' + r.status));
+        handoff = d.handoff;
+      }
+      if (mismoNavegador) {
+        const r2 = await post('/schwab/login/claim', { handoff, claim_secret: login.claim_secret });
+        const t = r2.data || {};
+        if (t.token) {
+          try {
+            localStorage.setItem('mz_sw_tok', t.token);
+            if (t.refresh_token) localStorage.setItem('mz_sw_ref', t.refresh_token);
+            localStorage.setItem('mz_sw_exp', String(Date.now() + (Number(t.expires_in) || 1800) * 1000 - 60000));
+            localStorage.setItem('mz_sw_ref_ts', String(Date.now()));
+            ['mz_sw_muerto', 'mz_sw_cache', 'mz_sw_acct', 'mz_sw_num', 'mz_sw_sync', 'mz_sw_login'].forEach(k => localStorage.removeItem(k));
+          } catch (_) {}
+          out.innerHTML = '<div class="ok">Schwab conectada ✓</div><div class="mut">Ya puedes cerrar esta pestaña; la Mesa queda conectada en este navegador (login semanal).</div>' + volver;
+          return;
+        }
+        // el secreto no coincide (login empezado en otro equipo): mostrar el código
+      }
+      out.innerHTML = '<div class="mut">Schwab autorizó la conexión. En la Mesa, pega este código (vale 5 minutos, una sola vez):</div>'
+        + '<div class="cod" id="cod">' + esc(handoff) + '</div>'
+        + '<button class="btn" id="cop">Copiar código</button> <a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>'
+        + '<div class="mut" style="margin-top:16px">Vuelve a la Mesa desde la que empezaste (el cuadro «Conectar Charles Schwab» sigue esperando el código). Solo esa Mesa puede usarlo.</div>';
+      document.getElementById('cop').onclick = function () {
+        const b = this;
+        if (navigator.clipboard) navigator.clipboard.writeText(handoff).then(() => { b.textContent = 'Copiado ✓'; }, () => { b.textContent = 'Cópialo a mano'; });
+      };
+    } catch (e) {
+      out.innerHTML = '<span class="err">No pude terminar la conexión: ' + esc(e && e.message || e) + '</span><br><br><button class="btn" id="re">Reintentar</button>' + volver;
+      const b = document.getElementById('re'); if (b) b.onclick = terminar;
+    }
+  };
+  await terminar();
 })();
 </script>
 </body>
