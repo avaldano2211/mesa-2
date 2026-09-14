@@ -13,6 +13,12 @@ const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => (
   { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
 const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'SPX', 'META'];   // QQQ y SPX: 2026-09-13; META: 2026-09-14
+// Versión que está corriendo: el ?v= con que index.html cargó este archivo. Sirve
+// para detectar que se publicó otra y recargar sola (ver buscarVersionNueva).
+const VERSION_APP = (() => {
+  try { const m = /[?&]v=(\d+)/.exec((document.currentScript && document.currentScript.src) || ''); return m ? Number(m[1]) : 0; }
+  catch (_) { return 0; }
+})();
 const TABS = [
   { id: 'informe',    lbl: 'Informe',    icon: 'M4 5h13v14H6a2 2 0 0 1-2-2z M17 8h3v9a2 2 0 0 1-2 2h-1 M7.5 9h6M7.5 12.5h6M7.5 16h6' },
   { id: 'tickers',    lbl: 'Tickers',    icon: 'M6 5.5v13 M12 3.5v15 M18 7.5v11' },
@@ -65,6 +71,9 @@ function arrancar(session) {
     suscribir();
     if (timer) clearInterval(timer);
     timer = setInterval(ruta, 60000); // respaldo por si Realtime cae
+    // versión nueva: al arrancar y cada 10 min (en window para no depender del orden de carga)
+    if (!window._mzTimerVersion) window._mzTimerVersion = setInterval(buscarVersionNueva, 10 * 60000);
+    setTimeout(buscarVersionNueva, 5000);
     setTimeout(reanudarLoginEtrade, 400);   // login de E*TRADE a medias (PWA recargada durante el 2FA)
   } else if (timer) { clearInterval(timer); }
 }
@@ -72,9 +81,41 @@ window.addEventListener('hashchange', ruta);
 // Al volver del fondo (iOS congela la PWA y corta los fetch en vuelo): si estuvo
 // oculta más de 30 s se redibuja la vista y, si hay un formulario de orden
 // abierto, se recarga la cadena.
+// ---- actualización sola ----
+// En el iPhone la PWA NO se recarga al volver a abrirla: sigue corriendo el
+// código que tenía en memoria aunque haya una versión nueva publicada. El
+// 2026-09-14 los charts de v45/v46 no le salían a Andrés por eso (la base no
+// registró ni una lectura de ticker_velas desde la app). Se compara la versión
+// que corre con la que publica index.html y, si hay una más nueva, se recarga
+// en cuanto no haya ningún cuadro abierto: jamás a mitad de una orden.
+function versionPublicada(html) {
+  const m = /app\/main\.js\?v=(\d+)/.exec(String(html || ''));
+  return m ? Number(m[1]) : 0;
+}
+let _buscandoVersion = false, _versionPendiente = 0;
+async function buscarVersionNueva() {
+  if (_buscandoVersion || !VERSION_APP) return;
+  _buscandoVersion = true;
+  try {
+    const r = await fetch('./index.html?nv=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const v = versionPublicada(await r.text());
+    if (v > VERSION_APP) { _versionPendiente = v; recargarSiSePuede(); }
+  } catch (_) {
+    // sin red: se vuelve a mirar en la próxima ocasión
+  } finally { _buscandoVersion = false; }
+}
+function recargarSiSePuede() {
+  if (!_versionPendiente) return;
+  if (document.querySelector('.modal')) { setTimeout(recargarSiSePuede, 15000); return; }   // cuadro abierto: esperar
+  toast('Actualizando la Mesa a la versión ' + _versionPendiente + '…');
+  setTimeout(() => location.reload(), 700);
+}
+
 let _ocultaDesde = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { _ocultaDesde = Date.now(); return; }
+  buscarVersionNueva();                                   // al volver a la app: ¿hay versión nueva?
   if (!sesionActiva || !_ocultaDesde || Date.now() - _ocultaDesde < 30000) return;
   _ocultaDesde = 0;
   ruta();
