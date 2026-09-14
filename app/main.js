@@ -79,6 +79,7 @@ document.addEventListener('visibilitychange', () => {
   _ocultaDesde = 0;
   ruta();
   if (typeof _ord !== 'undefined' && _ord && $('#modalOrden')) cargarCadena(true);
+  if (typeof _ch !== 'undefined' && _ch && $('#modalChart')) cargarChart(true);   // hoja del chart abierta: velas frescas
 });
 
 // Realtime: la campanada (senales), el estado y el pulso llegan al instante.
@@ -195,26 +196,46 @@ async function vistaInforme(hb) {
   $('#vista').innerHTML = h;
 }
 
-function tarjetaTicker(e, sym, compacto) {
-  if (!e) return `<div class="card"><div class="fila"><h3>${sym}</h3>
-    <span class="chip c-esp">SIN DATO</span></div></div>`;
+// chartHtml: chart inline del ticker (solo en la pestaña Tickers; en el Informe no va).
+function tarjetaTicker(e, sym, compacto, chartHtml) {
+  if (!e) return `<div class="card"><div class="fila"><h3>${esc(sym)}</h3>
+    <span class="chip c-esp">SIN DATO</span></div>${chartHtml || ''}</div>`;
   const p = e.payload || {};
   const te = p.tendencias || {};
   const fr = haceCuanto(e.actualizado_at);
   const av = (p.avisos || []).slice(0, compacto ? 1 : 4);
-  const rv = p.rango_vivo;
   return `<div class="card">
     <div class="fila"><h3>${esc(sym)}</h3>
       <span class="fresco">${esc(fr.txt)}</span></div>
     <div class="tend" style="margin-top:6px">
       ${tg('15m', te.m15)} ${tg('hora', te.hora)} ${tg('día', te.dia)}
       ${volTxt(p.volatilidad)}</div>
-    ${rv && rv.lo != null ? `<div class="rango">
-      <span>Rango óptimo del día</span>
-      <b class="mono">$${esc(Math.round(rv.lo))}–$${esc(Math.round(rv.hi))}</b>
-      <span class="fresco">exp ${esc((rv.exp||'').slice(5))} · spot $${esc(rv.spot)}</span></div>` : ''}
+    ${textoRangoTarjeta(p, sym)}
+    ${chartHtml || ''}
     ${av.length ? `<div class="mut" style="margin-top:7px">${av.map(esc).join(' · ')}</div>` : ''}
   </div>`;
+}
+// Línea «Rango óptimo del día» de la tarjeta: manda el método de la academia, luego
+// la tabla, luego el rango por delta (componerRango). Un rango con lo > hi (el
+// worker lo calculó con cotizaciones fuera de sesión) se muestra como «—», nunca
+// invertido (2026-09-14: TSLA salía «$108–$56» y NVDA «$7–$10»).
+function textoRangoTarjeta(p, sym) {
+  p = p || {};
+  const r = componerRango(p.rango_vivo || null, p.rango_academia || null, RANGOS_TABLA[sym] || null);
+  if (!r || r.lo == null || r.hi == null) return '';
+  const lo = Number(r.lo), hi = Number(r.hi);
+  const fuente = { academia: 'método academia', tabla: 'tabla academia', delta: 'por delta' }[r.fuente] || String(r.fuente || '');
+  const d = r.delta || null;
+  const extra = [];
+  if (d && d.exp) extra.push('exp ' + esc(String(d.exp).slice(5)));
+  if (d && d.spot != null) extra.push('spot $' + esc(d.spot));
+  if (!(Number.isFinite(lo) && Number.isFinite(hi)) || lo > hi) {
+    return `<div class="rango"><span>Rango óptimo del día</span><b class="mono">—</b>
+      <span class="fresco">rango inválido (cotizaciones fuera de sesión)</span></div>`;
+  }
+  return `<div class="rango"><span>Rango óptimo del día</span>
+    <b class="mono">$${esc(Math.round(lo))}–$${esc(Math.round(hi))}</b>
+    <span class="fresco">${esc(fuente)}${extra.length ? ' · ' + extra.join(' · ') : ''}</span></div>`;
 }
 function volTxt(v) {
   if (!v) return '';
@@ -228,12 +249,547 @@ function tg(lbl, v) {
   return `<span class="tg">${lbl} <b style="color:${col}">${esc(v || '—')}</b></span>`;
 }
 
+// Pestaña Tickers: estado + velas (ticker_velas, con caché de 50 s) + targets
+// personales (ticker_targets) en un solo Promise.all. ruta() vuelve a llamar
+// cada 60 s y por cada evento Realtime: si el HTML no cambió, no se toca el DOM
+// (el chart no parpadea) y las velas no se vuelven a pedir mientras la caché
+// esté fresca.
+let _vistaTickersHtml = '';
 async function vistaTickers() {
-  const { data } = await sb.from('ticker_estado').select('*');
-  const est = data || [];
-  $('#vista').innerHTML = TICKERS.map(t =>
-    tarjetaTicker(est.find(e => e.symbol === t), t, false)).join('') ||
-    `<div class="card vacio">Aún no hay estado publicado.</div>`;
+  const { vista, tf } = chartPrefs();
+  const [est, velas, targets] = await Promise.all([
+    sb.from('ticker_estado').select('*'),
+    cargarVelas(TICKERS, tf),
+    cargarTargets(),
+  ]);
+  const estados = est.data || [];
+  let h = chartSelectores(vista, tf);
+  // Un payload raro de UN ticker no puede tumbar la pestaña entera: si el chart
+  // de ese ticker lanza, esa tarjeta sale sin chart y las demás siguen.
+  h += TICKERS.map(t => {
+    let c = '';
+    try { c = chartInline(t, velas[t] || null, vista, tf, targets[t] || null); }
+    catch (_) { c = `<div class="chart"><div class="vacio">Chart no disponible (datos inválidos)</div></div>`; }
+    return tarjetaTicker(estados.find(e => e.symbol === t), t, false, c);
+  }).join('');
+  if ((location.hash.replace('#/', '') || 'informe') !== 'tickers') return;   // cambió de pestaña mientras cargaba
+  const v = $('#vista');
+  if (h === _vistaTickersHtml && v.querySelector('#chartSel')) return;         // sin cambios: no redibujar
+  _vistaTickersHtml = h;
+  v.innerHTML = h;
+}
+
+// ---------- Charts: velas + Bollinger + H-lines (como las dos ventanas de TC2000 del curso) ----------
+// Doctrina (Investep / Joel Sardiñas): dos ventanas — izquierda «Medias + H-lines»
+// (SMA 20 amarilla fina, 40 roja fina, 100 verde gruesa, 200 morada más gruesa;
+// H-lines: ATH/ATL en azul, techo y piso de HORA más próximos al precio en
+// blanco, target de analistas de Finviz en rojo claro) y derecha «Bollinger»
+// (20, 2σ, con punto medio). Líneas nativas en ambas: cierre de ayer (amarillo
+// punteado) y apertura de hoy (punteado tenue). Temporalidades 15m / hora / día.
+// Los datos los publica el worker en ticker_velas (contrato fijo, schema_version 1);
+// aquí SOLO se dibuja. Sin crosshair ni zoom en v1.
+const CHART_VISTA_K = 'mz_chart_vista', CHART_TF_K = 'mz_chart_tf';
+const CHART_VISTAS = [['bb', 'Bollinger'], ['hl', 'Medias + H-lines']];
+const CHART_TFS = [['m15', '15 min'], ['hora', 'Hora'], ['dia', 'Día']];
+const CHART_CACHE_MS = 50000;                   // ruta() corre cada 60 s: una petición por minuto como mucho
+const CHART_INDICES = ['SPY', 'QQQ', 'SPX'];     // índice/ETF: el target de analistas no aplica
+const nombreTf = (tf) => (CHART_TFS.find(x => x[0] === tf) || CHART_TFS[0])[1];
+const nombreVista = (v) => (CHART_VISTAS.find(x => x[0] === v) || CHART_VISTAS[0])[1];
+const decDe = (sym) => (sym === 'SPX' ? 0 : 2);
+
+function chartPrefs() {
+  let vista = 'bb', tf = 'm15';
+  try {
+    const v = localStorage.getItem(CHART_VISTA_K), t = localStorage.getItem(CHART_TF_K);
+    if (CHART_VISTAS.some(x => x[0] === v)) vista = v;
+    if (CHART_TFS.some(x => x[0] === t)) tf = t;
+  } catch (_) {}
+  return { vista, tf };
+}
+function chartSelectores(vista, tf, id) {
+  return `<div id="${id || 'chartSel'}"><div class="periodos">${CHART_VISTAS.map(([k, l]) =>
+      `<button class="perbtn ${vista === k ? 'on' : ''}" onclick="MZ.chartVista('${k}')">${l}</button>`).join('')}</div>
+    <div class="periodos">${CHART_TFS.map(([k, l]) =>
+      `<button class="perbtn ${tf === k ? 'on' : ''}" onclick="MZ.chartTf('${k}')">${l}</button>`).join('')}</div></div>`;
+}
+
+// Respaldo si el payload no trae bb: Bollinger (SMA n ± k·σ) con desviación
+// POBLACIONAL (pstdev), como el worker. Alineado 1:1 con los cierres; null
+// donde aún no hay n datos.
+function bollingerApp(cierres, n, k) {
+  n = Number(n) || 20; k = k == null ? 2 : Number(k);
+  const N = (cierres || []).length;
+  const medio = new Array(N).fill(null), sup = medio.slice(), inf = medio.slice();
+  for (let i = n - 1; i < N; i++) {
+    let s = 0; for (let j = i - n + 1; j <= i; j++) s += Number(cierres[j]);
+    const ma = s / n;
+    let q = 0; for (let j = i - n + 1; j <= i; j++) { const d = Number(cierres[j]) - ma; q += d * d; }
+    const sd = Math.sqrt(q / n);
+    medio[i] = ma; sup[i] = ma + k * sd; inf[i] = ma - k * sd;
+  }
+  return { n, k, desv: 'pstdev', medio, sup, inf };
+}
+// Respaldo si el payload no trae sma: media SIMPLE de n cierres, alineada 1:1.
+function smaApp(cierres, n) {
+  n = Number(n) || 20;
+  const N = (cierres || []).length, out = new Array(N).fill(null);
+  let s = 0;
+  for (let i = 0; i < N; i++) {
+    s += Number(cierres[i]);
+    if (i >= n) s -= Number(cierres[i - n]);
+    if (i >= n - 1) out[i] = s / n;
+  }
+  return out;
+}
+// Nuevo máximo / nuevo mínimo de la doctrina: el techo de HORA más próximo POR
+// ENCIMA del precio y el piso de HORA más próximo POR DEBAJO. Se recorren solos
+// al romperse (el siguiente pasa a ser el próximo), no se acumulan.
+function techoPisoProximos(nv, spot) {
+  spot = Number(spot);
+  if (!nv || !(spot > 0)) return { techo: null, piso: null };
+  const lista = (a) => Array.isArray(a) ? a : [];
+  const techo = lista(nv.techos_hora).filter(x => x && Number(x.p) > spot).sort((a, b) => Number(a.p) - Number(b.p))[0] || null;
+  const piso = lista(nv.pisos_hora).filter(x => x && Number(x.p) < spot).sort((a, b) => Number(b.p) - Number(a.p))[0] || null;
+  return { techo, piso };
+}
+// Hora de Nueva York de un epoch en SEGUNDOS: {ymd, hm, mod (minuto del día), dia («14 sept»)}.
+// Una vela diaria trae t = medianoche NY → su fecha NY sale bien en verano e invierno.
+function chartTiempo(t) {
+  const M = chartTiempo._m || (chartTiempo._m = new Map());
+  let r = M.get(t); if (r) return r;
+  const F = chartTiempo._f || (chartTiempo._f = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
+  const D = chartTiempo._d || (chartTiempo._d = new Intl.DateTimeFormat('es', { timeZone: 'America/New_York', day: 'numeric', month: 'short' }));
+  const d = new Date(Number(t) * 1000);
+  const p = {}; F.formatToParts(d).forEach(x => { p[x.type] = x.value; });
+  const h = Number(p.hour) % 24, mi = Number(p.minute);
+  r = { ymd: `${p.year}-${p.month}-${p.day}`, hm: `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`,
+    mod: h * 60 + mi, dia: D.format(d).replace('.', '') };
+  if (M.size > 5000) M.clear();
+  M.set(t, r);
+  return r;
+}
+const fmtVol = (v) => { v = Number(v); if (!Number.isFinite(v) || v <= 0) return '—'; return v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? Math.round(v / 1e3) + 'K' : String(Math.round(v)); };
+
+// chartSvg(pk, op): pk = payload de ticker_velas; op = { vista:'bb'|'hl', h, tf,
+// targets:{target,target_alto,target_bajo,fecha}|null, dec, fondo }. Devuelve un
+// <svg viewBox="0 0 400 H"> (string). Portado de drawCandles() de la mesa privada,
+// adaptado a móvil y a variables CSS del tema (nada de colores fijos).
+function chartSvg(pk, op) {
+  op = Object.assign({ vista: 'bb', h: 200, tf: null, targets: null, dec: 2, fondo: 'var(--card)' }, op || {});
+  const vacio = `<div class="vacio">Sin velas todavía para este marco (el worker las publica cada minuto en sesión)</div>`;
+  if (!pk || !Array.isArray(pk.velas) || pk.velas.length < 2) return vacio;
+  // Una fila mal formada rompería el mapeo Y la alineación con bb/sma: mejor
+  // decirlo que dibujar algo falso (o lanzar dentro del redibujo de la vista).
+  if (!pk.velas.every(v => Array.isArray(v) && v.length >= 5)) return vacio;
+  const tf = op.tf || pk.tf || 'm15';
+  const MAXV = { m15: 78, hora: 90, dia: 120 };          // 15m = 3 sesiones; se recorta por la derecha
+  const TFMIN = { m15: 15, hora: 60, dia: 1440 };
+  const tfMin = TFMIN[tf] || 15;
+  const total = pk.velas.length, start = Math.max(0, total - (MAXV[tf] || 90));
+  const aVela = (v) => ({ t: Number(v[0]), o: Number(v[1]), h: Number(v[2]), l: Number(v[3]), c: Number(v[4]), v: Number(v[5]) || 0 });
+  const cerradas = pk.velas.slice(start).map(aVela).filter(c => Number.isFinite(c.o) && Number.isFinite(c.h) && Number.isFinite(c.l) && Number.isFinite(c.c));
+  if (cerradas.length < 2) return vacio;
+  const viva = (Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5) ? Object.assign(aVela(pk.vela_viva), { viva: true }) : null;
+  const cs = (viva && Number.isFinite(viva.c)) ? cerradas.concat([viva]) : cerradas;
+  const n = cs.length, nCerr = cerradas.length;
+  const hl = op.vista === 'hl';
+  const dec = Number.isFinite(Number(op.dec)) ? Number(op.dec) : 2;
+  const fP = (v) => Number(v).toFixed(dec);
+  const nv = pk.niveles || {};
+
+  // series alineadas con las velas cerradas visibles (bb/sma vienen 1:1 con pk.velas)
+  const cierresAll = pk.velas.map(v => Number(v[4]));
+  const alin = (a) => (Array.isArray(a) && a.length === total) ? a.slice(start) : null;
+  // solo se aceptan las bandas del worker si son las del curso (20, 2); cualquier
+  // otra cosa se recalcula aquí en vez de pintarla sin decirlo.
+  const bb20 = pk.bb && Number(pk.bb.n) === 20 && Number(pk.bb.k) === 2;
+  const bbSrc = (bb20 && alin(pk.bb.medio) && alin(pk.bb.sup) && alin(pk.bb.inf)) ? pk.bb : bollingerApp(cierresAll, 20, 2);
+  const bb = { medio: alin(bbSrc.medio), sup: alin(bbSrc.sup), inf: alin(bbSrc.inf) };
+  const SMAS = [['20', 'var(--oro)', 1], ['40', 'var(--rojo)', 1], ['100', 'var(--verde)', 1.8], ['200', 'var(--morado)', 2.4]];
+  const smaSrc = pk.sma || {};
+  const smas = {};
+  SMAS.forEach(([k]) => { smas[k] = alin(smaSrc[k]) || smaApp(cierresAll, Number(k)).slice(start); });
+
+  // --- geometría -----------------------------------------------------------
+  const W = 400, H = Math.max(120, Number(op.h) || 200);
+  const pad = { l: 6, r: dec === 0 ? 40 : 48, t: 8, b: 18 };
+  const yAxis = H - pad.b, iw = W - pad.l - pad.r, ih = yAxis - pad.t;
+  const bw = iw / n;
+  const X = (i) => pad.l + i * bw + bw / 2;
+  const XL = (i) => pad.l + i * bw;
+  const f1 = (x) => Number(x).toFixed(1);
+
+  // --- niveles (H-lines): precios del subyacente --------------------------
+  const niv = [];
+  const add = (v, o) => { v = Number(v); if (Number.isFinite(v) && v > 0) niv.push(Object.assign({ v }, o)); };
+  add(nv.cierre_ayer, { c: 'var(--oro)', lb: 'cierre ayer', dash: '4 3', op: .85, w: 1, k: 'cierre_ayer' });
+  add(nv.apertura_hoy, { c: 'var(--tx3)', lb: 'apertura', dash: '2 3', op: .7, w: 1, k: 'apertura_hoy' });
+  if (hl) {
+    const dias = nv.ath_dias != null ? `${Math.round(Number(nv.ath_dias))} d` : 'del periodo';   // jamás «hist»: no es el all-time del curso
+    add(nv.ath, { c: 'var(--azul)', lb: `máx ${dias}`, op: .9, w: 1.2, k: 'ath' });
+    add(nv.atl, { c: 'var(--azul)', lb: `mín ${dias}`, op: .9, w: 1.2, k: 'atl' });
+    const spotRef = nv.spot != null ? nv.spot : cs[n - 1].c;
+    const { techo, piso } = techoPisoProximos(nv, spotRef);
+    if (techo) add(techo.p, { c: 'var(--tx)', lb: 'techo', op: .9, w: 1.2, k: 'techo' });
+    if (piso) add(piso.p, { c: 'var(--tx)', lb: 'piso', op: .9, w: 1.2, k: 'piso' });
+    const tg = op.targets || null;
+    if (tg && tg.target != null) {
+      add(tg.target, { c: 'var(--rojo)', lb: `target $${fP(tg.target)}`, dash: '6 3', op: .85, w: 1.4, k: 'target' });
+      add(tg.target_alto, { c: 'var(--rojo)', lb: '', dash: '2 3', op: .45, w: .7, k: 'target_alto' });
+      add(tg.target_bajo, { c: 'var(--rojo)', lb: '', dash: '2 3', op: .45, w: .7, k: 'target_bajo' });
+    }
+  }
+
+  // --- escala vertical -----------------------------------------------------
+  let lo = Infinity, hi = -Infinity;
+  cs.forEach(c => { lo = Math.min(lo, c.l); hi = Math.max(hi, c.h); });
+  // ambas bandas o ninguna: Number(null) es 0 y un solo hueco en inf hundía el eje a 0
+  if (!hl) for (let i = 0; i < nCerr; i++) { if (bb.sup[i] != null && bb.inf[i] != null) { hi = Math.max(hi, Number(bb.sup[i])); lo = Math.min(lo, Number(bb.inf[i])); } }
+  const span0 = (hi - lo) || (hi * 0.01) || 1;
+  // un nivel lejano aplastaría las velas a una franja: solo entra lo que está cerca (±35 %)
+  const cerca = (v) => v > lo - span0 * 0.35 && v < hi + span0 * 0.35;
+  if (hl) SMAS.forEach(([k]) => smas[k].forEach(v => { if (v != null && cerca(Number(v))) { lo = Math.min(lo, Number(v)); hi = Math.max(hi, Number(v)); } }));
+  niv.forEach(o => { if (cerca(o.v)) { lo = Math.min(lo, o.v); hi = Math.max(hi, o.v); } });
+  const m = ((hi - lo) * 0.06) || (hi * 0.002) || 0.25; lo -= m; hi += m;
+  const Y = (v) => pad.t + ih - (v - lo) / (hi - lo) * ih;
+  const cp = 'cp-' + String(pk.ticker || 'x').replace(/[^A-Za-z0-9]/g, '') + '-' + tf + '-' + (hl ? 'hl' : 'bb') + '-' + H;
+
+  let out = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc((pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger'))}" style="display:block;font-family:var(--mono);font-size:9px">`;
+  out += `<defs><clipPath id="${cp}"><rect x="${pad.l}" y="${pad.t}" width="${f1(iw)}" height="${f1(ih)}"/></clipPath></defs>`;
+
+  // 1) rejilla horizontal + eje de precios en múltiplos redondos --------------
+  const PXSTEP = [0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000];
+  const nT = Math.max(3, Math.min(7, Math.floor(ih / 36)));
+  const pstep = PXSTEP.find(x => (hi - lo) / x <= nT) || 1000;
+  for (let v = Math.ceil(lo / pstep) * pstep; v <= hi; v += pstep) {
+    const y = Y(v); if (y < pad.t || y > yAxis) continue;
+    out += `<line x1="${pad.l}" y1="${f1(y)}" x2="${f1(W - pad.r)}" y2="${f1(y)}" stroke="var(--line)" stroke-width="1"/>`;
+    out += `<text class="ejey" x="${f1(W - pad.r + 4)}" y="${f1(y + 3)}" fill="var(--tx3)">${esc(fP(v))}</text>`;
+  }
+  out += `<line x1="${pad.l}" y1="${f1(yAxis + .5)}" x2="${f1(W - pad.r)}" y2="${f1(yAxis + .5)}" stroke="var(--line)" stroke-width="1"/>`;
+
+  // 2) eje de tiempo en hora NY: ranuras de reloj (15m/hora) o fechas (día) ---
+  const tt = cs.map(c => chartTiempo(c.t));
+  const etiqueta = (x, txt, fuerte) =>
+    `<text class="ejex" x="${f1(x)}" y="${f1(H - 5)}" text-anchor="middle" fill="${fuerte ? 'var(--tx2)' : 'var(--tx3)'}"${fuerte ? ' font-weight="700"' : ''}>${esc(txt)}</text>`;
+  const separador = (i) => `<line x1="${f1(XL(i))}" y1="${pad.t}" x2="${f1(XL(i))}" y2="${f1(yAxis)}" stroke="var(--tx3)" stroke-width="1" opacity=".45"/>`;
+  let ultX = -Infinity;
+  const cabe = (x) => x > pad.l + 14 && x < W - pad.r - 14 && x - ultX >= 40;
+  if (tf === 'dia') {
+    const paso = Math.max(1, Math.ceil(50 / bw));
+    cs.forEach((c, i) => {
+      const mesNuevo = i > 0 && tt[i].ymd.slice(0, 7) !== tt[i - 1].ymd.slice(0, 7);
+      if (mesNuevo) out += separador(i);
+      if (((n - 1 - i) % paso === 0 || mesNuevo) && cabe(X(i))) { out += etiqueta(X(i), tt[i].dia, mesNuevo); ultX = X(i); }
+    });
+  } else {
+    const PASOS = [15, 30, 60, 120, 240];
+    const paso = PASOS.find(x => x >= tfMin && (x / tfMin) * bw >= 44) || 240;
+    let prevSlot = null, prevYmd = null;
+    cs.forEach((c, i) => {
+      const e = tt[i], slot = e.ymd + '#' + Math.floor(e.mod / paso);
+      const diaNuevo = prevYmd !== null && e.ymd !== prevYmd;
+      if (diaNuevo) out += separador(i);
+      if ((i === 0 || slot !== prevSlot || diaNuevo) && cabe(X(i))) { out += etiqueta(X(i), diaNuevo || i === 0 ? e.dia : e.hm, diaNuevo || i === 0); ultX = X(i); }
+      prevSlot = slot; prevYmd = e.ymd;
+    });
+  }
+
+  out += `<g clip-path="url(#${cp})">`;
+  // 3) Bollinger (ventana derecha): banda + sup/inf punteadas + punto medio ----
+  if (!hl) {
+    const idx = []; for (let i = 0; i < nCerr; i++) if (bb.sup[i] != null && bb.inf[i] != null) idx.push(i);
+    if (idx.length >= 2) {
+      const sup = idx.map(i => `${f1(X(i))},${f1(Y(Number(bb.sup[i])))}`);
+      const inf = idx.map(i => `${f1(X(i))},${f1(Y(Number(bb.inf[i])))}`).reverse();
+      out += `<polygon data-bb="banda" points="${sup.concat(inf).join(' ')}" fill="var(--azul)" fill-opacity=".08" stroke="none"/>`;
+      const linea = (k, dash) => `<polyline data-bb="${k}" points="${idx.map(i => `${f1(X(i))},${f1(Y(Number(bb[k][i])))}`).join(' ')}" fill="none" stroke="var(--azul)" stroke-width="1"${dash ? ` stroke-dasharray="${dash}"` : ''} opacity=".85"/>`;
+      out += linea('sup', '3 3') + linea('inf', '3 3') + linea('medio', '');
+    }
+  }
+  // 4) medias simples (ventana izquierda) -----------------------------------
+  if (hl) {
+    SMAS.forEach(([k, col, w]) => {
+      const pts = []; for (let i = 0; i < nCerr; i++) if (smas[k][i] != null) pts.push(`${f1(X(i))},${f1(Y(Number(smas[k][i])))}`);
+      if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
+    });
+  }
+  // 5) velas: verde/roja por apertura-cierre, rellenas, mecha del color de la vela;
+  //    la vela viva punteada y translúcida ----------------------------------
+  const body = Math.max(1.2, bw * 0.66);
+  cs.forEach((c, i) => {
+    const up = c.c >= c.o, col = up ? 'var(--verde)' : 'var(--rojo)';
+    const x = X(i), yo = Y(c.o), yc = Y(c.c), yh = Y(c.h), yl = Y(c.l);
+    const top = Math.min(yo, yc), hgt = Math.max(1, Math.abs(yc - yo));
+    if (bw >= 2) out += `<line x1="${f1(x)}" y1="${f1(yh)}" x2="${f1(x)}" y2="${f1(yl)}" stroke="${col}" stroke-width="${bw >= 12 ? 1.4 : 1}" opacity="${c.viva ? .55 : .9}"/>`;
+    out += `<rect class="vela${c.viva ? ' viva' : ''}" x="${f1(x - body / 2)}" y="${f1(top)}" width="${f1(body)}" height="${f1(hgt)}" fill="${col}"`
+      + (c.viva ? ` fill-opacity=".45" stroke="${col}" stroke-width="1" stroke-dasharray="2 2"` : '') + `/>`;
+  });
+  out += `</g>`;
+
+  // 6) líneas de nivel con etiqueta con halo (nunca fuera de la escala) -------
+  let ultY = -Infinity;
+  niv.slice().sort((a, b) => a.v - b.v).forEach(o => {
+    if (o.v < lo || o.v > hi) return;
+    const y = Y(o.v);
+    out += `<line data-nivel="${o.k}" x1="${pad.l}" y1="${f1(y)}" x2="${f1(W - pad.r)}" y2="${f1(y)}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}"/>`;
+    if (!o.lb || Math.abs(y - ultY) < 9) return;            // línea sí, texto no: solapado parece un fallo
+    ultY = y;
+    // etiqueta a la IZQUIERDA: la derecha es del eje de precios y de la cajita
+    // del spot, y ahí se pisaban «apertura», «cierre ayer» y el precio actual.
+    out += `<text x="${f1(pad.l + 3)}" y="${f1(y - 3)}" text-anchor="start" fill="${o.c}" font-weight="700" stroke="${op.fondo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(o.lb)}</text>`;
+  });
+
+  // 7) precio actual (spot del worker; si no, cierre de la última vela) --------
+  const px = Number(nv.spot != null ? nv.spot : cs[n - 1].c);
+  if (px > lo && px < hi) {
+    const u = cs[n - 1], colp = u.c >= u.o ? 'var(--verde)' : 'var(--rojo)';
+    const yp = Y(px), x0 = W - pad.r + 1, w = pad.r - 2, hh = 14;
+    out += `<line x1="${pad.l}" y1="${f1(yp)}" x2="${f1(W - pad.r)}" y2="${f1(yp)}" stroke="${colp}" stroke-width="1" stroke-dasharray="2 4" opacity=".4"/>`;
+    out += `<path data-spot="1" d="M${x0} ${f1(yp)} l4 -${hh / 2} h${w - 7} a2.5 2.5 0 0 1 2.5 2.5 v${hh - 5} a2.5 2.5 0 0 1 -2.5 2.5 h-${w - 7} Z" fill="${colp}"/>`;
+    out += `<text x="${f1(x0 + 6)}" y="${f1(yp + 3.2)}" fill="var(--bg)" font-weight="700">${esc(fP(px))}</text>`;
+  }
+  out += `</svg>`;
+  return out;
+}
+
+// Antigüedad honesta de la última vela: «última vela hace 3 min · en curso». Con
+// mercado cerrado no puede parecer en vivo (la vela viva solo cuenta si el
+// worker la publicó hace ≤ 10 min).
+function chartFrescoTxt(fila, tf) {
+  const pk = fila && fila.payload;
+  if (!pk || !Array.isArray(pk.velas) || !pk.velas.length) return 'sin velas';
+  const u = pk.velas[pk.velas.length - 1];
+  const dur = { m15: 900, hora: 3600, dia: 16 * 3600 }[tf] || 900;   // día: cierre 16:00 NY
+  let s = 'última vela ' + haceCuanto((Number(u[0]) + dur) * 1000).txt;
+  if (Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5) {
+    const pub = haceCuanto(fila.actualizado_at);
+    s += pub.min <= 10 ? ' · en curso' : ' · sin cerrar (publicada ' + pub.txt + ')';
+  }
+  return s;
+}
+function chartInline(sym, fila, vista, tf, tg) {
+  const pk = fila && fila.payload;
+  const svg = chartSvg(pk, { vista, tf, h: 200, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)' });
+  return `<div class="chart" role="button" onclick="MZ.chartAbrir('${esc(sym)}')">
+    <div class="fila"><span class="fresco">${esc(nombreTf(tf))} · ${esc(nombreVista(vista))}</span>
+      <span class="fresco">${esc(chartFrescoTxt(fila, tf))}</span></div>${svg}</div>`;
+}
+
+// ---- datos: velas (caché por symbol|tf, 50 s) y targets personales ----
+const _velas = new Map();          // 'SYM|tf' → { fila, ts }
+const _velasVuelo = new Map();     // peticiones en vuelo (ruta() puede disparar varias seguidas)
+async function cargarVelas(syms, tf, forzar) {
+  const ahora = Date.now();
+  const faltan = (syms || []).filter(s => { const c = _velas.get(s + '|' + tf); return forzar || !c || ahora - c.ts > CHART_CACHE_MS; });
+  if (faltan.length) {
+    const clave = tf + '|' + faltan.join(',');
+    let p = _velasVuelo.get(clave);
+    if (!p) {
+      p = (async () => {
+        const { data, error } = await sb.from('ticker_velas').select('symbol,tf,payload,actualizado_at').in('symbol', faltan).eq('tf', tf);
+        if (error) return;                                   // se conserva lo cacheado y se reintenta en la próxima vuelta
+        faltan.forEach(s => _velas.set(s + '|' + tf, { fila: (data || []).find(r => r.symbol === s) || null, ts: Date.now() }));
+      })();
+      _velasVuelo.set(clave, p);
+      p.finally(() => _velasVuelo.delete(clave)).catch(() => {});   // la promesa de finally también rechaza
+    }
+    try { await p; } catch (_) {}
+  }
+  const out = {};
+  (syms || []).forEach(s => { const c = _velas.get(s + '|' + tf); out[s] = c ? c.fila : null; });
+  return out;
+}
+const _targets = { ts: 0, por: {} };
+async function cargarTargets(forzar) {
+  if (!forzar && Date.now() - _targets.ts < CHART_CACHE_MS) return _targets.por;
+  const { data, error } = await sb.from('ticker_targets').select('*');
+  if (error) return _targets.por;
+  const por = {}; (data || []).forEach(r => { por[r.symbol] = r; });
+  _targets.por = por; _targets.ts = Date.now();
+  return por;
+}
+
+// ---- lectura y lista de H-lines (hoja modal) ----
+function lecturaChart(pk, tf, dec) {
+  if (!pk || !Array.isArray(pk.velas) || !pk.velas.length) return '';
+  const viva = (Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5) ? pk.vela_viva : null;
+  const u = viva || pk.velas[pk.velas.length - 1];
+  const f = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(dec);
+  const tt = chartTiempo(u[0]);
+  const cuando = tf === 'dia' ? tt.dia : `${tt.hm} · ${tt.dia}`;
+  const ult = (a) => { if (!Array.isArray(a)) return null; for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+  const c = (et, val) => `<div><span>${et}</span><b class="mono">${esc(val)}</b></div>`;
+  const bb = pk.bb || {}, sma = pk.sma || {};
+  // Las bandas y las medias son de la última vela CERRADA, aunque arriba se
+  // muestre la vela en curso: decirlo evita leer como vivo un dato que no lo es.
+  const medias = ['20', '40', '100', '200'].map(k => ({ k, v: ult(sma[k]) })).filter(x => x.v != null);
+  const faltan = 4 - medias.length;
+  return `<div class="hist">${c(viva ? 'vela en curso' : 'última vela', cuando)}${c('apertura', f(u[1]))}${c('cierre', f(u[4]))}</div>
+    <div class="hist">${c('máximo', f(u[2]))}${c('mínimo', f(u[3]))}${c('volumen', fmtVol(u[5]))}</div>
+    <div class="mut" style="font-size:11px;margin-top:6px">Bollinger y medias · última vela cerrada</div>
+    <div class="hist">${c('BB superior', f(ult(bb.sup)))}${c('BB medio', f(ult(bb.medio)))}${c('BB inferior', f(ult(bb.inf)))}</div>
+    ${medias.length ? `<div class="hist" style="grid-template-columns:repeat(${medias.length},1fr)">${medias.map(x => c('SMA ' + x.k, f(x.v))).join('')}</div>` : ''}
+    ${faltan ? `<div class="mut" style="font-size:11px">en este marco no hay historia para ${faltan === 1 ? 'una media' : faltan + ' medias'} (el curso decide las medias en hora y día)</div>` : ''}`;
+}
+function hlinesLista(pk, tg, dec) {
+  const nv = (pk && pk.niveles) || {};
+  const f = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(dec);
+  const fecha = (ymd) => (ymd && /^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) ? fmtFechaNY(String(ymd) + 'T12:00:00Z') : '';
+  const it = (col, txt, sub) => `<div class="hl"><span><i style="color:${col}"></i>${txt}</span><span class="fresco">${sub || ''}</span></div>`;
+  const { techo, piso } = techoPisoProximos(nv, nv.spot);
+  let h = '';
+  if (tg && tg.target != null) {
+    const ab = (tg.target_bajo != null || tg.target_alto != null) ? ` · ${f(tg.target_bajo)}–${f(tg.target_alto)}` : '';
+    h += it('var(--rojo)', `target $${esc(f(tg.target))}`, esc((tg.fuente || 'finviz') + (tg.fecha ? ' · ' + fecha(tg.fecha) : '') + ab));
+  }
+  // El curso marca POCAS líneas y las recorre al romperse («el gráfico no puede
+  // parecer un plato de espagueti»): arriba solo el techo y el piso próximos; el
+  // resto de swings queda en un desplegable.
+  const sub = (x) => `${esc(x.respetos != null ? x.respetos : '?')} respetos · edad ${esc(x.edad != null ? x.edad : '?')} velas`;
+  if (techo) h += it('var(--tx)', `techo hora $${esc(f(techo.p))} <b style="color:var(--oro)">· próximo</b>`, sub(techo));
+  if (piso) h += it('var(--tx)', `piso hora $${esc(f(piso.p))} <b style="color:var(--oro)">· próximo</b>`, sub(piso));
+  const otros = []
+    .concat((Array.isArray(nv.techos_hora) ? nv.techos_hora : []).filter(x => !techo || Number(x.p) !== Number(techo.p)).map(x => ['techo', x]))
+    .concat((Array.isArray(nv.pisos_hora) ? nv.pisos_hora : []).filter(x => !piso || Number(x.p) !== Number(piso.p)).map(x => ['piso', x]))
+    .sort((a, b) => Number(b[1].p) - Number(a[1].p));
+  if (otros.length) h += `<details style="margin-top:2px"><summary class="mut" style="font-size:12px;cursor:pointer">ver los demás swings de hora (${otros.length})</summary>`
+    + otros.map(([q, x]) => it('var(--tx2)', `${q} hora $${esc(f(x.p))}`, sub(x))).join('') + '</details>';
+  const dias = nv.ath_dias != null ? `${Math.round(Number(nv.ath_dias))} d` : 'del periodo';   // jamás «hist»: no es el all-time del curso
+  if (nv.ath != null) h += it('var(--azul)', `máx ${esc(dias)} $${esc(f(nv.ath))}`, esc(fecha(nv.ath_fecha)));
+  if (nv.atl != null) h += it('var(--azul)', `mín ${esc(dias)} $${esc(f(nv.atl))}`, esc(fecha(nv.atl_fecha)));
+  const td = (nv.techos_dia || []).map(x => '$' + f(x.p)).join(' · '), pd = (nv.pisos_dia || []).map(x => '$' + f(x.p)).join(' · ');
+  // los swings de DÍA no son H-lines en el curso (las edge lines se marcan en hora)
+  if (td) h += it('var(--tx2)', 'referencias de día (no son H-lines)', esc(td));
+  if (pd) h += it('var(--tx2)', 'referencias de día (no son H-lines)', esc(pd));
+  if (nv.cierre_ayer != null) h += it('var(--oro)', `cierre de ayer $${esc(f(nv.cierre_ayer))}`, (nv.max_ayer != null || nv.min_ayer != null) ? `ayer ${esc(f(nv.min_ayer))}–${esc(f(nv.max_ayer))}` : '');
+  if (nv.apertura_hoy != null) h += it('var(--tx3)', `apertura de hoy $${esc(f(nv.apertura_hoy))}`, '');
+  const s = nv.salto;
+  if (s && s.desde != null && s.hasta != null) h += it('var(--oro)', `salto ${esc(s.lado || '')} $${esc(f(s.desde))} → $${esc(f(s.hasta))}`,
+    `${esc(Number(s.gap_pct) > 0 ? '+' : '')}${esc(s.gap_pct != null ? Number(s.gap_pct).toFixed(1) : '?')}% · hace ${esc(s.hace_velas != null ? s.hace_velas : '?')} velas`);
+  return h || `<div class="mut">Sin niveles publicados todavía.</div>`;
+}
+
+// ---- hoja modal del chart (grande, con lectura, H-lines y editor de target) ----
+let _ch = null;    // { sym, gen, timer }
+function abrirChart(sym) {
+  if (!TICKERS.includes(sym)) return;
+  cerrarChart();
+  const { vista, tf } = chartPrefs();
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalChart';
+  const tg = _targets.por[sym] || null;
+  const indice = CHART_INDICES.includes(sym);
+  m.innerHTML = `<div class="hoja">
+    <div class="fila"><h3 style="margin:0">${esc(sym)}</h3><span class="fresco" id="chFresco">cargando…</span></div>
+    <div id="chSel">${chartSelectores(vista, tf, 'chartSelHoja')}</div>
+    <div class="chart" id="chSvg" style="cursor:default"></div>
+    <div id="chLectura"></div>
+    <div class="sec" style="margin-top:12px">H-LINES</div>
+    <div id="chHlines"></div>
+    <div class="sec" style="margin-top:12px">TARGET PRICE · ANALISTAS</div>
+    ${indice ? `<div class="mut">índice/ETF: el target de analistas no aplica.</div>`
+      : `<div class="mut">Consenso de analistas de Finviz; se anota a mano cada lunes (no hay fuente automática). No es el +35 % de la prima: ese va en la orden GTC.</div>
+      <div class="dos">
+        <div><label>Target</label><input id="tgT" type="number" inputmode="decimal" step="0.01" placeholder="ej. 260" value="${tg && tg.target != null ? esc(tg.target) : ''}"></div>
+        <div><label>Fecha</label><input id="tgF" type="date" value="${esc(tg && tg.fecha ? tg.fecha : hoyNY())}"></div></div>
+      <div class="dos">
+        <div><label>Alto</label><input id="tgA" type="number" inputmode="decimal" step="0.01" value="${tg && tg.target_alto != null ? esc(tg.target_alto) : ''}"></div>
+        <div><label>Bajo</label><input id="tgB" type="number" inputmode="decimal" step="0.01" value="${tg && tg.target_bajo != null ? esc(tg.target_bajo) : ''}"></div></div>
+      <label>Fuente</label><input id="tgS" value="${esc(tg && tg.fuente ? tg.fuente : 'finviz')}">
+      <div class="err" id="tgErr"></div>`}
+    <div class="dos" style="margin-top:8px">
+      <button class="btnsec" onclick="MZ.chartCerrar()">Cerrar</button>
+      ${indice ? '' : `<button class="pri" onclick="MZ.chartGuardarTarget()">Guardar</button>`}</div>
+  </div>`;
+  document.body.appendChild(m);
+  m.addEventListener('click', (e) => { if (e.target === m) cerrarChart(); });
+  _ch = { sym, gen: 0, timer: null };
+  _ch.timer = setInterval(() => {
+    if (!_ch || !$('#modalChart') || document.visibilityState === 'hidden') return;
+    cargarChart(true);
+  }, 60000);
+  cargarChart(false);
+}
+function cerrarChart() {
+  if (_ch && _ch.timer) clearInterval(_ch.timer);
+  _ch = null;
+  const m = $('#modalChart'); if (m) m.remove();
+}
+async function cargarChart(forzar) {
+  if (!_ch) return;
+  const o = _ch, gen = ++o.gen, { tf } = chartPrefs();
+  const [velas, targets] = await Promise.all([cargarVelas([o.sym], tf, forzar), cargarTargets(forzar)]);
+  if (_ch !== o || o.gen !== gen || !$('#modalChart')) return;
+  pintarChart(velas[o.sym] || null, targets[o.sym] || null);
+}
+function pintarChart(fila, tg) {
+  if (!_ch || !$('#modalChart')) return;
+  const { vista, tf } = chartPrefs();
+  if (fila === undefined) { const c = _velas.get(_ch.sym + '|' + tf); fila = c ? c.fila : null; tg = _targets.por[_ch.sym] || null; }
+  const pk = fila && fila.payload, dec = decDe(_ch.sym);
+  $('#chSel').innerHTML = chartSelectores(vista, tf, 'chartSelHoja');
+  $('#chFresco').textContent = chartFrescoTxt(fila, tf);
+  $('#chSvg').innerHTML = chartSvg(pk, { vista, tf, h: 300, targets: tg, dec, fondo: 'var(--bg2)' });
+  $('#chLectura').innerHTML = lecturaChart(pk, tf, dec);
+  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec);
+  // el editor de target se rellena también si los targets llegaron DESPUÉS de
+  // abrir la hoja (sin pisar lo que se esté escribiendo)
+  [['tgT', tg && tg.target], ['tgA', tg && tg.target_alto], ['tgB', tg && tg.target_bajo],
+   ['tgF', tg && tg.fecha], ['tgS', tg && tg.fuente]].forEach(([id, v]) => {
+    const el = $('#' + id);
+    if (el && document.activeElement !== el && v != null) el.value = v;
+  });
+}
+// El botón tiene que responder AL TOQUE, no cuando conteste la red: se repintan
+// los selectores antes de pedir datos (en el iPhone con datos móviles, esperar a
+// Supabase se lee como un toque perdido y se vuelve a tocar).
+function pintarSelectores() {
+  const { vista, tf } = chartPrefs();
+  ['chartSel', 'chartSelHoja'].forEach(id => {
+    const el = $('#' + id); if (el) el.outerHTML = chartSelectores(vista, tf, id);
+  });
+}
+function chartVista(v) {
+  if (!CHART_VISTAS.some(x => x[0] === v)) return;
+  try { localStorage.setItem(CHART_VISTA_K, v); } catch (_) {}
+  pintarSelectores();
+  _vistaTickersHtml = '';
+  if (_ch && $('#modalChart')) pintarChart();
+  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers();
+}
+function chartTf(tf) {
+  if (!CHART_TFS.some(x => x[0] === tf)) return;
+  try { localStorage.setItem(CHART_TF_K, tf); } catch (_) {}
+  pintarSelectores();
+  _vistaTickersHtml = '';
+  if (_ch && $('#modalChart')) cargarChart(false);
+  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers();
+}
+// Target de analistas (Finviz), PERSONAL: upsert en ticker_targets con user_id =
+// sesionActiva.user.id (muralla RLS user_id = auth.uid()).
+async function guardarTarget() {
+  if (!_ch || !$('#modalChart')) return;
+  const sym = _ch.sym, err = $('#tgErr'); if (!err) return;
+  const g = (id) => { const el = $('#' + id); return el ? String(el.value || '').trim() : ''; };
+  const num = (s) => (s === '' ? null : Number(s.replace(',', '.')));
+  const target = num(g('tgT')), alto = num(g('tgA')), bajo = num(g('tgB'));
+  if (target == null) { err.textContent = 'Pon al menos el target (consenso de Finviz).'; return; }
+  for (const v of [target, alto, bajo]) if (v != null && !(v > 0)) { err.textContent = 'Los precios deben ser números mayores que 0.'; return; }
+  if (alto != null && bajo != null && alto < bajo) { err.textContent = 'El alto no puede ser menor que el bajo.'; return; }
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid) { err.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
+  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(g('tgF')) ? g('tgF') : hoyNY();
+  const fila = { user_id: uid, symbol: sym, target, target_alto: alto, target_bajo: bajo,
+    fuente: g('tgS') || 'finviz', fecha, actualizado_at: new Date().toISOString() };
+  err.textContent = 'Guardando…';
+  const { error } = await sb.from('ticker_targets').upsert(fila, { onConflict: 'user_id,symbol' });
+  if (error) { err.textContent = 'No se guardó: ' + error.message; return; }
+  err.textContent = '';
+  _targets.por[sym] = fila; _targets.ts = Date.now();
+  _vistaTickersHtml = '';
+  toast(`Target ${sym} $${target}${alto != null || bajo != null ? ` (${bajo != null ? bajo : '—'}–${alto != null ? alto : '—'})` : ''} guardado`);
+  pintarChart();
 }
 
 // ---------- Copiloto ----------
@@ -478,6 +1034,12 @@ function abrirFill(pre) {
       ? `Límite GTC a colocar: $${gtcDe(v).toFixed(2)}  (fill ×1.35 + $0.02)` : 'Límite GTC: —';
     const rh = m.querySelector('#fRango');
     if (!rango || rango.lo == null) { rh.textContent = 'Rango óptimo: sin dato'; rh.dataset.n = ''; return; }
+    // Rango invertido (cotizaciones fuera de sesión): NO juzgar. Con lo>hi el
+    // borde sale negativo y una prima que está dentro se marcaba «FUERA del
+    // rango», y ese veredicto se guardaba en posiciones y contaba en Disciplina.
+    if (!(Number(rango.lo) <= Number(rango.hi))) {
+      rh.textContent = 'Rango óptimo: — (rango inválido, cotizaciones fuera de sesión)'; rh.dataset.n = ''; return;
+    }
     const lo = Math.round(rango.lo), hi = Math.round(rango.hi);
     if (!(v > 0)) { rh.innerHTML = `Rango óptimo: <b>$${lo}–$${hi}</b>`; rh.dataset.n = 'ok'; return; }
     const cent = v * 100;
@@ -491,7 +1053,11 @@ function abrirFill(pre) {
   const cargarRango = async () => {
     rango = null;
     const { data } = await sb.from('ticker_estado').select('payload').eq('symbol', sym.value).maybeSingle();
-    rango = data && data.payload ? data.payload.rango_vivo : null;
+    // mismo criterio que la tarjeta y que el formulario de orden: manda el método
+    // de la academia, luego la tabla, y el rango por delta solo como último recurso
+    rango = data && data.payload
+      ? componerRango(data.payload.rango_vivo || null, data.payload.rango_academia || null, RANGOS_TABLA[sym.value] || null)
+      : null;
     evaluar();
   };
   prima.addEventListener('input', evaluar);
@@ -793,6 +1359,8 @@ async function salir() {
   location.reload();
 }
 window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir, avisos: avisosToggle });
+// Charts de Tickers (registrados AQUÍ, después de la asignación plana de window.MZ).
+window.MZ = Object.assign(window.MZ, { chartAbrir: abrirChart, chartCerrar: cerrarChart, chartVista, chartTf, chartGuardarTarget: guardarTarget });
 
 // ---------- Cuentas y diario (historial + resúmenes) ----------
 let _periodoSel = 'semana';   // semana | mes | ytd
@@ -1914,6 +2482,7 @@ function construirOrden(f) {
 // registro del fill): 'ok' | 'aviso' (en el borde, 15 %) | 'alto' (FUERA) | null.
 function semaforoRango(prima, rango) {
   if (!rango || rango.lo == null || rango.hi == null || !(prima > 0)) return null;
+  if (!(Number(rango.lo) <= Number(rango.hi))) return null;   // rango invertido: no se juzga
   const lo = Math.round(rango.lo), hi = Math.round(rango.hi), cent = prima * 100, borde = (hi - lo) * 0.15;
   if (cent < lo - borde || cent > hi + borde) return 'alto';
   if (cent < lo || cent > hi) return 'aviso';

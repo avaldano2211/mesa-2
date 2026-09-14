@@ -14,19 +14,19 @@
   :root{
     --bg:#0B0E14; --bg2:#0D1119; --card:#141A26; --line:rgba(255,255,255,.07);
     --tx:#E9EDF5; --tx2:#8C96AB; --tx3:#5C6678; --oro:#E7B54D;
-    --verde:#45D08C; --rojo:#F26D5F; --azul:#6FA8F5; --itm:rgba(111,168,245,.16);
+    --verde:#45D08C; --rojo:#F26D5F; --azul:#6FA8F5; --morado:#B48CF2; --itm:rgba(111,168,245,.16);
     --mono:ui-monospace,'SF Mono',Menlo,monospace;
     --sans:'Instrument Sans',system-ui,-apple-system,sans-serif;
   }
   @media(prefers-color-scheme:light){:root:not([data-theme="dark"]){
     --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
     --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
-    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --itm:rgba(46,107,199,.11);
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --morado:#6E44C4; --itm:rgba(46,107,199,.11);
   }}
   :root[data-theme="light"]{
     --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
     --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
-    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --itm:rgba(46,107,199,.11);
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --morado:#6E44C4; --itm:rgba(46,107,199,.11);
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--sans);
@@ -158,6 +158,16 @@
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
+  /* charts de Tickers (velas + Bollinger + H-lines) */
+  .chart{margin-top:9px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chart .fila{margin-bottom:4px}
+  .chart svg{display:block;width:100%;height:auto;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .chart svg text{font-family:var(--mono);font-size:9px}
+  .chart .vacio{padding:26px 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .hl{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
+  .hl:first-child{border-top:none}
+  .hl i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:7px}
+  .hl .fresco{text-align:right;white-space:nowrap}
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400..600&display=swap">
@@ -192,7 +202,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=44"></script>
-  <script src="./app/main.js?v=44"></script>
+  <script src="./config.js?v=45"></script>
+  <script src="./app/main.js?v=45"></script>
 </body>
 </html>
