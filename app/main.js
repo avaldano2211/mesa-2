@@ -317,6 +317,17 @@ function gtcPendientes(abiertas, ordenesGtc) {
   return (abiertas || []).filter(p => p && p.estado === 'abierta' && Number(p.prima_fill) > 0 && p.strike != null && p.expiracion
     && (!p.broker || p.broker === 'etrade') && !con.has(String(p.id)));
 }
+// GTC AUTOMÁTICO (pedido de Andrés 2026-09-13, «el cierre apenas la abro»): al
+// enviar una compra, la casilla «Al llenarse, enviar sola la venta GTC» queda
+// anotada en la orden (preview._mz.gtc_auto). Cuando la Mesa detecta el fill,
+// abre la venta GTC +35%, la previsualiza y la ENVÍA: el PIN (armado 15 min) es
+// la única puerta — si está desarmado, lo pide; si lo cancelas, la orden queda
+// abierta para que la envíes tú. Una orden sin la anotación cuenta como SÍ.
+const GTC_AUTO_DEF_K = 'mz_gtc_auto_def', GTC_AUTO_ENV_K = 'mz_gtc_auto_env';
+function gtcAutoDefecto() { try { return localStorage.getItem(GTC_AUTO_DEF_K) !== '0'; } catch (_) { return true; } }
+function gtcAutoGuardarDefecto(v) { try { localStorage.setItem(GTC_AUTO_DEF_K, v ? '1' : '0'); } catch (_) {} }
+function gtcAutoAnotar(posId, quiere) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_ENV_K) || '{}'); m[String(posId)] = !!quiere; localStorage.setItem(GTC_AUTO_ENV_K, JSON.stringify(m)); } catch (_) {} }
+function gtcAutoQuiere(posId) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_ENV_K) || '{}'); return m[String(posId)] !== false; } catch (_) { return true; } }
 const GTC_AUTO_K = 'mz_gtc_auto';
 function gtcAutoYaAbierto(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); return !!m[String(id)]; } catch (_) { return false; } }
 function gtcAutoMarcar(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); m[String(id)] = Date.now(); localStorage.setItem(GTC_AUTO_K, JSON.stringify(m)); } catch (_) {} }
@@ -329,7 +340,15 @@ function abrirGtcAutomatico(pendientes) {
   const pre = preSalida(p, 'salida_gtc');
   abrirOrden(pre);
   toast(`Fill ${p.symbol} ${p.direccion} ${p.strike} ×${Number(p.contratos) || 1} a $${Number(p.prima_fill).toFixed(2)}: GTC +${PLAN_PCT}% a $${gtcDe(Number(p.prima_fill)).toFixed(2)} — revisa y envía`);
-  setTimeout(() => { if (_ord && $('#modalOrden') && !_ord.orden) ordenPreview(); }, 900);   // vista previa automática (sin PIN)
+  setTimeout(async () => {
+    if (!(_ord && $('#modalOrden') && !_ord.orden)) return;
+    await ordenPreview();                                       // vista previa automática (sin PIN)
+    if (!(_ord && $('#modalOrden') && _ord.previewIds)) return;
+    if (gtcAutoQuiere(p.id)) {
+      toast('Enviando la venta GTC automática…');
+      await ordenPlace();                                        // pide PIN si el equipo está desarmado
+    }
+  }, 900);
 }
 
 // Ticket armado por el worker en la señal (payload.ticket: strike/exp/ask del
@@ -1854,6 +1873,7 @@ function abrirOrden(pre) {
         <option value="STOP" ${pt === 'STOP' ? 'selected' : ''}>Stop</option>
         <option value="TRAILING_STOP_PRCT" ${pt === 'TRAILING_STOP_PRCT' ? 'selected' : ''}>Trailing stop %</option></select></div>
       <div id="oPrecioWrap"><label id="oPrecioLbl">Límite</label><input id="oPrecio" type="number" inputmode="decimal" step="0.01" value="${precio0 == null ? '' : esc(precio0)}" placeholder="ej. 0.98"></div></div>
+    <label id="oGtcAutoWrap" style="display:flex;align-items:center;gap:8px;margin:8px 2px 0;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--tx)"><input type="checkbox" id="oGtcAuto" ${gtcAutoDefecto() ? 'checked' : ''} style="width:auto;margin:0"> Al llenarse, enviar sola la venta GTC +${PLAN_PCT}% (pide PIN si el equipo está desarmado)</label>
     <div id="oAvisos"></div>
     <div id="oPrev"></div>
     <div class="err" id="oErr" style="text-align:left"></div>
@@ -1868,6 +1888,7 @@ function abrirOrden(pre) {
   m.addEventListener('input', (e) => {
     const id = e && e.target && e.target.id;
     if (id === 'oQty') _ord.qtyManual = true;                       // el usuario manda: no se vuelve a prearmar
+    if (id === 'oGtcAuto') gtcAutoGuardarDefecto(e.target.checked);
     if (id === 'oPrecio') autoCantidad();
     if (id === 'oSym' || id === 'oTipo') pintarRangoOrden();
     ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden();
@@ -2148,6 +2169,7 @@ function ajustarFormOrden() {
   Array.from(pt.options).forEach(op => { if (op.value === 'STOP' || op.value === 'TRAILING_STOP_PRCT') op.disabled = !venta; });
   if (!venta && (pt.value === 'STOP' || pt.value === 'TRAILING_STOP_PRCT')) pt.value = 'LIMIT';
   wrap.classList.toggle('oculto', pt.value === 'MARKET');
+  const gw = $('#oGtcAutoWrap'); if (gw) gw.classList.toggle('oculto', venta);
   lbl.textContent = pt.value === 'LIMIT' ? (tipo.value === 'EQ' ? 'Límite (por acción)' : 'Límite (por contrato)')
     : pt.value === 'STOP' ? 'Precio stop' : pt.value === 'TRAILING_STOP_PRCT' ? 'Trailing (%)' : 'Precio';
 }
@@ -2232,7 +2254,8 @@ async function ordenPreview() {
     }
     const previewIds = ids.map(x => Object.assign({ previewId: x.previewId }, x.cashMargin ? { cashMargin: x.cashMargin } : {}));
     const fila = { ...filaOrdenDe(f, orden, extra), user_id: uid, estado: 'preview', overrides: av,
-      preview: Object.assign({ _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null } }, recortarJson(P, 4000)) };
+      preview: Object.assign({ _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null,
+        gtc_auto: f.accion !== 'venta' && !!($('#oGtcAuto') && $('#oGtcAuto').checked) } }, recortarJson(P, 4000)) };
     const ins = await sb.from('ordenes').insert(fila).select('id').single();
     if (ins.error) throw new Error('No pude guardar la vista previa: ' + ins.error.message);
     Object.assign(_ord, { f, orden, previewIds, filaId: ins.data.id, estadoFila: 'preview', indeterminado: false, accountIdKey, caduca: Date.now() + PREVIEW_SEG * 1000 });
@@ -2370,7 +2393,7 @@ function tarjetaOrden(o) {
     <div class="fila"><span class="chip ${chip}">${esc(etiquetaOrden(o))}</span>
       <span class="fresco">${esc(fmtFechaNY(o.creado_at, true))} NY</span></div>
     ${o.estado === 'error' ? `<div class="mut" style="margin-top:4px;color:var(--rojo);font-size:11px">No se pudo confirmar si E*TRADE la recibió: revísala en la app de E*TRADE antes de repetirla.</div>` : ''}
-    ${o.estado === 'enviada' && /^BUY/.test(String(o.accion || '')) && o.limit_price ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">Cuando se llene, la Mesa te abre sola la venta GTC +${PLAN_PCT}% (≈ $${gtcDe(Number(o.limit_price)).toFixed(2)}) lista para enviar.</div>` : ''}
+    ${o.estado === 'enviada' && /^BUY/.test(String(o.accion || '')) && o.limit_price ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">${((o.preview || {})._mz || {}).gtc_auto === false ? 'Cuando se llene, la Mesa te abre la venta GTC' : 'Cuando se llene, la Mesa ENVÍA sola la venta GTC'} +${PLAN_PCT}% (≈ $${gtcDe(Number(o.limit_price)).toFixed(2)})${((o.preview || {})._mz || {}).gtc_auto === false ? ' lista para enviar' : ' (te pide el PIN si está desarmado)'}.</div>` : ''}
     <div class="fila" style="margin-top:6px"><b style="font-size:13.5px">${esc(contrato)}</b>
       <span class="mut mono">${esc(o.accion)} ×${esc(Number(o.cantidad))}</span></div>
     <div class="fila" style="margin-top:3px"><span class="mut">${esc(prop)} · ${precio} · ${o.order_term === 'GOOD_UNTIL_CANCEL' ? 'GTC' : 'DAY'}${o.orden_id_ext ? ' · #' + esc(o.orden_id_ext) : ''}</span>
@@ -2408,7 +2431,14 @@ async function cancelarOrden(id, orderId) {
 // API: primero OPEN + CANCEL_REQUESTED (lo vivo); solo si alguna local no aparece
 // ahí se piden los estados finales (EXECUTED/INDIVIDUAL_FILLS/CANCELLED/EXPIRED/
 // REJECTED). Una cancelada desde la app de E*TRADE deja de ser 'enviada' sola.
-const _ordSync = { ts: 0, enCurso: false, err: null };
+const _ordSync = { ts: 0, enCurso: false, err: null, activas: null };
+// Vigilante de fills: mientras haya órdenes activas y la app esté a la vista,
+// consulta E*TRADE cada 20 s (2 llamadas) para detectar el fill cuanto antes y
+// disparar el GTC automático; sin órdenes activas no hace nada.
+setInterval(() => {
+  if (typeof sesionActiva === 'undefined' || !sesionActiva || document.visibilityState === 'hidden') return;
+  if (_ordSync.activas === null || _ordSync.activas > 0) ordenesActualizar({ silencioso: true, forzar: true });
+}, 20000);
 const ORD_SYNC_MS = 60000;
 const ORD_ESTADOS_VIVOS = ['OPEN', 'CANCEL_REQUESTED'];
 const ORD_ESTADOS_FINALES = ['EXECUTED', 'INDIVIDUAL_FILLS', 'CANCELLED', 'EXPIRED', 'REJECTED'];
@@ -2428,6 +2458,7 @@ async function ordenesActualizar(opts) {
   if (!uid) { aviso('Sin sesión. Sal y vuelve a entrar.'); return; }
   const { data, error } = await sb.from('ordenes').select('*').eq('estado', 'enviada').not('orden_id_ext', 'is', null);
   if (error) { aviso('No pude leer tus órdenes: ' + error.message); return; }
+  _ordSync.activas = (data || []).length;
   if (!(data || []).length) { _ordSync.ts = Date.now(); _ordSync.err = null; aviso('No hay órdenes activas que consultar'); return; }
   aviso('Consultando E*TRADE…');
   _ordSync.enCurso = true;
@@ -2489,7 +2520,11 @@ async function ordenesActualizar(opts) {
             abierta_at: ejecutadaAt, abierta_fecha_ny: ymdNY(ejecutadaAt) || hoyNY(),
             entrada_semaforo: sem, fuera_de_rango: sem === 'alto' };
           const pi = await sb.from('posiciones').insert(p).select('id').single();
-          if (!pi.error && pi.data) { upd.posicion_id = pi.data.id; nuevasPosiciones++; }
+          if (!pi.error && pi.data) {
+            upd.posicion_id = pi.data.id; nuevasPosiciones++;
+            const mzp = (loc.preview && loc.preview._mz) || {};
+            gtcAutoAnotar(pi.data.id, mzp.gtc_auto !== false);
+          }
         } else if (esVenta && loc.posicion_id && Number.isFinite(fill)) {
           const { data: pos } = await sb.from('posiciones').select('*').eq('id', loc.posicion_id).maybeSingle();
           if (pos && pos.estado === 'abierta') {
