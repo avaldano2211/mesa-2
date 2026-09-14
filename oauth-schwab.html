@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Mesa de Mercado 2.0 · Charles Schwab</title>
+<style>
+  body{font-family:-apple-system,system-ui,sans-serif;background:#F7F5F1;color:#1B2333;margin:0;padding:36px 20px;text-align:center}
+  h2{font-family:Georgia,serif;font-weight:500;margin:0 0 10px}
+  .mut{color:#5F6B7E;font-size:14px;line-height:1.5;max-width:420px;margin:0 auto}
+  .cod{font-family:ui-monospace,Menlo,monospace;font-size:46px;letter-spacing:.18em;font-weight:700;margin:18px 0;color:#A97A18}
+  .btn{display:inline-block;background:#A97A18;color:#fff;border:none;border-radius:12px;padding:13px 22px;font-size:15px;font-weight:700;text-decoration:none;margin:6px;cursor:pointer}
+  .sec{background:#fff;color:#1B2333;border:1px solid rgba(24,32,48,.12)}
+  .err{color:#D5453B}
+</style>
+</head>
+<body>
+<h2>Mesa de Mercado 2.0 · Charles Schwab</h2>
+<div id="out" class="mut">Conectando con Schwab…</div>
+<script src="./config.js"></script>
+<script>
+(async () => {
+  // Página de retorno del OAuth de Schwab: recibe ?code=, lo canjea en el proxy
+  // (que aporta el app secret) y muestra un código de 6 dígitos para pegar en
+  // la Mesa (la PWA del iPhone no comparte almacenamiento con Safari). Si este
+  // navegador ES el de la Mesa (Mac), deja el token guardado y la app lo toma.
+  const out = document.getElementById('out');
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const p = new URLSearchParams(location.search);
+  const code = p.get('code'), error = p.get('error');
+  if (error || !code) {
+    out.innerHTML = '<span class="err">Schwab no devolvió un código' + (error ? ': ' + esc(error) : '') + '.</span><br>Vuelve a la Mesa e inténtalo de nuevo.<br><br><a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>';
+    return;
+  }
+  history.replaceState(null, '', location.pathname);   // que el código no se quede en la barra ni en el historial
+  try {
+    const r = await fetch(PROXY_URL + '/schwab/login/finish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+    const d = await r.json().catch(() => ({}));
+    if (!d.token || !d.handoff) throw new Error(d.error ? d.error + (d.detalle ? ' — ' + d.detalle : '') : ('HTTP ' + r.status));
+    try {
+      localStorage.setItem('mz_sw_tok', d.token);
+      if (d.refresh_token) localStorage.setItem('mz_sw_ref', d.refresh_token);
+      localStorage.setItem('mz_sw_exp', String(Date.now() + (Number(d.expires_in) || 1800) * 1000 - 60000));
+      localStorage.setItem('mz_sw_ref_ts', String(Date.now()));
+      ['mz_sw_muerto', 'mz_sw_cache', 'mz_sw_acct', 'mz_sw_num'].forEach(k => localStorage.removeItem(k));
+    } catch (_) {}
+    out.innerHTML = '<div class="mut">Schwab autorizó la conexión. En la Mesa, pega este código (vale 5 minutos, una sola vez):</div>'
+      + '<div class="cod" id="cod">' + esc(d.handoff) + '</div>'
+      + '<button class="btn" id="cop">Copiar código</button> <a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>'
+      + '<div class="mut" style="margin-top:16px">Si abriste Schwab desde la Mesa del iPhone, vuelve a la Mesa: el cuadro «Conectar Charles Schwab» sigue ahí esperando el código. Si estás en el mismo navegador que la Mesa, ya quedó conectada.</div>';
+    document.getElementById('cop').onclick = function () {
+      const b = this;
+      if (navigator.clipboard) navigator.clipboard.writeText(d.handoff).then(() => { b.textContent = 'Copiado ✓'; }, () => { b.textContent = 'Cópialo a mano'; });
+    };
+  } catch (e) {
+    out.innerHTML = '<span class="err">No pude terminar la conexión: ' + esc(e && e.message || e) + '</span><br>Vuelve a la Mesa e inténtalo de nuevo.<br><br><a class="btn sec" href="./#/cuentas">Abrir la Mesa</a>';
+  }
+})();
+</script>
+</body>
+</html>

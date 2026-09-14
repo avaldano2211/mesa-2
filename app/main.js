@@ -315,7 +315,7 @@ async function vistaCopiloto() {
 function gtcPendientes(abiertas, ordenesGtc) {
   const con = new Set((ordenesGtc || []).filter(o => o.posicion_id != null && o.estado !== 'preview').map(o => String(o.posicion_id)));
   return (abiertas || []).filter(p => p && p.estado === 'abierta' && Number(p.prima_fill) > 0 && p.strike != null && p.expiracion
-    && (!p.broker || p.broker === 'etrade') && !con.has(String(p.id)));
+    && ['etrade', 'schwab'].includes(p.broker || 'etrade') && !con.has(String(p.id)));
 }
 // GTC AUTOMÁTICO (pedido de Andrés 2026-09-13, «el cierre apenas la abro»): al
 // enviar una compra, la casilla «Al llenarse, enviar sola la venta GTC» queda
@@ -422,7 +422,7 @@ function tarjetaPosicion(p) {
     <div class="fila" style="margin-top:9px;gap:8px">
       <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
       <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button></div>
-    ${(!p.broker || p.broker === 'etrade') ? `<div class="fila" style="margin-top:8px;gap:8px">
+    ${['etrade', 'schwab'].includes(p.broker || 'etrade') ? `<div class="fila" style="margin-top:8px;gap:8px">
       <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45)${p._gtcPendiente ? ';background:rgba(231,181,77,.14);font-weight:700' : ''}" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>${p._gtcPendiente ? '⚠ PON TU GTC' : 'GTC'} +${PLAN_PCT}% ($${esc(gtcDe(Number(p.prima_fill)).toFixed(2))})</button>
       <button class="btnsec" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_stop')).replace(/'/g, "&#39;")})'>Trailing stop</button></div>` : ''}
   </div>`;
@@ -430,7 +430,7 @@ function tarjetaPosicion(p) {
 // Prefill de una orden de SALIDA (SELL_CLOSE) desde una posición abierta.
 function preSalida(p, proposito) {
   const gtc = proposito === 'salida_gtc';
-  return { proposito, posicion_id: p.id, symbol: p.symbol, direccion: p.direccion,
+  return { proposito, posicion_id: p.id, broker: p.broker || 'etrade', symbol: p.symbol, direccion: p.direccion,
     strike: p.strike == null ? undefined : Number(p.strike), expiracion: p.expiracion || undefined,
     cantidad: Number(p.contratos) || 1, accion: 'venta', orderTerm: 'GOOD_UNTIL_CANCEL',
     priceType: gtc ? 'LIMIT' : 'TRAILING_STOP_PRCT',
@@ -820,6 +820,7 @@ function durTxt(a, b) {
 const usd = (n) => (n == null ? '—' : (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
 const colUtil = (n) => n == null ? 'var(--tx2)' : n > 0 ? 'var(--verde)' : n < 0 ? 'var(--rojo)' : 'var(--tx2)';
 
+const BROKER_NOMBRE = { etrade: 'E*TRADE', schwab: 'Charles Schwab', tasty: 'tastytrade', moomoo: 'moomoo' };
 const BROKERS = [
   { k: 'etrade', n: 'E*TRADE' }, { k: 'tasty', n: 'tastytrade' },
   { k: 'schwab', n: 'Charles Schwab' },
@@ -1219,6 +1220,273 @@ async function etradeGuardarSnapshot(snap) {
   } catch (_) {}
 }
 
+
+// ═══════════════ Charles Schwab (OAuth 2.0 · token en ESTE dispositivo) ═══════════════
+// Login SEMANAL: el refresh token vive 7 días; el access token 30 min y se
+// renueva solo vía proxy (que solo aporta el app secret). Tras autorizar en la
+// web de Schwab, la página oauth-schwab.html canjea el código y muestra un
+// código de 6 dígitos que se pega aquí (la PWA del iPhone no comparte
+// almacenamiento con Safari). Schwab NO tiene vista previa: la orden entra al enviar.
+const SW_K = { tok: 'mz_sw_tok', ref: 'mz_sw_ref', exp: 'mz_sw_exp', refts: 'mz_sw_ref_ts', acct: 'mz_sw_acct', num: 'mz_sw_num', cache: 'mz_sw_cache', muerto: 'mz_sw_muerto' };
+const SW_REFRESH_DIAS = 7;
+function swCreds() {
+  try {
+    const t = localStorage.getItem(SW_K.tok), r = localStorage.getItem(SW_K.ref);
+    return (t && r) ? { token: t, refresh: r, exp: Number(localStorage.getItem(SW_K.exp)) || 0, refts: Number(localStorage.getItem(SW_K.refts)) || 0 } : null;
+  } catch (_) { return null; }
+}
+function swGuardar(d) {
+  try {
+    localStorage.setItem(SW_K.tok, d.token);
+    if (d.refresh_token) localStorage.setItem(SW_K.ref, d.refresh_token);
+    localStorage.setItem(SW_K.exp, String(Date.now() + (Number(d.expires_in) || 1800) * 1000 - 60000));
+    if (d.nuevo_login) localStorage.setItem(SW_K.refts, String(Date.now()));
+    localStorage.removeItem(SW_K.muerto); localStorage.removeItem(SW_K.cache);
+  } catch (_) {}
+}
+function swOlvidar() { try { Object.values(SW_K).forEach(k => localStorage.removeItem(k)); } catch (_) {} }
+// vencido: refresh token de más de 7 días, o Schwab rechazó la renovación
+function swVencido() {
+  try {
+    if (localStorage.getItem(SW_K.muerto)) return true;
+    const c = swCreds(); return !!c && c.refts > 0 && Date.now() - c.refts > SW_REFRESH_DIAS * 86400000;
+  } catch (_) { return false; }
+}
+function swMarcarMuerto() { try { localStorage.setItem(SW_K.muerto, '1'); } catch (_) {} }
+let _swRenovando = null;
+// true: renovado · false: Schwab rechazó el refresh (login semanal caducado) · null: no se sabe
+function swRenovar(cr) {
+  if (!_swRenovando) {
+    _swRenovando = etProxy('/schwab/refresh', { refresh_token: cr.refresh }, ET_TOPE_MS)
+      .then(r => {
+        const d = r && r.status === 200 && r.data;
+        if (!d || typeof d.ok !== 'boolean') return null;
+        if (d.ok && d.token) { swGuardar(d); return true; }
+        return [400, 401, 403].includes(Number(d.status)) ? false : null;
+      }, () => null)
+      .finally(() => { _swRenovando = null; });
+  }
+  return _swRenovando;
+}
+async function swAccess() {
+  const c = swCreds(); if (!c) return null;
+  if (Date.now() < c.exp) return c.token;
+  const ok = await swRenovar(c);
+  if (ok === false) { swMarcarMuerto(); return null; }
+  const c2 = swCreds(); return c2 ? c2.token : null;
+}
+async function swLlamar(path, body, topeMs) {
+  const tok = await swAccess();
+  if (!tok) return { status: 401, data: { error: swVencido() ? 'login semanal de Schwab caducado' : 'Schwab sin sesión' } };
+  const llamar = (t) => etProxy(path, Object.assign({ token: t }, body || {}), topeMs);
+  let r = await llamar(tok);
+  if (r.status === 401) {
+    const c = swCreds(); const renovado = c ? await swRenovar(c) : false;
+    if (renovado === false) swMarcarMuerto();
+    const c2 = swCreds(); if (c2 && renovado) r = await llamar(c2.token);
+  }
+  return r;
+}
+function swRead(path, query) { return swLlamar('/schwab/read', { path, query: query || {} }, ET_TOPE_MS); }
+async function swPost(path, body) {                    // órdenes: sin tope (abortar un place = indeterminado)
+  try { return await swLlamar(path, body); }
+  catch (_) { throw new Error('No pude contactar el proxy (¿Funnel activo?).'); }
+}
+function swMensajeError(r) {
+  const d = r && r.data; if (!d || typeof d !== 'object') return null;
+  if (d.error) return String(d.error);
+  if (d.message) return String(d.message);
+  if (Array.isArray(d.errors) && d.errors.length) return d.errors.map(e => (e && (e.message || e.title || e.detail)) || JSON.stringify(e)).join(' · ');
+  return null;
+}
+// hash de la cuenta (las órdenes y saldos de Schwab usan el hash, no el número)
+async function swCuenta() {
+  try { const k = localStorage.getItem(SW_K.acct); if (k) return k; } catch (_) {}
+  const r = await swRead('/trader/v1/accounts/accountNumbers');
+  if (r.status === 401) throw new Error('La sesión de Schwab caducó. Reconecta en Cuentas → Schwab.');
+  const em = swMensajeError(r); if (em) throw new Error('Schwab: ' + em);
+  const arr = Array.isArray(r.data) ? r.data : [];
+  if (!arr.length || !arr[0].hashValue) throw new Error('Schwab no devolvió ninguna cuenta.');
+  try { localStorage.setItem(SW_K.acct, arr[0].hashValue); localStorage.setItem(SW_K.num, String(arr[0].accountNumber || '')); } catch (_) {}
+  return arr[0].hashValue;
+}
+// Saldo en vivo de Schwab (caché 5 min). snapshot | {_expirado} | {_sinRed} | null
+async function schwabSaldo(forzar) {
+  const cr = swCreds(); if (!cr) return null;
+  if (swVencido()) return { _expirado: true };
+  if (!forzar) { try { const c = JSON.parse(localStorage.getItem(SW_K.cache) || 'null'); if (c && Date.now() - c._ts < 300000) return c.snap; } catch (_) {} }
+  try {
+    const hash = await swCuenta();
+    const r = await swRead(`/trader/v1/accounts/${encodeURIComponent(hash)}`);
+    if (r.status === 401) return { _expirado: true };
+    if (swMensajeError(r)) return null;
+    const sa = (r.data || {}).securitiesAccount || {}; const bal = sa.currentBalances || {}; const ini = sa.initialBalances || {};
+    let num = ''; try { num = localStorage.getItem(SW_K.num) || ''; } catch (_) {}
+    const snap = {
+      broker: 'schwab', numero_mascara: num ? num.slice(0, 2) + '***' + num.slice(-3) : '',
+      saldo_neto: num2(bal.liquidationValue) ?? num2(ini.liquidationValue),
+      efectivo: num2(bal.cashBalance) ?? num2(bal.availableFunds),
+      poder_compra: num2(bal.buyingPower) ?? num2(bal.availableFunds) ?? num2(bal.cashAvailableForTrading),
+      origen: 'dispositivo', capturado_at: new Date().toISOString(), _vivo: true,
+    };
+    try { localStorage.setItem(SW_K.cache, JSON.stringify({ _ts: Date.now(), snap })); } catch (_) {}
+    etradeGuardarSnapshot(snap);   // upsert por (user_id, broker): vale para cualquier bróker
+    return snap;
+  } catch (e) {
+    if (/caducó|sin sesión/i.test(String(e && e.message))) return { _expirado: true };
+    return { _sinRed: true };
+  }
+}
+async function conectarSchwab() {
+  if (!PROXY_URL) { toast('Falta configurar el proxy'); return; }
+  let w = null;
+  try {
+    w = window.open('', '_blank');
+    if (w) { w.opener = null; try { w.document.write('<p style="font-family:-apple-system,system-ui;padding:28px;color:#555">Conectando con Charles Schwab…</p>'); } catch (_) {} }
+  } catch (_) { w = null; }
+  const cerrarVacia = () => { if (w) { try { w.close(); } catch (_) {} } };
+  toast('Preparando login de Schwab…');
+  let r;
+  try { r = await etProxy('/schwab/login/start', {}, ET_TOPE_MS); }
+  catch (_) { cerrarVacia(); toast('No pude contactar el proxy (¿Funnel activo?)'); return; }
+  const d = r.data || {};
+  if (!d.authorize_url) { cerrarVacia(); toast('Schwab no disponible: ' + (d.error || 'error')); return; }
+  let abierta = false;
+  if (w && !w.closed) { try { w.location.href = d.authorize_url; abierta = true; } catch (_) {} }
+  modalCodigoSchwab(d.authorize_url, abierta);
+}
+function modalCodigoSchwab(url, abierta) {
+  const prev = $('#modalSw'); if (prev) prev.remove();
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalSw';
+  m.innerHTML = `<div class="hoja">
+    <h3 style="margin:0 0 6px">Conectar Charles Schwab</h3>
+    <div class="mut" style="font-size:12.5px;line-height:1.45">${abierta ? 'Se abrió Schwab en otra pestaña.' : 'Abre Schwab con el botón de abajo.'} Entra con tu cuenta de <b>brokerage</b> (no la de developer), autoriza tus cuentas y al final verás un <b>código de 6 dígitos</b>. Pégalo aquí:</div>
+    ${url ? `<div style="margin:8px 0 2px"><a class="btnsec" href="${esc(url)}" target="_blank" rel="noopener" style="display:inline-block;text-decoration:none;padding:7px 12px">Abrir Schwab ↗</a> <span class="mut" style="font-size:11.5px">${abierta ? '(si no se abrió sola)' : ''}</span></div>` : ''}
+    <label>Código de conexión</label>
+    <input id="swCod" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 dígitos" style="text-align:center;letter-spacing:.2em;font-size:18px">
+    <div class="err" id="swErr"></div>
+    <div class="dos" style="margin-top:6px">
+      <button class="btnsec" onclick="MZ.swCancelar()">Cancelar</button>
+      <button class="pri" onclick="MZ.swEnviar()">Conectar</button></div>
+  </div>`;
+  document.body.appendChild(m);
+  setTimeout(() => { const i = $('#swCod'); if (i) i.focus(); }, 60);
+  // si el login terminó en ESTE navegador (Mac), la página de retorno ya dejó el token: cerrar solo
+  const t0 = Date.now();
+  const esperar = setInterval(() => {
+    if (!$('#modalSw') || Date.now() - t0 > 900000) { clearInterval(esperar); return; }
+    const c = swCreds();
+    if (c && c.refts > t0 - 5000) { clearInterval(esperar); m.remove(); toast('Schwab conectada ✓'); if (_ord && $('#modalOrden')) cargarCadena(true); else ruta(); }
+  }, 1500);
+}
+async function swCodigoEnviar() {
+  const cod = ($('#swCod').value || '').trim(); const err = $('#swErr');
+  if (!/^\d{6}$/.test(cod)) { err.textContent = 'Son 6 dígitos.'; return; }
+  err.textContent = 'Conectando…';
+  let r; try { r = await etProxy('/schwab/login/claim', { handoff: cod }, ET_TOPE_MS); }
+  catch (_) { err.textContent = 'No pude contactar el proxy.'; return; }
+  const d = r.data || {};
+  if (!d.token) { err.textContent = d.error || 'Código inválido o caducado (vale 5 min).'; return; }
+  swGuardar(Object.assign({ nuevo_login: true }, d));
+  try { localStorage.removeItem(SW_K.acct); localStorage.removeItem(SW_K.num); } catch (_) {}
+  const m = $('#modalSw'); if (m) m.remove();
+  toast('Schwab conectada ✓');
+  if (_ord && $('#modalOrden')) { cargarCadena(true); return; }
+  ruta();
+}
+// símbolo OSI de Schwab: «SPY   260914C00769000» (subyacente a 6, yymmdd, C/P, strike×1000)
+function osiDe(sym, exp, strike, lado) {
+  const [y, m, d] = String(exp).split('-');
+  const k = Math.round(Number(strike) * 1000);
+  return String(sym).toUpperCase().padEnd(6, ' ') + y.slice(2) + m + d + (lado === 'PUT' ? 'P' : 'C') + String(k).padStart(8, '0');
+}
+function desOsi(osi) {
+  const m = /^([A-Z.$]{1,6})\s*(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(String(osi || '').trim().toUpperCase());
+  if (!m) return null;
+  return { symbol: m[1], expiracion: `20${m[2]}-${m[3]}-${m[4]}`, strike: Number(m[6]) / 1000, direccion: m[5] === 'P' ? 'PUT' : 'CALL' };
+}
+// Orden en el formato del Trader API de Schwab (una pierna). Precios como texto
+// con 2 decimales (así los espera Schwab); el trailing stop en % sobre el MARK.
+function construirOrdenSchwab(f) {
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const esEq = f.tipo === 'EQ', venta = f.accion === 'venta';
+  const sym = String(f.symbol || '').trim().toUpperCase();
+  const o = { orderType: f.priceType === 'TRAILING_STOP_PRCT' ? 'TRAILING_STOP' : f.priceType, session: 'NORMAL',
+    duration: f.orderTerm === 'GTC' ? 'GOOD_TILL_CANCEL' : 'DAY', orderStrategyType: 'SINGLE' };
+  if (!esEq) o.complexOrderStrategyType = 'NONE';
+  if (f.priceType === 'LIMIT') o.price = n(f.limitPrice).toFixed(2);
+  if (f.priceType === 'STOP') o.stopPrice = n(f.stopPrice).toFixed(2);
+  if (f.priceType === 'STOP_LIMIT') { o.stopPrice = n(f.stopPrice).toFixed(2); o.price = n(f.limitPrice).toFixed(2); }
+  if (f.priceType === 'TRAILING_STOP_PRCT') { o.stopPriceLinkBasis = 'MARK'; o.stopPriceLinkType = 'PERCENT'; o.stopPriceOffset = n(f.offsetValue); }
+  o.orderLegCollection = [{ instruction: esEq ? (venta ? 'SELL' : 'BUY') : (venta ? 'SELL_TO_CLOSE' : 'BUY_TO_OPEN'), quantity: Math.floor(Number(f.cantidad)),
+    instrument: esEq ? { symbol: sym, assetType: 'EQUITY' } : { symbol: osiDe(sym, f.expiracion, f.strike, f.tipo), assetType: 'OPTION' } }];
+  return o;
+}
+// Fila de `ordenes` para una orden de Schwab, con las MISMAS columnas que E*TRADE
+// (accion en el vocabulario de la Mesa: BUY_OPEN/SELL_CLOSE) para que el resto
+// de la app (GTC automático, sincronización, tarjetas) no distinga brókeres.
+function filaOrdenSchwab(f, orden, extra) {
+  const leg = orden.orderLegCollection[0];
+  const esEq = leg.instrument.assetType === 'EQUITY';
+  const compra = leg.instruction === 'BUY_TO_OPEN' || leg.instruction === 'BUY';
+  return Object.assign({
+    broker: 'schwab', client_order_id: f.clientOrderId || clientOrderIdNuevo(), symbol: String(f.symbol || '').trim().toUpperCase(),
+    security_type: esEq ? 'EQ' : 'OPTN', direccion: esEq ? null : (f.tipo === 'PUT' ? 'PUT' : 'CALL'),
+    strike: esEq ? null : Number(f.strike), expiracion: esEq ? null : (f.expiracion || null),
+    accion: compra ? (esEq ? 'BUY' : 'BUY_OPEN') : (esEq ? 'SELL' : 'SELL_CLOSE'),
+    cantidad: leg.quantity, price_type: f.priceType,
+    limit_price: orden.price != null ? Number(orden.price) : null,
+    stop_price: orden.stopPrice != null ? Number(orden.stopPrice) : null,
+    offset_value: orden.stopPriceOffset != null ? Number(orden.stopPriceOffset) : null,
+    order_term: orden.duration === 'GOOD_TILL_CANCEL' ? 'GOOD_UNTIL_CANCEL' : 'GOOD_FOR_DAY',
+  }, extra || {});
+}
+// Datos de mercado de Schwab → misma forma que los de E*TRADE (cadena/cotización/vencimientos)
+function parsearCotizacionSchwab(resp, sym) {
+  const d = (resp && resp.data) || {};
+  const info = d[String(sym || '').toUpperCase()] || Object.values(d).find(v => v && typeof v === 'object' && v.quote) || {};
+  const q = info.quote || {};
+  return { last: num2(q.lastPrice) ?? num2(q.mark), bid: num2(q.bidPrice), ask: num2(q.askPrice),
+    estado: info.quote ? (info.realtime === false ? 'DELAYED' : 'REALTIME') : '' };
+}
+function parsearVencimientosSchwab(resp) {
+  const d = (resp && resp.data) || {};
+  return (d.expirationList || []).map(e => ({ ymd: String(e.expirationDate || '').slice(0, 10),
+    tipo: String(e.expirationType || '') === 'W' ? 'WEEKLY' : String(e.expirationType || ''), dte: e.daysToExpiration }))
+    .filter(v => /^\d{4}-\d{2}-\d{2}$/.test(v.ymd));
+}
+function parsearCadenaSchwab(resp) {
+  const d = (resp && resp.data) || {};
+  const filas = {}; let exp = null;
+  const lado = (mapa, campo) => {
+    for (const [k, strikes] of Object.entries(mapa || {})) {
+      if (!exp) exp = String(k).split(':')[0];
+      for (const [kt, arr] of Object.entries(strikes || {})) {
+        const c = Array.isArray(arr) ? arr[0] : arr; if (!c) continue;
+        const st = Number(kt); if (!Number.isFinite(st)) continue;
+        const f = filas[st] || (filas[st] = { strike: st, call: null, put: null });
+        const dl = num2(c.delta);
+        f[campo] = { simbolo: c.symbol, strike: st, bid: num2(c.bid), ask: num2(c.ask), last: num2(c.last), vol: num2(c.totalVolume), oi: num2(c.openInterest),
+          delta: (dl != null && Math.abs(dl) <= 1) ? dl : null, itm: !!c.inTheMoney };
+      }
+    }
+  };
+  lado(d.callExpDateMap, 'call'); lado(d.putExpDateMap, 'put');
+  return { filas: Object.values(filas).sort((a, b) => a.strike - b.strike), estado: d.isDelayed === true ? 'DELAYED' : (d.status ? 'REALTIME' : ''), near: num2(d.underlyingPrice), exp };
+}
+// Brókeres desde los que se puede operar en ESTE equipo (sesión viva)
+function brokersOperables() {
+  const out = [];
+  if (etCreds() && !etDiaVencido()) out.push('etrade');
+  if (swCreds() && !swVencido()) out.push('schwab');
+  return out;
+}
+function subtituloBroker(b) {
+  return b === 'schwab' ? 'Schwab no da vista previa: la revisas aquí y entra a tu cuenta al tocar «Enviar».'
+    : 'Primero la vista previa de E*TRADE; nada se envía sin tu toque.';
+}
+function textoBotonPreview(b) { return b === 'schwab' ? 'Revisar orden' : 'Vista previa en E*TRADE'; }
+
 function etradeLineaHistorial(s) {
   if (!s || s.estado === 'sin') return '';
   const sync = ` · <a href="#" onclick="MZ.etSync();return false" style="color:var(--oro)">sincronizar</a>`;
@@ -1260,6 +1528,13 @@ async function vistaCuentas() {
     const i = saldos.findIndex(x => x.broker === 'etrade');
     if (i >= 0) saldos[i] = etSnap; else saldos.push(etSnap);
   }
+  // Schwab (token semanal en este dispositivo): mismo tratamiento que E*TRADE
+  const swSnap = await schwabSaldo();
+  const swExpirado = !!(swSnap && swSnap._expirado), swSinRed = !!(swSnap && swSnap._sinRed);
+  if (swSnap && !swSnap._expirado && !swSnap._sinRed) {
+    const i = saldos.findIndex(x => x.broker === 'schwab');
+    if (i >= 0) saldos[i] = swSnap; else saldos.push(swSnap);
+  }
   // Historial E*TRADE: se muestra el resumen cacheado y se sincroniza en segundo
   // plano; se re-dibuja al terminar (el tope de 10 min evita bucles).
   let etHist = null;
@@ -1284,9 +1559,9 @@ async function vistaCuentas() {
     if (c) {
       const orig = c._vivo ? 'en vivo · este equipo'
         : c.origen === 'vps' ? 'en vivo' : c.origen === 'dispositivo' ? 'desde otro equipo' : 'desde tu Mac';
-      const reconn = b.k === 'etrade'
-        ? ` · <a href="#" onclick="MZ.conectar('etrade');return false" style="color:var(--oro)">reconectar</a>`
-          + ` · <a href="#" onclick="MZ.etOlvidar();return false" style="color:var(--tx3)">olvidar en este equipo</a>` : '';
+      const reconn = (b.k === 'etrade' || b.k === 'schwab')
+        ? ` · <a href="#" onclick="MZ.conectar('${b.k}');return false" style="color:var(--oro)">reconectar</a>`
+          + ` · <a href="#" onclick="MZ.olvidar('${b.k}');return false" style="color:var(--tx3)">olvidar en este equipo</a>` : '';
       const hist = b.k === 'etrade' ? etradeLineaHistorial(etHist) : '';
       return `<div class="card"><div class="fila">
       <div><b style="font-size:14px">${esc(b.n)}</b> <span class="mut">${esc(c.numero_mascara||'')}</span>
@@ -1298,10 +1573,12 @@ async function vistaCuentas() {
       : (b.k === 'etrade' && etSinRed) ? 'sin conexión con el proxy — E*TRADE sigue conectada en este equipo'
       : (b.k === 'etrade' && etExpirado) ? 'sesión expirada — vuelve a entrar'
       : b.k === 'etrade' ? 'inicia sesión (login diario, con PIN)'
-      : b.k === 'schwab' ? 'en aprobación de Schwab'
+      : (b.k === 'schwab' && swSinRed) ? 'sin conexión con el proxy — Schwab sigue conectada en este equipo'
+      : (b.k === 'schwab' && swExpirado) ? 'login semanal caducado — vuelve a entrar'
+      : b.k === 'schwab' ? 'inicia sesión (login semanal de Schwab)'
       : b.k === 'moomoo' ? 'pendiente del login de OpenD en el servidor (se lee 24/7, sin tu Mac)' : 'requiere tu login';
     const btn = b.k === 'tasty' ? ''
-      : (b.k === 'etrade' && etSinRed) ? `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.etReintentar()">Reintentar</button>`
+      : ((b.k === 'etrade' && etSinRed) || (b.k === 'schwab' && swSinRed)) ? `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.etReintentar()">Reintentar</button>`
       : `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.conectar('${b.k}')">Conectar</button>`;
     return `<div class="card"><div class="fila">
       <div><b style="font-size:14px;color:var(--tx2)">${esc(b.n)}</b>
@@ -1368,13 +1645,16 @@ window.MZ = Object.assign(window.MZ || {}, {
   conectar: (b) => {
     if (b === 'tasty') { toast('tastytrade ya está conectada (en vivo)'); return; }
     if (b === 'etrade') { conectarEtrade(); return; }
-    if (b === 'schwab') { toast('Schwab: la activamos en cuanto apruebe tu app'); return; }
+    if (b === 'schwab') { conectarSchwab(); return; }
     if (b === 'moomoo') { toast('moomoo: se lee desde el servidor (OpenD); el login se hace una vez desde el Mac con mesa2_moomoo_login.command'); return; }
     toast('Bróker no soportado');
   },
   pinEnviar: (rt) => etradePinEnviar(rt),
   pinCancelar: () => { etLoginOlvidar(); const m = $('#modalPin'); if (m) m.remove(); },
   etReintentar: () => ruta(),
+  swEnviar: () => swCodigoEnviar(),
+  swCancelar: () => { const m = $('#modalSw'); if (m) m.remove(); },
+  olvidar: (b) => { if (b === 'schwab') { swOlvidar(); toast('Schwab olvidada en este equipo'); ruta(); } else if (window.MZ.etOlvidar) window.MZ.etOlvidar(); },
   etSync: () => etSyncAhora(),
   etOlvidar: () => { etOlvidar(); toast('E*TRADE olvidada en este equipo'); ruta(); },
 });
@@ -1841,10 +2121,15 @@ function abrirOrden(pre) {
   const pt = PRICE_TYPES.includes(pre.priceType) ? pre.priceType : 'LIMIT';
   const gtc = pre.orderTerm === 'GOOD_UNTIL_CANCEL' || pre.orderTerm === 'GTC';
   const precio0 = pt === 'LIMIT' ? pre.limitPrice : pt === 'STOP' ? pre.stopPrice : pt === 'TRAILING_STOP_PRCT' ? pre.offsetValue : '';
+  // bróker de la orden: el de la posición (salidas), el último usado o el primero con sesión viva
+  const ops = brokersOperables();
+  let ultimo = ''; try { ultimo = localStorage.getItem('mz_broker_orden') || ''; } catch (_) {}
+  const broker = (pre.broker && ops.includes(pre.broker)) ? pre.broker : ops.includes(ultimo) ? ultimo : (ops[0] || pre.broker || 'etrade');
   const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalOrden';
   m.innerHTML = `<div class="hoja">
-    <div class="fila"><h3 style="margin:0">Orden E*TRADE</h3><span class="fresco" id="oArm"></span></div>
-    <div class="mut" style="margin-bottom:4px">Primero la vista previa de E*TRADE; nada se envía sin tu toque.</div>
+    <div class="fila"><h3 style="margin:0" id="oTitulo">Orden ${esc(BROKER_NOMBRE[broker] || broker)}</h3><span class="fresco" id="oArm"></span></div>
+    <div class="mut" id="oSub" style="margin-bottom:4px">${esc(subtituloBroker(broker))}</div>
+    ${ops.length > 1 ? `<label>Bróker</label><select id="oBroker">${ops.map(b => `<option value="${b}" ${b === broker ? 'selected' : ''}>${esc(BROKER_NOMBRE[b] || b)}</option>`).join('')}</select>` : ''}
     <label>Ticker</label>
     <input id="oSym" list="oSyms" value="${esc(pre.symbol || '')}" placeholder="AAPL" autocapitalize="characters" autocomplete="off" spellcheck="false" style="text-transform:uppercase">
     <datalist id="oSyms">${TICKERS.map(t => `<option value="${t}">`).join('')}</datalist>
@@ -1882,10 +2167,10 @@ function abrirOrden(pre) {
     <div class="err" id="oErr" style="text-align:left"></div>
     <div class="dos" style="margin-top:6px">
       <button class="btnsec" onclick="MZ.cerrarOrden()">Cancelar</button>
-      <button class="pri" id="oBtnPrev" onclick="MZ.ordenPreview()">Vista previa en E*TRADE</button></div>
+      <button class="pri" id="oBtnPrev" onclick="MZ.ordenPreview()">${esc(textoBotonPreview(broker))}</button></div>
   </div>`;
   document.body.appendChild(m);
-  _ord = { pre, ctx: null, f: null, orden: null, previewIds: null, filaId: null, accountIdKey: null, caduca: 0, timer: null, avisos: [], avisosTxt: '',
+  _ord = { pre, broker, ctx: null, f: null, orden: null, previewIds: null, filaId: null, accountIdKey: null, caduca: 0, timer: null, avisos: [], avisosTxt: '',
     cadena: null, cadenaSym: null, cadenaExp: null, cadenaClave: '', cadenaTs: 0, cadenaTimer: null, cadenaErr: null, cadenaCargando: false, cadenaGen: 0, cotiz: null, cotizTs: 0, vencs: [],
     qtyManual: pre.cantidad != null };            // cantidad explícita (p. ej. salida de una posición) → no se prearma
   m.addEventListener('input', (e) => {
@@ -1899,6 +2184,7 @@ function abrirOrden(pre) {
   m.addEventListener('change', (e) => {
     ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden(); pintarRangoOrden();
     const id = e && e.target && e.target.id;
+    if (id === 'oBroker') { cambiarBrokerOrden(e.target.value); return; }
     if (id === 'oSym') _ord.cadenaSym = null;                      // símbolo nuevo → cotización y vencimientos de nuevo
     if (['oSym', 'oTipo', 'oExp', 'oAcc'].includes(id)) { _ord.cadenaGen++; cargarCadena(true); }   // gen++: una carga en vuelo se descarta y se relanza
   });
@@ -1906,6 +2192,21 @@ function abrirOrden(pre) {
   cargarCtxOrden().then(() => { autoCantidad(); pintarAvisosOrden(); pintarTotalOrden(); pintarRangoOrden(); pintarCadena(); });
   cargarCadena();
   setTimeout(() => { const i = $('#oSym'); if (i && !i.value) i.focus(); }, 60);
+}
+// Cambio de bróker dentro del formulario: cadena, presupuesto y textos del bróker nuevo.
+function cambiarBrokerOrden(b) {
+  if (!_ord || !b) return;
+  _ord.broker = b;
+  try { localStorage.setItem('mz_broker_orden', b); } catch (_) {}
+  const t = $('#oTitulo'), s = $('#oSub'), bt = $('#oBtnPrev');
+  if (t) t.textContent = 'Orden ' + (BROKER_NOMBRE[b] || b);
+  if (s) s.textContent = subtituloBroker(b);
+  if (bt && !_ord.orden) bt.textContent = textoBotonPreview(b);
+  if (_ord.ctx) { _ord.ctx.broker = b; _ord.ctx.saldoBroker = (_ord.ctx.saldos && _ord.ctx.saldos[b] > 0) ? _ord.ctx.saldos[b] : null; }
+  _ord.cadenaSym = null; _ord.cadena = null; _ord.vencs = []; _ord.cotiz = null; _ord.cadenaGen++;
+  _ord.qtyManual = false; autoCantidad();
+  pintarAvisosOrden(); pintarTotalOrden(); pintarRangoOrden();
+  cargarCadena(true);
 }
 // Una vista previa que no se envía (caduca, se edita o se cierra) queda 'expirada'
 // en la bitácora, para que el Copiloto no se llene de previews muertas.
@@ -1981,9 +2282,10 @@ async function cargarCadena(forzar) {
   if (!_ord) return; const box = $('#oCadena'); if (!box) return;
   const f = leerFormOrden();
   if (f.tipo === 'EQ' || !f.symbol) { box.innerHTML = ''; return; }
-  const cr = etCreds();
-  if (!cr) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: <a href="#" onclick="MZ.conectar('etrade');return false">conecta E*TRADE</a> para ver aquí los precios de calls y puts.</div>`; return; }
-  if (etDiaVencido()) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: la sesión de E*TRADE expiró (muere a medianoche ET) — <a href="#" onclick="MZ.conectar('etrade');return false">reconectar E*TRADE</a>.</div>`; return; }
+  const brk = _ord.broker || 'etrade';
+  const cr = brk === 'schwab' ? (swCreds() ? { schwab: true } : null) : etCreds();
+  if (!cr) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: <a href="#" onclick="MZ.conectar('${brk}');return false">conecta ${esc(BROKER_NOMBRE[brk] || brk)}</a> para ver aquí los precios de calls y puts.</div>`; return; }
+  if (brk === 'schwab' ? swVencido() : etDiaVencido()) { box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: la sesión de ${esc(BROKER_NOMBRE[brk] || brk)} caducó — <a href="#" onclick="MZ.conectar('${brk}');return false">reconectar</a>.</div>`; return; }
   const clave = f.symbol + '|' + (f.expiracion || '');
   if (!forzar && _ord.cadena && _ord.cadenaClave === clave && Date.now() - _ord.cadenaTs < 5000) return;
   if (_ord.cadenaCargando) return;
@@ -1997,7 +2299,19 @@ async function cargarCadena(forzar) {
   if (!o.cadena || o.cadenaClave !== clave) box.innerHTML = `<div class="mut" style="margin-top:8px;font-size:11.5px">Cadena en vivo: consultando E*TRADE…</div>`;
   try {
     const sym = f.symbol;
-    if (o.cadenaSym !== sym) {                          // símbolo nuevo: cotización + vencimientos
+    if (brk === 'schwab') {
+      if (o.cadenaSym !== sym) {
+        const [rq, rv] = await Promise.all([swRead('/marketdata/v1/quotes', { symbols: sym }), swRead('/marketdata/v1/expirationchain', { symbol: sym })]);
+        if (!vigente()) return descartar();
+        if (rq.status === 401 || rv.status === 401) throw new Error(swVencido() ? 'RECONECTAR_SW' : 'Schwab rechazó la lectura (401): ' + (swMensajeError(rq) || swMensajeError(rv) || 'sin detalle'));
+        const e1 = swMensajeError(rq) || swMensajeError(rv); if (e1) throw new Error(e1);
+        o.cotiz = parsearCotizacionSchwab(rq, sym); o.vencs = parsearVencimientosSchwab(rv); o.cadenaSym = sym;
+      } else if (forzar) {
+        const rq = await swRead('/marketdata/v1/quotes', { symbols: sym });
+        if (!vigente()) return descartar();
+        if (rq.status < 400 && !swMensajeError(rq)) o.cotiz = parsearCotizacionSchwab(rq, sym);
+      }
+    } else if (o.cadenaSym !== sym) {                   // E*TRADE · símbolo nuevo: cotización + vencimientos
       const [rq, rv] = await Promise.all([
         etRead(cr, `/v1/market/quote/${encodeURIComponent(sym)}.json`, { detailFlag: 'INTRADAY' }),
         etRead(cr, '/v1/market/optionexpiredate.json', { symbol: sym, expiryType: 'ALL' }),
@@ -2025,11 +2339,19 @@ async function cargarCadena(forzar) {
       const q = { symbol: sym, expiryYear: y, expiryMonth: m, expiryDay: d, noOfStrikes: CADENA_STRIKES,
         includeWeekly: 'true', chainType: 'CALLPUT', priceType: 'ALL', skipAdjusted: 'true' };
       const near = o.cotiz && (o.cotiz.last || o.cotiz.bid); if (near) q.strikePriceNear = near;
-      const rc = await etRead(cr, '/v1/market/optionchains.json', q);
-      if (!vigente()) return descartar();
-      if (rc.status === 401) throw new Error(errorCadena401(etError(rc)));
-      const e2 = etError(rc); if (e2) throw new Error(e2);
-      cadena = parsearCadena(rc);
+      if (brk === 'schwab') {
+        const rc = await swRead('/marketdata/v1/chains', { symbol: sym, contractType: 'ALL', strikeCount: CADENA_STRIKES, fromDate: exp, toDate: exp, includeUnderlyingQuote: 'true' });
+        if (!vigente()) return descartar();
+        if (rc.status === 401) throw new Error(swVencido() ? 'RECONECTAR_SW' : 'Schwab rechazó la lectura (401): ' + (swMensajeError(rc) || 'sin detalle'));
+        const e2 = swMensajeError(rc); if (e2) throw new Error(e2);
+        cadena = parsearCadenaSchwab(rc);
+      } else {
+        const rc = await etRead(cr, '/v1/market/optionchains.json', q);
+        if (!vigente()) return descartar();
+        if (rc.status === 401) throw new Error(errorCadena401(etError(rc)));
+        const e2 = etError(rc); if (e2) throw new Error(e2);
+        cadena = parsearCadena(rc);
+      }
     }
     Object.assign(o, { cadena, cadenaExp: exp, cadenaClave: sym + '|' + (exp || ''), cadenaTs: Date.now(), cadenaErr: null });
   } catch (e) { o.cadenaErr = textoErrorCadena(e); }
@@ -2059,7 +2381,8 @@ function pintarCadena() {
   let h = `<div class="cadena"><div class="fila" style="margin-bottom:4px">
     <span class="mut"><b style="color:var(--tx)">${esc(f.symbol)}</b> ${q.last != null ? '$' + q.last.toFixed(2) : ''} ${(q.bid != null && q.ask != null) ? `<span class="fresco">${q.bid.toFixed(2)}/${q.ask.toFixed(2)}</span>` : ''} ${vivo}</span>
     <span style="display:flex;gap:8px;align-items:center">${sel}<a href="#" onclick="MZ.cadenaRefrescar();return false" style="font-size:13px">↻</a></span></div>`;
-  if (err === 'RECONECTAR') h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: la sesión de E*TRADE expiró — <a href="#" onclick="MZ.conectar('etrade');return false">reconectar E*TRADE</a></div>`;
+  if (err === 'RECONECTAR_SW') h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: el login semanal de Schwab caducó — <a href="#" onclick="MZ.conectar('schwab');return false">reconectar Schwab</a></div>`;
+  else if (err === 'RECONECTAR') h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: la sesión de E*TRADE expiró — <a href="#" onclick="MZ.conectar('etrade');return false">reconectar E*TRADE</a></div>`;
   else if (err) h += `<div class="mut" style="color:var(--rojo);font-size:11.5px">Cadena: ${esc(err)}</div>`;
   else if (!c) h += `<div class="mut" style="font-size:11.5px">consultando E*TRADE…</div>`;
   else if (!c.filas.length) h += `<div class="mut" style="font-size:11.5px">E*TRADE no devolvió strikes para ese vencimiento.</div>`;
@@ -2129,8 +2452,9 @@ async function cargarCtxOrden() {
   (cs.data || []).forEach(c => { if (c.broker) saldos[c.broker] = Number(c.saldo_neto) || 0; });
   // E*TRADE: si hay saldo vivo reciente en este equipo (caché de 5 min), manda ese
   try { const c = JSON.parse(localStorage.getItem(ET_K.cache) || 'null'); if (c && c.snap && Number(c.snap.saldo_neto) > 0) saldos.etrade = Number(c.snap.saldo_neto); } catch (_) {}
+  try { const c = JSON.parse(localStorage.getItem(SW_K.cache) || 'null'); if (c && c.snap && Number(c.snap.saldo_neto) > 0) saldos.schwab = Number(c.snap.saldo_neto); } catch (_) {}
   const saldo = Object.values(saldos).reduce((s, v) => s + v, 0);
-  const broker = 'etrade';                               // las órdenes de la Mesa salen por E*TRADE (Schwab/tasty después)
+  const broker = (_ord && _ord.broker) || 'etrade';       // bróker elegido en el formulario
   const saldoBroker = saldos[broker] > 0 ? saldos[broker] : null;
   if (_ord) _ord.ctx = { rangos, opsSemana, saldo, saldos, broker, saldoBroker, antes1030: antesDe1030NY(merc) };
 }
@@ -2147,7 +2471,7 @@ function pintarTotalOrden() {
   if (!_ord) return; const el = $('#oTotal'), pr = $('#oPresup'); if (!el || !pr) return;
   const f = leerFormOrden();
   const pct = presupuestoPct(), presup = presupuestoTicket(_ord.ctx, pct);
-  const brokerTxt = (_ord.ctx && _ord.ctx.broker === 'etrade') ? 'E*TRADE' : 'la cuenta';
+  const brokerTxt = BROKER_NOMBRE[(_ord.ctx && _ord.ctx.broker) || _ord.broker || 'etrade'] || 'la cuenta';
   pr.textContent = presup != null ? `${pct}% de ${brokerTxt} = ${usd(presup)}` : `${pct}% de ${brokerTxt} (sin saldo aún)`;
   const t = totalOrden(f);
   const qty = Number(f.cantidad) || 0, precio = f.priceType === 'LIMIT' ? Number(f.limitPrice) : Number(f.stopPrice);
@@ -2218,6 +2542,7 @@ async function ordenPreview() {
   if (requiereOverride(av) && !($('#oOverride') && $('#oOverride').checked)) {
     err.textContent = 'Hay avisos de doctrina: marca «Entiendo, rompo la regla» para seguir, o corrige la orden.'; return;
   }
+  if ((_ord.broker || 'etrade') === 'schwab') return ordenPreviewSchwab(f, av, err, btn);
   // 1) credenciales de E*TRADE (viven en este dispositivo) — antes del PIN,
   //    para no hacer teclear el PIN si falta el login diario
   const cr = etCreds();
@@ -2267,7 +2592,38 @@ async function ordenPreview() {
   } catch (e) {
     err.textContent = String((e && e.message) || e);
   }
-  btn.disabled = false; btn.textContent = 'Vista previa en E*TRADE';
+  btn.disabled = false; btn.textContent = textoBotonPreview(_ord && _ord.broker);
+}
+// Schwab NO tiene vista previa en su API: la «revisión» es local (misma fila
+// 'preview' en la bitácora, mismo reloj de 3 min, mismo PIN al enviar).
+async function ordenPreviewSchwab(f, av, err, btn) {
+  if (!swCreds()) { err.textContent = 'Conecta Schwab primero: Cuentas → Charles Schwab → Conectar (login semanal).'; return; }
+  if (swVencido()) { err.textContent = 'El login semanal de Schwab caducó. Reconecta en Cuentas → Charles Schwab.'; return; }
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid) { err.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
+  pintarArmadoOrden();
+  btn.disabled = true; btn.textContent = 'Revisando…';
+  const pre = _ord.pre || {};
+  const proposito = propositoDe(f);
+  const orden = construirOrdenSchwab(f);
+  const rango = _ord.ctx && _ord.ctx.rangos[f.symbol] || null;
+  const semaforo = (f.tipo !== 'EQ' && f.accion !== 'venta' && f.priceType === 'LIMIT') ? semaforoRango(Number(f.limitPrice), rango) : null;
+  const extra = { proposito, senal_id: pre.senal_id || null, posicion_id: (f.accion === 'venta' && pre.posicion_id) ? pre.posicion_id : null };
+  try {
+    const hash = await swCuenta();
+    const fila = { ...filaOrdenSchwab({ ...f, clientOrderId: clientOrderIdNuevo() }, orden, extra), user_id: uid, estado: 'preview', overrides: av,
+      preview: { _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null, gtc_auto: f.accion !== 'venta' && !!($('#oGtcAuto') && $('#oGtcAuto').checked), local: true },
+        orden: recortarJson(orden, 3000), total: totalOrden(f) } };
+    const ins = await sb.from('ordenes').insert(fila).select('id').single();
+    if (ins.error) throw new Error('No pude guardar la revisión: ' + ins.error.message);
+    Object.assign(_ord, { f, orden, previewIds: [{ local: true }], filaId: ins.data.id, estadoFila: 'preview', indeterminado: false, accountIdKey: hash, caduca: Date.now() + PREVIEW_SEG * 1000 });
+    pintarPreviewOrden({ _local: true, estimatedTotalAmount: totalOrden(f),
+      Order: [{ messages: { Message: [{ description: `Schwab no ofrece vista previa: al tocar «Enviar», la orden entra directo a tu cuenta de Schwab (${orden.orderLegCollection[0].instrument.symbol.trim()}).` }] } }] });
+    bloquearFormOrden(true);
+  } catch (e) {
+    err.textContent = String((e && e.message) || e);
+  }
+  btn.disabled = false; btn.textContent = textoBotonPreview('schwab');
 }
 function pintarPreviewOrden(P) {
   const box = $('#oPrev'); if (!box || !_ord) return;
@@ -2276,7 +2632,7 @@ function pintarPreviewOrden(P) {
   const n = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : (Number(v) < 0 ? '-$' : '$') + Math.abs(Number(v)).toFixed(2);
   box.innerHTML = `<div class="prevbox">
     <div class="fila"><span class="mut">Costo estimado</span><b class="mono">${n(P.estimatedTotalAmount)}</b></div>
-    <div class="fila"><span class="mut">Comisión</span><b class="mono">${n(P.estimatedCommission)}</b></div>
+    ${P._local ? '' : `<div class="fila"><span class="mut">Comisión</span><b class="mono">${n(P.estimatedCommission)}</b></div>`}
     ${P.estimatedFees != null && Number(P.estimatedFees) ? `<div class="fila"><span class="mut">Tarifas</span><b class="mono">${n(P.estimatedFees)}</b></div>` : ''}
     ${P.totalOrderValue != null ? `<div class="fila"><span class="mut">Valor de la orden</span><b class="mono">${n(P.totalOrderValue)}</b></div>` : ''}
     ${msgs.length ? `<div class="mut" style="margin-top:6px;font-size:11.5px">${msgs.map(esc).join('<br>')}</div>` : ''}
@@ -2312,6 +2668,7 @@ async function ordenPlace() {
   if (!armadoHasta() && !(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
   // el PIN pudo tardar: la vista previa debe seguir vigente
   if (!_ord.previewIds || Date.now() > _ord.caduca) { err.textContent = 'La vista previa caducó mientras tecleabas el PIN. Vuelve a previsualizar.'; return; }
+  if ((_ord.broker || 'etrade') === 'schwab') return ordenPlaceSchwab(err, b);
   const cr = etCreds();
   if (!cr) { err.textContent = 'Conecta E*TRADE primero.'; return; }
   const id = _ord.filaId, ahora = () => new Date().toISOString();
@@ -2365,6 +2722,55 @@ async function ordenPlace() {
   }
 }
 
+// Envío a Schwab: POST directo (201 + id en Location). Misma semántica de
+// rechazo/indeterminado que E*TRADE: solo es rechazo si habló Schwab (400 con
+// message/errors) o el proxy paró ANTES (400/403 con {error}).
+async function ordenPlaceSchwab(err, b) {
+  const id = _ord.filaId, ahora = () => new Date().toISOString();
+  const anotar = async (estado, extra) => {
+    if (!id) return null;
+    const { error } = await sb.from('ordenes').update(Object.assign({ estado, actualizado_at: ahora() }, extra || {})).eq('id', id);
+    if (!error && _ord) _ord.estadoFila = estado;
+    return error || null;
+  };
+  b.disabled = true; b.textContent = 'Enviando a Schwab…';
+  let r = null, indeterminado = false;
+  try {
+    r = await swPost('/schwab/orden/place', { hash: _ord.accountIdKey, orden: _ord.orden });
+    const d = r.data || {};
+    const em = swMensajeError(r);
+    if (r.status === 401) throw new Error('La sesión de Schwab caducó — reconecta en Cuentas → Charles Schwab.');
+    const paroProxy = [400, 403].includes(r.status) && !!d.error;
+    const habloSchwab = (r.status === 200 && d.orderId != null) || (r.status === 400 && !!(d.message || d.errors));
+    if (r.status >= 500 || (!habloSchwab && !paroProxy)) {
+      indeterminado = true;
+      throw new Error('Sin respuesta clara de Schwab al enviar (HTTP ' + r.status + ').');
+    }
+    if (r.status >= 400 || d.orderId == null) {
+      await anotar('rechazada', { respuesta: recortarJson(d, 4096) });
+      throw new Error(em || 'Schwab no confirmó la orden (HTTP ' + r.status + ').');
+    }
+    const datos = { orden_id_ext: String(d.orderId), respuesta: recortarJson(d, 4096) };
+    let e2 = await anotar('enviada', datos);
+    if (e2) e2 = await anotar('enviada', datos);
+    if (e2) toast('Orden #' + d.orderId + ' enviada a Schwab, pero no pude anotarla: verifícala en Schwab');
+    if (_ord.timer) clearInterval(_ord.timer);
+    toast('Orden enviada a Schwab');
+    cerrarOrden(); ruta();
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (!r || indeterminado) {
+      if (_ord) _ord.indeterminado = true;
+      try { await anotar('error', { respuesta: { error: msg, nota: 'sin respuesta clara al enviar: verifica en Schwab' } }); } catch (_) {}
+      err.textContent = msg + ' Verifica en Schwab si la orden entró ANTES de reintentar.';
+      b.disabled = true; b.textContent = 'Verifica en Schwab';
+      return;
+    }
+    err.textContent = msg;
+    b.disabled = false; b.textContent = 'Enviar orden';
+  }
+}
+
 // ---- Copiloto: ÓRDENES EN E*TRADE ----
 function seccionOrdenes(filas) {
   const sinc = _ordSync.err ? `<span style="color:var(--rojo)">sin consultar E*TRADE: ${esc(_ordSync.err)}</span>`
@@ -2378,8 +2784,8 @@ function seccionOrdenes(filas) {
 // PARCIAL según el último detalle sincronizado); 'error' = no se pudo confirmar.
 function etiquetaOrden(o) {
   const det = (((o.respuesta || {})._etrade || {}).OrderDetail || [])[0] || {};
-  const st = String(det.status || '').toUpperCase();
-  if (o.estado === 'enviada') return st === 'CANCEL_REQUESTED' ? 'CANCELANDO' : st === 'PARTIAL' ? 'PARCIAL' : 'ACTIVA';
+  const st = String((((o.respuesta || {})._vivo || {}).status) || det.status || '').toUpperCase();
+  if (o.estado === 'enviada') return (st === 'CANCEL_REQUESTED' || st === 'PENDING_CANCEL') ? 'CANCELANDO' : st === 'PARTIAL' ? 'PARCIAL' : 'ACTIVA';
   if (o.estado === 'error') return 'VERIFICA';
   return String(o.estado || '').toUpperCase();
 }
@@ -2393,18 +2799,19 @@ function tarjetaOrden(o) {
   const prop = { entrada: 'entrada', salida_gtc: 'salida GTC', salida_stop: 'salida stop', cancelar: 'cancelar', otro: 'otra' }[o.proposito] || o.proposito;
   const ov = Array.isArray(o.overrides) ? o.overrides : [];
   return `<div class="card">
-    <div class="fila"><span class="chip ${chip}">${esc(etiquetaOrden(o))}</span>
+    <div class="fila"><span><span class="chip ${chip}">${esc(etiquetaOrden(o))}</span>${o.broker && o.broker !== 'etrade' ? ` <span class="chip c-esp">${esc(BROKER_NOMBRE[o.broker] || o.broker)}</span>` : ''}</span>
       <span class="fresco">${esc(fmtFechaNY(o.creado_at, true))} NY</span></div>
     ${o.estado === 'error' ? `<div class="mut" style="margin-top:4px;color:var(--rojo);font-size:11px">No se pudo confirmar si E*TRADE la recibió: revísala en la app de E*TRADE antes de repetirla.</div>` : ''}
     ${o.estado === 'enviada' && /^BUY/.test(String(o.accion || '')) && o.limit_price ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">${((o.preview || {})._mz || {}).gtc_auto === false ? 'Cuando se llene, la Mesa te abre la venta GTC' : 'Cuando se llene, la Mesa ENVÍA sola la venta GTC'} +${PLAN_PCT}% (≈ $${gtcDe(Number(o.limit_price)).toFixed(2)})${((o.preview || {})._mz || {}).gtc_auto === false ? ' lista para enviar' : ' (te pide el PIN si está desarmado)'}.</div>` : ''}
     <div class="fila" style="margin-top:6px"><b style="font-size:13.5px">${esc(contrato)}</b>
       <span class="mut mono">${esc(o.accion)} ×${esc(Number(o.cantidad))}</span></div>
     <div class="fila" style="margin-top:3px"><span class="mut">${esc(prop)} · ${precio} · ${o.order_term === 'GOOD_UNTIL_CANCEL' ? 'GTC' : 'DAY'}${o.orden_id_ext ? ' · #' + esc(o.orden_id_ext) : ''}</span>
-      ${o.estado === 'enviada' && o.orden_id_ext ? `<button class="btnsec" style="flex:none;padding:7px 12px" onclick="MZ.cancelarOrden(${Number(o.id)}, '${esc(o.orden_id_ext)}')">Cancelar</button>` : ''}</div>
+      ${o.estado === 'enviada' && o.orden_id_ext ? `<button class="btnsec" style="flex:none;padding:7px 12px" onclick="MZ.cancelarOrden(${Number(o.id)}, '${esc(o.orden_id_ext)}', '${esc(o.broker || 'etrade')}')">Cancelar</button>` : ''}</div>
     ${ov.length ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">override: ${esc(ov.join(' · '))}</div>` : ''}
   </div>`;
 }
-async function cancelarOrden(id, orderId) {
+async function cancelarOrden(id, orderId, broker) {
+  if (broker === 'schwab') return cancelarOrdenSchwab(id, orderId);
   if (!confirm('¿Cancelar en E*TRADE la orden #' + orderId + '?')) return;
   const cr = etCreds();
   if (!cr) { toast('Conecta E*TRADE primero'); return; }
@@ -2428,6 +2835,49 @@ async function cancelarOrden(id, orderId) {
 // Cruza las órdenes 'enviadas' con E*TRADE (abiertas + ejecutadas de los últimos
 // 7 días) y actualiza estados; una ENTRADA ejecutada crea la posición y una
 // SALIDA ejecutada cierra la suya.
+async function cancelarOrdenSchwab(id, orderId) {
+  if (!confirm('¿Cancelar en Schwab la orden #' + orderId + '?')) return;
+  if (!swCreds()) { toast('Conecta Schwab primero'); return; }
+  if (swVencido()) { toast('Login semanal de Schwab caducado — reconecta'); return; }
+  toast('Cancelando en Schwab…');
+  try {
+    const hash = await swCuenta();
+    const r = await swPost('/schwab/orden/cancel', { hash, orderId: String(orderId) });
+    const em = swMensajeError(r);
+    if (r.status === 401) { toast('La sesión de Schwab caducó — reconecta en Cuentas'); return; }
+    if (r.status >= 400 || em) { toast('Schwab: ' + (em || 'HTTP ' + r.status)); ordenesActualizar({ silencioso: true, forzar: true }); return; }
+    await sb.from('ordenes').update({ estado: 'cancelada', respuesta: recortarJson(r.data || {}, 2048), actualizado_at: new Date().toISOString() }).eq('id', id);
+    toast('Orden cancelada');
+    ruta();
+    setTimeout(() => ordenesActualizar({ silencioso: true, forzar: true }), 4000);
+  } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); }
+}
+// Estado normalizado de una orden remota (E*TRADE o Schwab) para la sincronización:
+// {st, nuevo, qty, fill, ejecutadaAt, vivo}. `nuevo` null = sigue activa.
+function normalizarRemota(broker, rem) {
+  if (broker === 'schwab') {
+    const st = String(rem.status || '').toUpperCase();
+    const nuevo = st === 'FILLED' ? 'ejecutada' : st === 'CANCELED' ? 'cancelada' : st === 'EXPIRED' ? 'expirada' : st === 'REJECTED' ? 'rechazada' : null;
+    let qty = 0, costo = 0;
+    for (const act of (rem.orderActivityCollection || [])) for (const el of (act.executionLegs || [])) {
+      const q = Number(el.quantity) || 0, p = Number(el.price);
+      if (q > 0 && Number.isFinite(p)) { qty += q; costo += q * p; }
+    }
+    const fill = qty > 0 ? Math.round(costo / qty * 10000) / 10000 : Number(rem.price);
+    if (!(qty > 0)) qty = Number(rem.filledQuantity) || 0;
+    const t = rem.closeTime || rem.enteredTime;
+    const ejecutadaAt = t && !isNaN(new Date(t)) ? new Date(t).toISOString() : new Date().toISOString();
+    return { st, nuevo, qty, fill, ejecutadaAt, vivo: st === 'PENDING_CANCEL' ? 'CANCEL_REQUESTED' : st };
+  }
+  const det = (Array.isArray(rem.OrderDetail) ? rem.OrderDetail[0] : rem.OrderDetail) || {};
+  const st = String(det.status || '').toUpperCase();
+  const insts = Array.isArray(det.Instrument) ? det.Instrument : (det.Instrument ? [det.Instrument] : []);
+  let qty = 0, costo = 0;
+  for (const i of insts) { const q = Number(i.filledQuantity) || 0, p = Number(i.averageExecutionPrice); if (q > 0 && Number.isFinite(p)) { qty += q; costo += q * p; } }
+  const fill = qty > 0 ? Math.round(costo / qty * 10000) / 10000 : Number((insts[0] || {}).averageExecutionPrice);
+  const ejecutadaAt = det.executedTime ? new Date(Number(det.executedTime)).toISOString() : new Date().toISOString();
+  return { st, nuevo: estadoLocalDe(st), qty, fill, ejecutadaAt, vivo: st };
+}
 // Sincroniza las órdenes 'enviada' con el estado REAL en E*TRADE. Manual (enlace
 // «Actualizar ahora») o silenciosa (al abrir Copiloto, cada 60 s mientras haya
 // activas, al volver del fondo y tras cancelar). Dos fases para no castigar la
@@ -2454,9 +2904,8 @@ async function ordenesActualizar(opts) {
   const op = opts || {}, silencioso = !!op.silencioso;
   const aviso = (t) => { if (!silencioso) toast(t); };
   if (silencioso && (_ordSync.enCurso || (!op.forzar && Date.now() - _ordSync.ts < ORD_SYNC_MS))) return;
-  const cr = etCreds();
-  if (!cr) { aviso('Conecta E*TRADE primero'); return; }
-  if (etDiaVencido()) { aviso('Sesión de E*TRADE expirada — reconecta'); return; }
+  const cr = etCreds(), puedeEt = !!cr && !etDiaVencido(), puedeSw = !!swCreds() && !swVencido();
+  if (!puedeEt && !puedeSw) { aviso((cr || swCreds()) ? 'Sesión del bróker caducada — reconecta en Cuentas' : 'Conecta E*TRADE o Schwab primero'); return; }
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
   if (!uid) { aviso('Sin sesión. Sal y vuelve a entrar.'); return; }
   const { data, error } = await sb.from('ordenes').select('*').eq('estado', 'enviada').not('orden_id_ext', 'is', null);
@@ -2466,39 +2915,53 @@ async function ordenesActualizar(opts) {
   aviso('Consultando E*TRADE…');
   _ordSync.enCurso = true;
   try {
-    const accountIdKey = await etCuentaKey(cr);
-    const mmdd = (ymd) => ymd.slice(5, 7) + ymd.slice(8, 10) + ymd.slice(0, 4);
     // rango: desde la enviada más antigua (−1 día), con tope de 30 días
     const masVieja = data.map(o => o.creado_at).sort()[0];
     const desdeMs = Math.max(Date.now() - 30 * 86400000, new Date(masVieja).getTime() - 86400000);
-    const hoy = hoyNY(), desde = ymdNY(new Date(desdeMs).toISOString());
-    const rango = { fromDate: mmdd(desde), toDate: mmdd(hoy), count: 100 };
-    const lista = (r) => { const d = r.data || {}, O = d.OrdersResponse || d; const a = O.Order || []; return Array.isArray(a) ? a : (a ? [a] : []); };
-    const remotas = {};
-    const pedir = async (estados, conRango) => {
-      const rs = await Promise.all(estados.map(s => etPost(cr, '/etrade/ordenes',
-        { accountIdKey, query: conRango ? { status: s, ...rango } : { status: s, count: 100 } })));
-      for (const r of rs) {
-        const em = mensajeError(r);
-        if (r.status === 401) throw new Error(texto401Ordenes(em));
-        if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status);
-        for (const x of lista(r)) if (x && x.orderId != null) remotas[String(x.orderId)] = x;
-      }
-    };
-    await pedir(ORD_ESTADOS_VIVOS, false);                                         // fase 1: lo que sigue vivo
-    if (data.some(l => !remotas[String(l.orden_id_ext)])) await pedir(ORD_ESTADOS_FINALES, true);   // fase 2: solo si alguna desapareció
+    const et = data.filter(l => (l.broker || 'etrade') === 'etrade'), sw = data.filter(l => l.broker === 'schwab');
+    const remotas = {};                                     // 'broker:orderId' → orden remota
+    if (et.length && puedeEt) {
+      const accountIdKey = await etCuentaKey(cr);
+      const mmdd = (ymd) => ymd.slice(5, 7) + ymd.slice(8, 10) + ymd.slice(0, 4);
+      const hoy = hoyNY(), desde = ymdNY(new Date(desdeMs).toISOString());
+      const rango = { fromDate: mmdd(desde), toDate: mmdd(hoy), count: 100 };
+      const lista = (r) => { const d = r.data || {}, O = d.OrdersResponse || d; const a = O.Order || []; return Array.isArray(a) ? a : (a ? [a] : []); };
+      const pedir = async (estados, conRango) => {
+        const rs = await Promise.all(estados.map(s => etPost(cr, '/etrade/ordenes',
+          { accountIdKey, query: conRango ? { status: s, ...rango } : { status: s, count: 100 } })));
+        for (const r of rs) {
+          const em = mensajeError(r);
+          if (r.status === 401) throw new Error(texto401Ordenes(em));
+          if (r.status >= 400 || em) throw new Error(em || 'HTTP ' + r.status);
+          for (const x of lista(r)) if (x && x.orderId != null) remotas['etrade:' + String(x.orderId)] = x;
+        }
+      };
+      await pedir(ORD_ESTADOS_VIVOS, false);                                         // fase 1: lo que sigue vivo
+      if (et.some(l => !remotas['etrade:' + String(l.orden_id_ext)])) await pedir(ORD_ESTADOS_FINALES, true);   // fase 2: solo si alguna desapareció
+    }
+    if (sw.length && puedeSw) {
+      // Schwab: una sola consulta por rango de fechas trae todos los estados
+      const hash = await swCuenta();
+      const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, '.000Z');
+      const r = await swPost('/schwab/ordenes', { hash, query: { fromEnteredTime: iso(desdeMs), toEnteredTime: iso(Date.now() + 86400000), maxResults: 200 } });
+      const em = swMensajeError(r);
+      if (r.status === 401) throw new Error('La sesión de Schwab caducó — reconecta en Cuentas → Charles Schwab.');
+      if (r.status >= 400 || em) throw new Error('Schwab: ' + (em || 'HTTP ' + r.status));
+      for (const x of (Array.isArray(r.data) ? r.data : [])) if (x && x.orderId != null) remotas['schwab:' + String(x.orderId)] = x;
+    }
     let cambios = 0, nuevasPosiciones = 0;
     for (const loc of data) {
-      const rem = remotas[String(loc.orden_id_ext)]; if (!rem) continue;
-      const det = (Array.isArray(rem.OrderDetail) ? rem.OrderDetail[0] : rem.OrderDetail) || {};
-      const st = String(det.status || '').toUpperCase();
-      const nuevo = estadoLocalDe(st);
+      const brokerLoc = loc.broker || 'etrade';
+      const rem = remotas[brokerLoc + ':' + String(loc.orden_id_ext)]; if (!rem) continue;
+      const nr = normalizarRemota(brokerLoc, rem);
+      const nuevo = nr.nuevo;
       if (!nuevo) {
-        // sigue activa (OPEN / CANCEL_REQUESTED / PARTIAL): se guarda el detalle solo si
-        // cambió, para que la tarjeta diga ACTIVA / CANCELANDO / PARCIAL
-        const prev = ((((loc.respuesta || {})._etrade || {}).OrderDetail) || [])[0] || {};
-        if (String(prev.status || '').toUpperCase() !== st) {
-          const resp = Object.assign({}, loc.respuesta || {}, { _etrade: recortarJson(rem, 3000) });
+        // sigue activa (OPEN / CANCEL_REQUESTED / PARTIAL / WORKING…): se guarda el estado
+        // vivo solo si cambió, para que la tarjeta diga ACTIVA / CANCELANDO / PARCIAL
+        const prev = String((((loc.respuesta || {})._vivo || {}).status) || (((((loc.respuesta || {})._etrade || {}).OrderDetail) || [])[0] || {}).status || '').toUpperCase();
+        if (prev !== nr.vivo) {
+          const resp = Object.assign({}, loc.respuesta || {}, { _vivo: { status: nr.vivo, ts: new Date().toISOString() } });
+          if (brokerLoc === 'etrade') resp._etrade = recortarJson(rem, 3000);
           const { error: e3 } = await sb.from('ordenes').update({ respuesta: resp, actualizado_at: new Date().toISOString() }).eq('id', loc.id);
           if (!e3) cambios++;
         }
@@ -2506,20 +2969,17 @@ async function ordenesActualizar(opts) {
       }
       const upd = { estado: nuevo, respuesta: recortarJson(rem, 4096), actualizado_at: new Date().toISOString() };
       if (nuevo === 'ejecutada') {
-        // varios fills: cantidad = suma; precio = promedio ponderado
-        const insts = Array.isArray(det.Instrument) ? det.Instrument : (det.Instrument ? [det.Instrument] : []);
-        let qty = 0, costo = 0;
-        for (const i of insts) { const q = Number(i.filledQuantity) || 0, p = Number(i.averageExecutionPrice); if (q > 0 && Number.isFinite(p)) { qty += q; costo += q * p; } }
-        let fill = qty > 0 ? Math.round(costo / qty * 10000) / 10000 : Number((insts[0] || {}).averageExecutionPrice);
+        // varios fills: cantidad = suma; precio = promedio ponderado (normalizarRemota)
+        let qty = nr.qty, fill = nr.fill;
         if (!(qty > 0)) qty = Number(loc.cantidad) || 1;
-        const ejecutadaAt = det.executedTime ? new Date(Number(det.executedTime)).toISOString() : new Date().toISOString();
+        const ejecutadaAt = nr.ejecutadaAt;
         const esVenta = /^SELL/.test(String(loc.accion || ''));
         if (!esVenta && loc.proposito === 'entrada' && !loc.posicion_id && fill > 0 && loc.security_type === 'OPTN' && loc.direccion) {
           const mz = (loc.preview && loc.preview._mz) || {};
           const sem = ['ok', 'aviso', 'alto'].includes(mz.semaforo) ? mz.semaforo
             : (loc.overrides || []).some(t => /FUERA del rango/.test(String(t))) ? 'alto' : null;
           const p = { user_id: uid, symbol: loc.symbol, direccion: loc.direccion, strike: loc.strike, expiracion: loc.expiracion,
-            contratos: qty, prima_fill: fill, plan_pct: PLAN_PCT, broker: 'etrade', senal_id: loc.senal_id || null,
+            contratos: qty, prima_fill: fill, plan_pct: PLAN_PCT, broker: brokerLoc, senal_id: loc.senal_id || null,
             abierta_at: ejecutadaAt, abierta_fecha_ny: ymdNY(ejecutadaAt) || hoyNY(),
             entrada_semaforo: sem, fuera_de_rango: sem === 'alto' };
           const pi = await sb.from('posiciones').insert(p).select('id').single();
