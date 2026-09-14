@@ -12,7 +12,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => (
   { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
-const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY'];
+const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'SPX'];   // QQQ y SPX: pedido de Andrés 2026-09-13
 const TABS = [
   { id: 'informe',    lbl: 'Informe',    icon: 'M4 5h13v14H6a2 2 0 0 1-2-2z M17 8h3v9a2 2 0 0 1-2 2h-1 M7.5 9h6M7.5 12.5h6M7.5 16h6' },
   { id: 'tickers',    lbl: 'Tickers',    icon: 'M6 5.5v13 M12 3.5v15 M18 7.5v11' },
@@ -254,15 +254,20 @@ function lunesNY() {
 
 async function vistaCopiloto() {
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
-  const [sen, pos, bt, ord] = await Promise.all([
+  const [sen, pos, bt, ord, gt] = await Promise.all([
     sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }),
     sb.from('posiciones').select('*').order('abierta_at', { ascending: false }),
     sb.from('broker_trades').select('*'),
     sb.from('ordenes').select('*').in('estado', ['enviada', 'error']).order('creado_at', { ascending: false }).limit(20),   // solo ACTIVAS (y las que no se pudo confirmar)
+    sb.from('ordenes').select('posicion_id,estado').eq('proposito', 'salida_gtc').in('estado', ['enviada', 'ejecutada', 'preview']),
   ]);
   const senales = sen.data || [];
   const posic = pos.data || [];
   const abiertas = posic.filter(p => p.estado === 'abierta');
+  // GTC pendiente: posición abierta sin su venta límite del 35% en E*TRADE
+  const pendGtc = gtcPendientes(abiertas, (gt && gt.data) || []);
+  const pendIds = new Set(pendGtc.map(p => p.id));
+  abiertas.forEach(p => { p._gtcPendiente = pendIds.has(p.id); });
   // Mismo cupo que Disciplina: manual + bróker, deduplicado.
   const semana = unirOperaciones(posic, bt.data || []).ops.filter(p => (p.abierta_fecha_ny || '') >= lunesNY());
   let h = '';
@@ -300,6 +305,31 @@ async function vistaCopiloto() {
   $('#vista').innerHTML = h;
   // sincronización silenciosa con E*TRADE (cada 60 s mientras haya activas; ruta() corre cada 60 s)
   if ((ord.data || []).some(x => x.estado === 'enviada' && x.orden_id_ext)) ordenesActualizar({ silencioso: true });
+  // GTC AUTOMÁTICO (doctrina: «al llenarte pon YA tu venta límite GTC»): si hay una
+  // posición recién llenada sin GTC, se abre la orden de salida ya llena y
+  // previsualizada; solo falta tu toque en «Enviar orden» (y el PIN si no está armado).
+  abrirGtcAutomatico(pendGtc);
+}
+// Posiciones abiertas (con strike, expiración y fill) que no tienen una venta
+// límite GTC anotada (enviada/ejecutada/preview) → hay que ponerla.
+function gtcPendientes(abiertas, ordenesGtc) {
+  const con = new Set((ordenesGtc || []).filter(o => o.posicion_id != null && o.estado !== 'preview').map(o => String(o.posicion_id)));
+  return (abiertas || []).filter(p => p && p.estado === 'abierta' && Number(p.prima_fill) > 0 && p.strike != null && p.expiracion
+    && (!p.broker || p.broker === 'etrade') && !con.has(String(p.id)));
+}
+const GTC_AUTO_K = 'mz_gtc_auto';
+function gtcAutoYaAbierto(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); return !!m[String(id)]; } catch (_) { return false; } }
+function gtcAutoMarcar(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); m[String(id)] = Date.now(); localStorage.setItem(GTC_AUTO_K, JSON.stringify(m)); } catch (_) {} }
+function abrirGtcAutomatico(pendientes) {
+  if (!pendientes || !pendientes.length) return;
+  if (document.querySelector('.modal')) return;                 // no pisar otro cuadro abierto
+  const p = pendientes.find(x => !gtcAutoYaAbierto(x.id));
+  if (!p) return;
+  gtcAutoMarcar(p.id);                                          // una vez por posición y equipo
+  const pre = preSalida(p, 'salida_gtc');
+  abrirOrden(pre);
+  toast(`Fill ${p.symbol} ${p.direccion} ${p.strike} ×${Number(p.contratos) || 1} a $${Number(p.prima_fill).toFixed(2)}: GTC +${PLAN_PCT}% a $${gtcDe(Number(p.prima_fill)).toFixed(2)} — revisa y envía`);
+  setTimeout(() => { if (_ord && $('#modalOrden') && !_ord.orden) ordenPreview(); }, 900);   // vista previa automática (sin PIN)
 }
 
 // Ticket armado por el worker en la señal (payload.ticket: strike/exp/ask del
@@ -374,7 +404,7 @@ function tarjetaPosicion(p) {
       <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
       <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button></div>
     ${(!p.broker || p.broker === 'etrade') ? `<div class="fila" style="margin-top:8px;gap:8px">
-      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45)" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>GTC +${PLAN_PCT}% ($${esc(gtcDe(Number(p.prima_fill)).toFixed(2))})</button>
+      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45)${p._gtcPendiente ? ';background:rgba(231,181,77,.14);font-weight:700' : ''}" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>${p._gtcPendiente ? '⚠ PON TU GTC' : 'GTC'} +${PLAN_PCT}% ($${esc(gtcDe(Number(p.prima_fill)).toFixed(2))})</button>
       <button class="btnsec" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_stop')).replace(/'/g, "&#39;")})'>Trailing stop</button></div>` : ''}
   </div>`;
 }
@@ -1491,8 +1521,10 @@ function bandaDelDia(rango, dia) {
 // Rango óptimo del ticker para la app: manda el MÉTODO DE LA ACADEMIA
 // (ticker_estado.payload.rango_academia, ver rango_academia.py del worker); el
 // rango por delta (rango_vivo) queda de referencia y aporta exp/strikes sugeridos.
-function componerRango(rv, ra) {
+function componerRango(rv, ra, tabla) {
   if (ra && ra.lo != null && ra.hi != null) return Object.assign({}, rv || {}, { lo: Number(ra.lo), hi: Number(ra.hi), fuente: 'academia', academia: ra, delta: rv || null });
+  // sin ejercicio válido del worker (p. ej. SPY hasta su primer ejercicio canónico): manda la TABLA de la academia
+  if (tabla && tabla[0] != null) return Object.assign({}, rv || {}, { lo: Number(tabla[0]), hi: Number(tabla[1]), fuente: 'tabla', academia: null, delta: rv || null });
   if (rv) return Object.assign({}, rv, { fuente: 'delta', academia: null, delta: rv });
   return null;
 }
@@ -1527,7 +1559,10 @@ function textoRangoOrden(sym, vivo, tabla, dia) {
   if (ra && ra.lo != null) {
     const fecha = ra.fecha ? esc(fmtFechaNY(String(ra.fecha) + 'T12:00:00Z')) : '';
     const el = Array.isArray(ra.elegidos) ? ra.elegidos.map(e => `${esc(e.strike)} (${d$(e.ask)}, +${esc(Math.round(Number(e.pct) || 0))}%)`).join(' y ') : '';
-    partes.push(`<b style="color:var(--oro)">Rango óptimo ${d$(ra.lo)}–${d$(ra.hi)}</b> por contrato · método de la academia · con ${esc(String(ra.lado || '').toUpperCase())}s${fecha ? ' del ' + fecha : ''}${ra.exp ? ' · exp ' + esc(String(ra.exp).slice(5)) : ''}${el ? ' · más valorizados: ' + el : ''}`);
+    const tipo = ra.dia_tipo === 'fuerte' ? ` · día fuerte (${esc(Number(ra.mov_pct) > 0 ? '+' : '')}${esc(ra.mov_pct)}%)` : ra.dia_tipo === 'canonico' ? ' · ejercicio de las 11:45' : '';
+    partes.push(`<b style="color:var(--oro)">Rango óptimo ${d$(ra.lo)}–${d$(ra.hi)}</b> por contrato · método de la academia · con ${esc(String(ra.lado || '').toUpperCase())}s${fecha ? ' del ' + fecha : ''}${tipo}${ra.exp ? ' · exp ' + esc(String(ra.exp).slice(5)) : ''}${el ? ' · más valorizados: ' + el : ''}`);
+  } else if (vivo && vivo.fuente === 'tabla') {
+    partes.push(`<b style="color:var(--oro)">Rango óptimo ${d$(vivo.lo)}–${d$(vivo.hi)}</b> por contrato · tabla de la academia (el worker hace el ejercicio del curso a las 11:45 ET)`);
   } else {
     partes.push('Rango óptimo (método academia): el worker aún no lo calculó para ' + esc(sym));
   }
@@ -1996,7 +2031,7 @@ function pintarCadena() {
   const sel = vs.length ? `<select id="oCadExp" onchange="MZ.cadenaExp(this.value)" style="width:auto;padding:5px 7px;font-size:12px">${
     vs.slice(0, 14).map(v => `<option value="${v.ymd}" ${v.ymd === _ord.cadenaExp ? 'selected' : ''}>${v.ymd.slice(5)}${/WEEK/i.test(v.tipo) ? ' s' : ''}</option>`).join('')}</select>` : '';
   const rango = (_ord.ctx && _ord.ctx.rangos[f.symbol]) || null;
-  const rangoTxt = rango && rango.lo != null ? ` · rango óptimo $${Math.round(rango.lo)}–$${Math.round(rango.hi)}${rango.fuente === 'academia' ? ' (academia)' : ' (delta)'}` : '';
+  const rangoTxt = rango && rango.lo != null ? ` · rango óptimo $${Math.round(rango.lo)}–$${Math.round(rango.hi)}${rango.fuente === 'academia' ? ' (método academia)' : rango.fuente === 'tabla' ? ' (tabla academia)' : ' (delta)'}` : '';
   let h = `<div class="cadena"><div class="fila" style="margin-bottom:4px">
     <span class="mut"><b style="color:var(--tx)">${esc(f.symbol)}</b> ${q.last != null ? '$' + q.last.toFixed(2) : ''} ${(q.bid != null && q.ask != null) ? `<span class="fresco">${q.bid.toFixed(2)}/${q.ask.toFixed(2)}</span>` : ''} ${vivo}</span>
     <span style="display:flex;gap:8px;align-items:center">${sel}<a href="#" onclick="MZ.cadenaRefrescar();return false" style="font-size:13px">↻</a></span></div>`;
@@ -2060,7 +2095,7 @@ async function cargarCtxOrden() {
   const est = te.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
   const rangos = {};
-  est.forEach(e => { const p = e.payload || {}; rangos[e.symbol] = componerRango(p.rango_vivo || null, p.rango_academia || null); });
+  est.forEach(e => { const p = e.payload || {}; rangos[e.symbol] = componerRango(p.rango_vivo || null, p.rango_academia || null, RANGOS_TABLA[e.symbol] || null); });
   const lun = lunesNY();
   const opsSemana = unirOperaciones(pos.data || [], bt.data || []).ops.filter(p => (p.abierta_fecha_ny || '') >= lun).length;
   // saldo por bróker (una fila por bróker en cuenta_snapshots) + total
@@ -2163,8 +2198,8 @@ async function ordenPreview() {
   if (etDiaVencido()) { err.textContent = 'La sesión de E*TRADE expiró a medianoche ET. Reconecta en Cuentas → E*TRADE.'; return; }
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
   if (!uid) { err.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
-  // 2) armado por PIN (sin PIN configurado → se crea aquí mismo)
-  if (!(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
+  // 2) la vista previa NO pide PIN (no coloca nada en E*TRADE); el PIN arma el ENVÍO
+  //    (ordenPlace). Así el GTC automático tras un fill queda previsualizado sin fricción.
   pintarArmadoOrden();
   btn.disabled = true; btn.textContent = 'Consultando E*TRADE…';
   const pre = _ord.pre || {};
@@ -2415,7 +2450,7 @@ async function ordenesActualizar(opts) {
     };
     await pedir(ORD_ESTADOS_VIVOS, false);                                         // fase 1: lo que sigue vivo
     if (data.some(l => !remotas[String(l.orden_id_ext)])) await pedir(ORD_ESTADOS_FINALES, true);   // fase 2: solo si alguna desapareció
-    let cambios = 0;
+    let cambios = 0, nuevasPosiciones = 0;
     for (const loc of data) {
       const rem = remotas[String(loc.orden_id_ext)]; if (!rem) continue;
       const det = (Array.isArray(rem.OrderDetail) ? rem.OrderDetail[0] : rem.OrderDetail) || {};
@@ -2451,7 +2486,7 @@ async function ordenesActualizar(opts) {
             abierta_at: ejecutadaAt, abierta_fecha_ny: ymdNY(ejecutadaAt) || hoyNY(),
             entrada_semaforo: sem, fuera_de_rango: sem === 'alto' };
           const pi = await sb.from('posiciones').insert(p).select('id').single();
-          if (!pi.error && pi.data) upd.posicion_id = pi.data.id;
+          if (!pi.error && pi.data) { upd.posicion_id = pi.data.id; nuevasPosiciones++; }
         } else if (esVenta && loc.posicion_id && Number.isFinite(fill)) {
           const { data: pos } = await sb.from('posiciones').select('*').eq('id', loc.posicion_id).maybeSingle();
           if (pos && pos.estado === 'abierta') {
@@ -2475,6 +2510,7 @@ async function ordenesActualizar(opts) {
       if (!e2) cambios++;
     }
     _ordSync.ts = Date.now(); _ordSync.err = null;
+    if (nuevasPosiciones && location.hash !== '#/copiloto') { location.hash = '#/copiloto'; }   // fill nuevo: al Copiloto, donde se abre el GTC automático
     if (cambios) { toast(`${cambios} orden${cambios > 1 ? 'es' : ''} actualizada${cambios > 1 ? 's' : ''} desde E*TRADE`); ruta(); }
     else { aviso('Sin cambios en E*TRADE'); if (!silencioso) ruta(); }
   } catch (e) {
