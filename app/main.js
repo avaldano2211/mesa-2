@@ -12,7 +12,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => (
   { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
-const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'SPX'];   // QQQ y SPX: pedido de Andrés 2026-09-13
+const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'SPX', 'META'];   // QQQ y SPX: 2026-09-13; META: 2026-09-14
 const TABS = [
   { id: 'informe',    lbl: 'Informe',    icon: 'M4 5h13v14H6a2 2 0 0 1-2-2z M17 8h3v9a2 2 0 0 1-2 2h-1 M7.5 9h6M7.5 12.5h6M7.5 16h6' },
   { id: 'tickers',    lbl: 'Tickers',    icon: 'M6 5.5v13 M12 3.5v15 M18 7.5v11' },
@@ -1003,7 +1003,7 @@ function abrirFill(pre) {
     <h3 style="margin:0 0 2px">Registrar fill</h3>
     <div class="mut" style="margin-bottom:10px">La orden la pones en tu bróker. Aquí registras lo que se llenó.</div>
     <label>Ticker</label>
-    <select id="fSym">${['AAPL','TSLA','NVDA','SPY'].map(t =>
+    <select id="fSym">${TICKERS.map(t =>
       `<option ${pre.symbol===t?'selected':''}>${t}</option>`).join('')}</select>
     <label>Dirección</label>
     <select id="fDir"><option ${pre.direccion==='CALL'?'selected':''}>CALL</option>
