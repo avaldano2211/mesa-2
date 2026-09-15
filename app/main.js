@@ -132,6 +132,13 @@ function suscribir() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'worker_heartbeat' }, ruta)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'posiciones' }, ruta) // marks del worker
     .subscribe();
+  // Señales quitadas en otro equipo (senales_ocultas, 0013) → redibujar. En su PROPIO
+  // canal: Realtime da de alta todas las tablas de un canal en una sola transacción y,
+  // si una no está en la publicación (0013 sin aplicar), no entra ninguna; la campanada
+  // de senales no puede caerse por esto.
+  sb.channel('mesa2-ocultas')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'senales_ocultas' }, ruta)
+    .subscribe();
 }
 
 // ---------- helpers de tiempo/estado ----------
@@ -199,11 +206,16 @@ async function ruta() {
 // ---------- vistas ----------
 async function vistaInforme(hb) {
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  // solo las de HOY (NY): un dato viejo jamás se presenta como fresco. UNA vez (el
+  // builder de Supabase lanza la consulta en cada then): las quitadas van detrás, con sus ids.
+  // Sin limit, como el Copiloto: con un tope las quitadas ocupaban cupo y el Informe
+  // contradecía al Copiloto (el UNIQUE del worker deja pocas por día: ticker × estrategia)
+  const senP = Promise.resolve(sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }));
   const [estados, senales] = await Promise.all([
     sb.from('ticker_estado').select('*'),
-    // solo las de HOY (NY): un dato viejo jamás se presenta como fresco
-    sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }).limit(8),
+    senP,
     cargarPlanUsuario(),
+    cargarOcultas(senP),
   ]);
   const est = estados.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
@@ -219,18 +231,12 @@ async function vistaInforme(hb) {
       : 'Sin latido del worker todavía. '}${
       merc && merc.payload && merc.payload.regla_1030 ? 'Antes de las 10:30 ET.' : ''}</div></div>`;
 
-  // señales del día
-  h += `<div class="sec">SEÑALES DE HOY (E5)</div>`;
-  if (sen.length) {
-    h += sen.map(s => `<div class="card"><div class="fila">
-      <span style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>
-      <span class="fresco">${esc(haceCuanto(s.creado_at).txt)}</span></div>
-      <div class="mut" style="margin-top:5px">${esc(s.motivo || '')}</div>
+  // señales del día (la misma sección que el Copiloto: las quitadas no salen)
+  h += seccionSenales('SEÑALES DE HOY (E5)', sen, _ocultas.ids, _ocultas.ver, (s) => `<div class="card">
+      ${cabeceraSenal(s)}
+      ${motivoSenal(s)}
       ${lineasGtcSenal(s.instruccion_gtc, plan)}
-    </div>`).join('');
-  } else {
-    h += `<div class="card vacio">Sin señales todavía hoy.<br>CT15A / CT15B (cambio de tendencia en 15 min) y E5 vigilan la apertura de las 9:30 ET; el aviso llega al teléfono.</div>`;
-  }
+    </div>`);
 
   // tickers resumidos
   h += `<div class="sec">TUS TICKERS</div>`;
@@ -987,8 +993,10 @@ async function vistaCopiloto() {
   // posiciones UNA vez (el builder de Supabase lanza la consulta en cada then): las
   // ventas GTC/corte se piden solo para las abiertas
   const posP = Promise.resolve(sb.from('posiciones').select('*').order('abierta_at', { ascending: false }));
+  // señales de hoy UNA vez, por lo mismo: las quitadas (senales_ocultas) van detrás, con sus ids
+  const senP = Promise.resolve(sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }));
   const [sen, pos, bt, ord, gt] = await Promise.all([
-    sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }),
+    senP,
     posP,
     sb.from('broker_trades').select('*'),
     sb.from('ordenes').select('*').in('estado', ['enviada', 'error']).order('creado_at', { ascending: false }).limit(20),   // solo ACTIVAS (y las que no se pudo confirmar)
@@ -999,6 +1007,7 @@ async function vistaCopiloto() {
       return ids.length ? sb.from('ordenes').select('posicion_id,estado,proposito,creado_at').in('posicion_id', ids).in('proposito', ['salida_gtc', 'salida_corte']) : { data: [] };
     }),
     cargarPlanUsuario(),
+    cargarOcultas(senP),
   ]);
   const senales = sen.data || [];
   const posic = pos.data || [];
@@ -1031,13 +1040,8 @@ async function vistaCopiloto() {
   const pl = plataformaOrden(brokersOperables(), brokerOrdenGuardado());
   h += filaPlataforma(pl);
 
-  // señales de hoy → ticket
-  h += `<div class="sec">SEÑALES DE HOY</div>`;
-  if (senales.length) {
-    h += senales.map(s => tarjetaSenal(s, posic, pl)).join('');
-  } else {
-    h += `<div class="card vacio">Sin señales todavía hoy.<br>CT15A / CT15B (cambio de tendencia en 15 min) y E5 vigilan la apertura de las 9:30 ET; el aviso llega al teléfono.</div>`;
-  }
+  // señales de hoy → ticket (la misma sección que el Informe: las quitadas no salen)
+  h += seccionSenales('SEÑALES DE HOY', senales, _ocultas.ids, _ocultas.ver, (s) => tarjetaSenal(s, posic, pl));
 
   // registrar a mano (útil siempre) · nueva orden en la plataforma elegida (vista previa primero)
   h += `<div class="dos">
@@ -1182,9 +1186,8 @@ function tarjetaSenal(s, posic, pl) {
   const plan = planActivo();   // la señal dice el 35% doctrinal (C2); la línea del plan propio va aparte
   pl = pl || plataformaOrden(brokersOperables(), brokerOrdenGuardado());
   return `<div class="card" style="border-color:rgba(231,181,77,.45)">
-    <div class="fila"><span style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>
-      <span class="fresco">${esc(haceCuanto(s.creado_at).txt)}</span></div>
-    <div class="mut" style="margin-top:5px">${esc(s.motivo || '')}</div>
+    ${cabeceraSenal(s)}
+    ${motivoSenal(s)}
     ${textoTicket(s)}
     ${lineasGtcSenal(s.instruccion_gtc, plan)}
     ${yaReg ? `<div class="mut" style="margin-top:8px;color:var(--verde)">✓ ya registraste tu fill</div>`
@@ -1204,6 +1207,243 @@ function lineasGtcSenal(instruccion, plan) {
   if (diez) h += `<div class="mut mono" style="margin-top:4px;color:var(--azul)">Tu plan (manda): GTC +${plan.gtcPct}% · corte -${plan.stopPct}%</div>`;
   return h;
 }
+
+// ---- Señales quitadas (v49 · pedido de Andrés 2026-09-14: «las señales de hoy no se
+// han borrado, tenemos que tener un botón para eliminarlas») ----
+// Una señal JAMÁS se borra: senales es de MERCADO (append-only, auditoría mesa-cierre,
+// candado de dedupe del worker y FKs) y el cliente no escribe tablas de mercado.
+// «Quitar» = ocultarla para TI, en todos tus equipos y reversible: una fila PERSONAL en
+// senales_ocultas (migración 0013, RLS user_id = auth.uid()). El push no cambia.
+// Optimista: el Set en memoria cambia al instante (+ ruta()) y la escritura va detrás,
+// en cola (una a la vez, en el orden de los toques, cada una con tope); si falla, se
+// revierte y sale un toast con el motivo. Al tocar, respuesta en el sitio (marcarToque).
+// Sin la tabla o con la lectura en error: nada oculto, como en v48.
+//   ids       senal_id (texto) quitados: lo último leído de la base + lo optimista
+//   ver       «Ver quitadas» abierto (en memoria, en este equipo)
+//   hoy       ids de las señales de hoy de la última lectura
+//   gen       sube al empezar y al terminar cada escritura: una lectura que se cruzó con
+//             una escritura no pisa la memoria (traería la foto de antes)
+//   pend      senal_id → escrituras en cola; mientras haya, manda la memoria para ese id
+//   lect      número de la última lectura lanzada; aplicada: el de la última aplicada
+//             (una lectura más vieja que vuelve tarde no pisa a una más nueva)
+const _ocultas = { ids: new Set(), ver: false, hoy: new Set(), gen: 0, pend: new Map(), cola: Promise.resolve(), err: null, lect: 0, aplicada: 0 };
+// Tope de cada escritura en senales_ocultas (el mismo que el upsert de push_suscripciones):
+// si supabase-js no responde, la cola no se traba para siempre y sin aviso.
+const TOPE_OCULTAS_MS = 10000;
+const SENALES_VACIO = 'Sin señales todavía hoy.<br>CT15A / CT15B (cambio de tendencia en 15 min) y E5 vigilan la apertura de las 9:30 ET; el aviso llega al teléfono.';
+// id de una señal como texto de dígitos (bigint de la base); cualquier otra cosa → null
+function idSenal(v) {
+  const t = String(v == null ? '' : v).trim();
+  return /^\d+$/.test(t) ? t : null;
+}
+// Parte las señales en visibles y quitadas (Set de ids quitados), conservando el orden.
+function partirSenales(senales, ocultas) {
+  const visibles = [], quitadas = [];
+  (senales || []).forEach(s => {
+    if (!s) return;
+    const id = idSenal(s.id);
+    (id && ocultas && ocultas.has(id) ? quitadas : visibles).push(s);
+  });
+  return { visibles, quitadas };
+}
+// Sección «SEÑALES DE HOY» del Informe y del Copiloto (la misma en los dos; tarjeta(s)
+// dibuja cada visible a la manera de cada vista). Encabezado: «Ver quitadas (N)» u
+// «Ocultar quitadas», y «Quitar todas» con los ids VISIBLES de hoy. Abiertas, las
+// quitadas salen atenuadas con «Restaurar». Todas quitadas: «Quitaste las N señales de
+// hoy.» con «Ver quitadas». Sin señales en el día: el texto vacío de siempre.
+function seccionSenales(titulo, senales, ocultas, ver, tarjeta) {
+  senales = senales || [];
+  const { visibles, quitadas } = partirSenales(senales, ocultas);
+  const n = quitadas.length, abiertas = !!ver && n > 0;
+  const enlace = (js, txt) => `<a href="#" onclick="${js};return false">${esc(txt)}</a>`;
+  const acc = [];
+  if (abiertas) acc.push(enlace('MZ.verQuitadas(false, this)', 'Ocultar quitadas'));
+  else if (n && visibles.length) acc.push(enlace('MZ.verQuitadas(true, this)', `Ver quitadas (${n})`));
+  const ids = visibles.map(s => idSenal(s.id)).filter(Boolean);
+  if (ids.length) acc.push(enlace(`MZ.quitarSenales([${ids.map(id => `'${id}'`).join(',')}], this)`, 'Quitar todas'));
+  let h = acc.length ? `<div class="sec fila">${esc(titulo)}<span class="acc">${acc.join('')}</span></div>`
+    : `<div class="sec">${esc(titulo)}</div>`;
+  if (!senales.length) return h + `<div class="card vacio">${SENALES_VACIO}</div>`;
+  h += visibles.map(s => tarjeta(s)).join('');
+  if (!visibles.length && !abiertas) {
+    h += `<div class="card vacio">${n === 1 ? 'Quitaste la señal de hoy.' : `Quitaste las ${n} señales de hoy.`}<br>
+      <button class="btnquitar" style="margin-top:9px" onclick="MZ.verQuitadas(true, this)">Ver quitadas</button></div>`;
+  }
+  if (abiertas) {
+    h += quitadas.map(senalQuitadaHtml).join('')
+      + `<div class="fresco" style="margin:0 4px 4px">Quitar solo esconde la señal en tus equipos: no se borra y puedes restaurarla cuando quieras.</div>`;
+  }
+  return h;
+}
+// Título de la tarjeta de una señal (Informe y Copiloto) con «Quitar» arriba a la derecha,
+// lejos de «Registrar mi fill» y de «Operar en». «hace X h» va delante del motivo
+// (motivoSenal): junto a «Quitar», a 375-390 px, el símbolo saltaba de línea.
+function cabeceraSenal(s) {
+  return `<div class="fila"><span style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>${botonQuitarSenal(s)}</div>`;
+}
+// Línea del motivo con «hace X h» delante (sin motivo: solo «hace X h»). tenue: la quitada.
+function motivoSenal(s, tenue) {
+  const t = esc(haceCuanto(s && s.creado_at).txt), m = esc((s && s.motivo) || '');
+  return `<div class="mut${tenue ? ' tenue' : ''}" style="margin-top:5px"><span class="fresco">${t}${m ? ' · ' : ''}</span>${m}</div>`;
+}
+// onclick con this: el botón tocado, para la respuesta en el sitio (marcarToque).
+function botonQuitarSenal(s) {
+  const id = idSenal(s && s.id);
+  return id ? `<button class="btnquitar" onclick="MZ.quitarSenal('${id}', this)" aria-label="Quitar esta señal de tu lista de hoy">Quitar</button>` : '';
+}
+// Quitada: atenuada y con «Restaurar» (sin fill ni orden: primero se restaura).
+function senalQuitadaHtml(s) {
+  const id = idSenal(s && s.id);
+  return `<div class="card quitada"><div class="fila">
+      <span class="tenue" style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>${
+        id ? `<button class="btnquitar" onclick="MZ.restaurarSenal('${id}', this)">Restaurar</button>` : ''}</div>
+    ${motivoSenal(s, true)}
+  </div>`;
+}
+// Respuesta en el sitio al tocar Quitar / Restaurar / Ver quitadas: el redibujo (ruta)
+// espera varios viajes a Supabase y en el iPhone :active no se pinta. El botón se
+// deshabilita SIN cambiar su texto (no cambia de ancho ni parte el título); un enlace, que no tiene
+// disabled, se atenúa y deja de recibir toques; con tarjeta, la tarjeta se atenúa. NO se
+// esconde al instante: la siguiente subiría bajo el dedo y un segundo toque la quitaría.
+// El redibujo reconcilia con la memoria; si la escritura falla, soltarToque lo deshace.
+function marcarToque(el, texto, tarjeta) {
+  try {
+    if (!el || !el.style) return;
+    if (el.dataset && el.dataset.txt === undefined) el.dataset.txt = el.textContent;
+    if (el.tagName === 'BUTTON') el.disabled = true;
+    else { el.style.opacity = '.6'; el.style.pointerEvents = 'none'; }
+    if (texto) el.textContent = texto;
+    const card = tarjeta && el.closest ? el.closest('.card') : null;
+    if (card) card.style.opacity = '.45';
+  } catch (_) { /* nodo ya fuera de la pantalla: nada que marcar */ }
+}
+function soltarToque(el) {
+  try {
+    if (!el || !el.style) return;
+    if (el.tagName === 'BUTTON') el.disabled = false;
+    else { el.style.opacity = ''; el.style.pointerEvents = ''; }
+    if (el.dataset && el.dataset.txt !== undefined) { el.textContent = el.dataset.txt; delete el.dataset.txt; }
+    const card = el.closest ? el.closest('.card') : null;
+    if (card) card.style.opacity = '';
+  } catch (_) { /* nodo ya fuera de la pantalla: nada que soltar */ }
+}
+// Quitadas de HOY: encadenada tras la consulta de señales (senP, lanzada una sola vez) y
+// filtrada por sus ids. Sin sesión, sin señales, sin la tabla o con error: se queda con
+// lo último conocido (al arrancar, nada oculto) y la vista se dibuja igual. Siempre, al
+// final: «Ver quitadas» se cierra si la sección se quedó sin quitadas.
+async function cargarOcultas(senP) {
+  const gen0 = _ocultas.gen, lect = ++_ocultas.lect;
+  try {
+    const r = await senP;
+    const ids = ((r && r.data) || []).map(s => idSenal(s && s.id)).filter(Boolean);
+    _ocultas.hoy = new Set(ids);
+    const uid = planUid();
+    if (!ids.length || !uid) return _ocultas.ids;
+    const { data, error } = await sb.from('senales_ocultas').select('senal_id').eq('user_id', uid).in('senal_id', ids);
+    if (error) { _ocultas.err = String(error.message || error); return _ocultas.ids; }
+    _ocultas.err = null;
+    aplicarOcultasLeidas(ids, data || [], gen0, lect);
+  } catch (e) { _ocultas.err = String((e && e.message) || e); } finally { cerrarVerSinQuitadas(); }
+  return _ocultas.ids;
+}
+// «Ver quitadas» se cierra cuando la sección ya no tiene quitadas de hoy (restauradas aquí
+// o en otro equipo, o empezó otro día con la app abierta). Abierto, el próximo «Quitar»
+// dejaría la tarjeta atenuada a la vista en vez de hacerla desaparecer.
+function cerrarVerSinQuitadas() {
+  if (![..._ocultas.hoy].some(x => _ocultas.ids.has(x))) _ocultas.ver = false;
+}
+// Aplica una lectura de la base a los ids de hoy. Si hubo escrituras mientras se leía
+// (gen cambió) la foto puede ser de antes: manda la memoria. Una lectura más vieja que la
+// última aplicada tampoco pisa (dos relecturas cruzadas por Realtime: otro equipo quitó y
+// restauró). Un id con escrituras en cola no se toca.
+function aplicarOcultasLeidas(ids, filas, gen0, lect) {
+  if (gen0 !== _ocultas.gen) return false;
+  if (lect !== undefined) { if (lect <= _ocultas.aplicada) return false; _ocultas.aplicada = lect; }
+  const enBase = new Set((filas || []).map(f => idSenal(f && f.senal_id)).filter(Boolean));
+  (ids || []).forEach(id => {
+    if (_ocultas.pend.get(id)) return;
+    if (enBase.has(id)) _ocultas.ids.add(id); else _ocultas.ids.delete(id);
+  });
+  return true;
+}
+// Motivo del toast: corto y en español (dura 2,2 s en una píldora estrecha en el iPhone);
+// el texto crudo del error va a la consola.
+function motivoOcultas(e) {
+  const m = String((e && (e.message || e.error_description)) || e || 'error desconocido');
+  try { console.warn('senales_ocultas: ' + m); } catch (_) {}
+  if (/senales_ocultas/.test(m) && /not find|does not exist|schema cache/i.test(m)) return 'la Mesa aún no está lista para esto';
+  if (/failed to fetch|load failed|networkerror|network request failed/i.test(m)) return 'sin conexión';
+  if (/no respondió|tiempo agotado|timeout/i.test(m)) return 'sin respuesta, inténtalo de nuevo';
+  if (/jwt|token|401/i.test(m)) return 'tu sesión venció, vuelve a entrar';
+  return 'inténtalo de nuevo';
+}
+// Escritura en cola (una a la vez, en el orden de los toques). quitar = upsert que ignora
+// duplicados (doble toque o dos equipos a la vez) con el user_id de la sesión; restaurar
+// = delete por senal_id (RLS: solo las tuyas). Cada una con tope (TOPE_OCULTAS_MS): si
+// supabase-js no responde, cuenta como fallo y la cola sigue. Si falla, revierte los ids
+// que no tengan otra escritura detrás (esa es el último toque y manda) y, si revirtió,
+// avisa y redibuja (la relectura trae lo que haya en la base).
+// Residuo del tope: el fetch no se aborta y, pasado el tope, la escritura queda en estado
+// indeterminado (el mismo motivo por el que etProxy no pone tope a las órdenes). Si la dada
+// por fallida llega al servidor DESPUÉS, y después de un toque contrario, la base se queda
+// con ella: todos los equipos lo muestran igual (Realtime) y se corrige con otro toque.
+function escribirOcultas(op, ids, uid) {
+  ids.forEach(id => _ocultas.pend.set(id, (_ocultas.pend.get(id) || 0) + 1));
+  _ocultas.gen++;
+  const p = _ocultas.cola.then(async () => {
+    try {
+      const r = op === 'quitar'
+        ? await conTope(sb.from('senales_ocultas').upsert(ids.map(id => ({ user_id: uid, senal_id: Number(id) })), { onConflict: 'user_id,senal_id', ignoreDuplicates: true }), TOPE_OCULTAS_MS, 'supabase-js no respondió')
+        : await conTope(sb.from('senales_ocultas').delete().eq('senal_id', Number(ids[0])), TOPE_OCULTAS_MS, 'supabase-js no respondió');
+      return (r && r.error) || null;
+    } catch (e) { return e || new Error('error desconocido'); }
+  });
+  _ocultas.cola = p;
+  return p.then(error => {
+    _ocultas.gen++;
+    ids.forEach(id => { const k = (_ocultas.pend.get(id) || 0) - 1; if (k > 0) _ocultas.pend.set(id, k); else _ocultas.pend.delete(id); });
+    if (!error) return true;
+    const revertidos = ids.filter(id => !_ocultas.pend.get(id));
+    revertidos.forEach(id => { if (op === 'quitar') _ocultas.ids.delete(id); else _ocultas.ids.add(id); });
+    if (revertidos.length) {
+      toast((op === 'quitar' ? 'No se pudo quitar: ' : 'No se pudo restaurar: ') + motivoOcultas(error));
+      ruta();
+    }
+    return false;
+  });
+}
+// «Quitar» de una tarjeta y «Quitar todas» (los ids visibles que dibujó la sección); el =
+// el botón o enlace tocado (respuesta en el sitio; sin él, nada visual). Un id ya quitado
+// no se vuelve a escribir: el doble toque no hace nada. Si ya estaban todos quitados (otro
+// equipo, aún sin redibujar) y vino de un toque, se redibuja para mostrar lo que hay.
+function quitarSenales(lista, el) {
+  const uid = planUid();
+  if (!uid) { toast('Sin sesión. Sal y vuelve a entrar.'); return Promise.resolve(false); }
+  const ids = [...new Set((Array.isArray(lista) ? lista : [lista]).map(v => idSenal(v)).filter(Boolean))]
+    .filter(id => !_ocultas.ids.has(id));
+  if (!ids.length) { if (el) ruta(); return Promise.resolve(true); }
+  marcarToque(el, null, true);
+  ids.forEach(id => _ocultas.ids.add(id));
+  const p = escribirOcultas('quitar', ids, uid);
+  ruta();
+  return p.then(r => { if (!r) soltarToque(el); return r; });
+}
+function quitarSenal(id, el) { return quitarSenales([id], el); }
+// «Restaurar» de una quitada (ya visible: nada que escribir; si vino de un toque, se
+// redibuja). Al restaurar la última de hoy, «Ver quitadas» se cierra.
+function restaurarSenal(v, el) {
+  const id = idSenal(v);
+  if (!id || !_ocultas.ids.has(id)) { if (el) ruta(); return Promise.resolve(true); }
+  const uid = planUid();
+  if (!uid) { toast('Sin sesión. Sal y vuelve a entrar.'); return Promise.resolve(false); }
+  marcarToque(el, null, true);
+  _ocultas.ids.delete(id);
+  cerrarVerSinQuitadas();
+  const p = escribirOcultas('restaurar', [id], uid);
+  ruta();
+  return p.then(r => { if (!r) soltarToque(el); return r; });
+}
+function verQuitadas(v, el) { marcarToque(el); _ocultas.ver = !!v; ruta(); }
 
 // ---- Plataforma para operar (pedido de Andrés 2026-09-14) ----
 // Las órdenes salen por E*TRADE o Charles Schwab; tastytrade y moomoo solo dan saldo
@@ -1452,6 +1692,8 @@ function toast(t) {
   document.body.appendChild(el); setTimeout(() => el.remove(), 2200);
 }
 window.MZ = { abrirFill, cerrarModal, guardarFill, cerrar, copiar };
+// Señales quitadas (v49): DESPUÉS de la asignación plana de arriba, que pisaría lo de antes.
+window.MZ = Object.assign(window.MZ, { quitarSenal, quitarSenales, restaurarSenal, verQuitadas });
 
 // ---------- Tu cuenta: cambiar contraseña / salir ----------
 function abrirCuenta() {

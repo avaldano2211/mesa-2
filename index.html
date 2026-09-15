@@ -155,6 +155,18 @@
   .hoja input.pin{text-align:center;letter-spacing:.3em;font-size:18px}
   .hoja input:disabled,.hoja select:disabled{opacity:.55}
   .sec a{color:var(--oro);text-decoration:none;font-size:11px;letter-spacing:0}
+  /* señales de hoy: Quitar / Restaurar (v49) */
+  .sec .acc{display:inline-flex;align-items:center;gap:24px;flex:none}
+  .sec .acc a{display:inline-block;padding:10px 0;margin:-10px 0}
+  @media (max-width:380px){.sec .acc{gap:18px}}   /* a 375 px el encabezado del Informe cabe en 1 línea */
+  .btnquitar{flex:none;background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:999px;
+    min-height:32px;padding:0 12px;font-size:12px;font-weight:600;font-family:var(--sans);cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .btnquitar:active{background:var(--line)}
+  .btnquitar:disabled{opacity:.6;cursor:default}
+  .card.quitada{background:transparent;border-style:dashed}
+  .card.quitada .tenue{opacity:.55}
+  .card.quitada .btnquitar,.vacio .btnquitar{color:var(--oro);border-color:rgba(231,181,77,.45)}
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
@@ -202,7 +214,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=48"></script>
-  <script src="./app/main.js?v=48"></script>
+  <script src="./config.js?v=49"></script>
+  <script src="./app/main.js?v=49"></script>
 </body>
 </html>
