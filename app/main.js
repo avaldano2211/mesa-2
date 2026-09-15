@@ -12,7 +12,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => (
   { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
-const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'SPX', 'META'];   // QQQ y SPX: 2026-09-13; META: 2026-09-14
+const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY'];   // 2026-09-14: Andrés vuelve a sus 4 y elige cada día cuál operar (QQQ, SPX y META salen)
 // Versión que está corriendo: el ?v= con que index.html cargó este archivo. Sirve
 // para detectar que se publicó otra y recargar sola (ver buscarVersionNueva).
 const VERSION_APP = (() => {
@@ -107,7 +107,7 @@ async function buscarVersionNueva() {
 }
 function recargarSiSePuede() {
   if (!_versionPendiente) return;
-  if (document.querySelector('.modal')) { setTimeout(recargarSiSePuede, 15000); return; }   // cuadro abierto: esperar
+  if (document.querySelector('.modal') || (typeof _corte !== 'undefined' && _corte.enCurso)) { setTimeout(recargarSiSePuede, 15000); return; }   // cuadro abierto o corte en curso: esperar
   toast('Actualizando la Mesa a la versión ' + _versionPendiente + '…');
   setTimeout(() => location.reload(), 700);
 }
@@ -203,10 +203,12 @@ async function vistaInforme(hb) {
     sb.from('ticker_estado').select('*'),
     // solo las de HOY (NY): un dato viejo jamás se presenta como fresco
     sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }).limit(8),
+    cargarPlanUsuario(),
   ]);
   const est = estados.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
   const sen = senales.data || [];
+  const plan = planActivo();
   let h = '';
 
   // resumen del worker
@@ -224,7 +226,7 @@ async function vistaInforme(hb) {
       <span style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>
       <span class="fresco">${esc(haceCuanto(s.creado_at).txt)}</span></div>
       <div class="mut" style="margin-top:5px">${esc(s.motivo || '')}</div>
-      ${s.instruccion_gtc ? `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${esc(s.instruccion_gtc)}</div>` : ''}
+      ${lineasGtcSenal(s.instruccion_gtc, plan)}
     </div>`).join('');
   } else {
     h += `<div class="card vacio">Sin señales todavía hoy.<br>CT15A / CT15B (cambio de tendencia en 15 min) y E5 vigilan la apertura de las 9:30 ET; el aviso llega al teléfono.</div>`;
@@ -730,7 +732,7 @@ function abrirChart(sym) {
     <div id="chHlines"></div>
     <div class="sec" style="margin-top:12px">TARGET PRICE · ANALISTAS</div>
     ${indice ? `<div class="mut">índice/ETF: el target de analistas no aplica.</div>`
-      : `<div class="mut">Consenso de analistas de Finviz; se anota a mano cada lunes (no hay fuente automática). No es el +35 % de la prima: ese va en la orden GTC.</div>
+      : `<div class="mut">Consenso de analistas de Finviz; se anota a mano cada lunes (no hay fuente automática). No es el +${planActivo().gtcPct} % de la prima: ese va en la orden GTC.</div>
       <div class="dos">
         <div><label>Target</label><input id="tgT" type="number" inputmode="decimal" step="0.01" placeholder="ej. 260" value="${tg && tg.target != null ? esc(tg.target) : ''}"></div>
         <div><label>Fecha</label><input id="tgF" type="date" value="${esc(tg && tg.fecha ? tg.fecha : hoyNY())}"></div></div>
@@ -834,9 +836,140 @@ async function guardarTarget() {
 }
 
 // ---------- Copiloto ----------
-const PLAN_PCT = 35;      // doctrina (literal); el plan personal lo afinará plan_semanal
+const PLAN_PCT = 35;      // doctrina (literal) = Plan 35%; el plan PERSONAL vive en plan_usuario (PLANES)
 const OPS_SEMANA = 3;     // 3 ops/semana
+// Heredado (una prueba lo extrae con regex): los flujos nuevos usan gtcLimite(fill, pct).
 const gtcDe = (fill) => Math.round((fill * (1 + PLAN_PCT / 100) + 0.02) * 100) / 100;
+
+// ---- PLANES de trading (contrato del Plan 10%, 2026-09-14) ----
+// PERSONAL (muralla): el plan elegido vive en plan_usuario (RLS solo dueño), jamás
+// en config_kv, senales, ticker_estado ni ticker_velas. Las señales siguen diciendo
+// el 35% doctrinal (SPEC C2); la app añade una línea con el plan propio.
+// El plan de cada operación se CONGELA en la orden (preview._mz.plan_pct/stop_pct) y
+// en la posición (plan_pct/stop_pct): cambiar de plan no toca posiciones abiertas.
+//   PLAN_35 (doctrina de Joel, el comportamiento de siempre): GTC +35%, sin corte,
+//     3 operaciones por semana, máximo 10% de la cuenta, espera a las 10:30 ET.
+//   PLAN_10 (diapositivas del curso): GTC +10%, corte -20% (aviso + salida de un
+//     toque, nunca stop automático), 1 operación al día, 30-50% de la cuenta del
+//     bróker (aviso solo por encima del 50%), presupuesto 35% (lo eligió Andrés;
+//     admite hasta 100 y por encima del 50% solo avisa),
+//     movimiento identificado entre 9:30 y 9:45 ET, una compañía al día elegida
+//     entre los 4 tickers, vencimiento de hoy pasadas las 10:30 → la siguiente
+//     fecha, sin refuerzo.
+const PLANES = {
+  PLAN_35: { id: 'PLAN_35', nombre: 'Plan 35%', gtcPct: 35, stopPct: null, opsMax: 3, periodo: 'semana',
+    tamanoMinPct: null, tamanoMaxPct: 10, presupDefPct: 35, presupMaxPct: 100, ventana: 'no_antes_1030', ventanaMin: null,
+    companiaDia: false, avisoExpHoy: false, refuerzo: true },
+  PLAN_10: { id: 'PLAN_10', nombre: 'Plan 10%', gtcPct: 10, stopPct: 20, opsMax: 1, periodo: 'dia',
+    tamanoMinPct: 30, tamanoMaxPct: 50, presupDefPct: 35, presupMaxPct: 100, ventana: 'apertura_15', ventanaMin: [570, 585],
+    companiaDia: true, avisoExpHoy: true, refuerzo: false },
+};
+// Límite GTC exacto al centavo, igual que la columna generada posiciones.gtc_limite
+// (round(prima_fill × (1 + plan_pct/100) + 0.02, 2), half-up de numeric): aritmética
+// ENTERA para no heredar el error de coma flotante (3.30 al 35% = 4.48, no 4.47).
+function gtcLimite(fill, pct) {
+  const f = Number(fill);
+  if (!(f > 0)) return null;
+  const p = (pct != null && Number.isFinite(Number(pct)) && Number(pct) > 0) ? Number(pct) : 35;
+  const F = Math.round(f * 10000), P = Math.round(p * 100);          // diezmilésimas de $ · centésimas de %
+  const T = F * (10000 + P) + 2000000;                                   // unidades de 1e-8 $ (+ $0.02)
+  return Math.floor((T + 500000) / 1000000) / 100;
+}
+// Precio de corte: round(prima_fill × (1 - stop_pct/100), 4). null sin corte.
+function corteDe(fill, stopPct) {
+  const f = Number(fill), s = Number(stopPct);
+  if (!(f > 0) || stopPct == null || !(s > 0 && s < 100)) return null;
+  const F = Math.round(f * 10000), S = Math.round(s * 100);
+  return Math.floor((F * (10000 - S) + 5000) / 10000) / 10000;
+}
+// Plan congelado en la orden al previsualizar (preview._mz): sin anotación = Plan 35.
+function planCongelado(mz) {
+  mz = mz || {};
+  const pp = Number(mz.plan_pct), sp = Number(mz.stop_pct);
+  return { plan_pct: (mz.plan_pct != null && pp > 0) ? pp : 35, stop_pct: (mz.stop_pct != null && sp > 0 && sp < 100) ? sp : null };
+}
+// Plan de una operación a partir de su plan_pct; sin él (o desconocido), el de por defecto.
+function planDePct(pct, porDefecto) {
+  const n = Number(pct);
+  if (pct != null && n > 0) { const p = Object.values(PLANES).find(x => x.gtcPct === n); if (p) return p; }
+  return porDefecto || PLANES.PLAN_35;
+}
+// Límite GTC de una posición: el de la base (C25) y, si falta, el de SU plan congelado.
+function gtcDePosicion(p) {
+  const g = Number(p && p.gtc_limite);
+  if (g > 0) return Math.round(g * 100) / 100;
+  return gtcLimite(p && p.prima_fill, (p && Number(p.plan_pct) > 0) ? Number(p.plan_pct) : 35);
+}
+// Compañía del día (Plan 10%): symbol_foco solo vale si foco_fecha es HOY (NY).
+function focoDeHoy(fila, hoy) {
+  if (!fila || !fila.symbol_foco || !fila.foco_fecha || !hoy) return null;
+  return String(fila.foco_fecha).slice(0, 10) === String(hoy) ? String(fila.symbol_foco).toUpperCase() : null;
+}
+// ¿Fuera de la ventana del plan (minutos NY [desde, hasta], ambos incluidos)? Fin de
+// semana = fuera (sin calendario de festivos, igual que antesDe1030NY).
+function fueraVentanaNY(ventanaMin, fecha) {
+  if (!Array.isArray(ventanaMin) || ventanaMin.length < 2) return false;
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(fecha || new Date());
+  const v = (t) => (f.find(x => x.type === t) || {}).value;
+  if (v('weekday') === 'Sat' || v('weekday') === 'Sun') return true;
+  const m = Number(v('hour')) * 60 + Number(v('minute')) + Number(v('second')) / 60;
+  return m < ventanaMin[0] || m > ventanaMin[1];
+}
+// Resumen en español de las reglas de un plan (Tu cuenta).
+function textoReglasPlan(plan) {
+  if (!plan || plan.id !== 'PLAN_10') {
+    return 'Objetivo: venta GTC +35% sobre tu fill · sin corte · 3 operaciones por semana · máximo 10% de la cuenta por operación · espera a las 10:30 ET · tus tickers de siempre. Es el comportamiento de hoy.';
+  }
+  return 'Objetivo: venta GTC +10% sobre tu fill · corte -20%: la Mesa te avisa y vendes de un toque (nunca un stop automático) · 1 operación al día · 30–50% de la cuenta del bróker (presupuesto 35%) · el movimiento se identifica entre 9:30 y 9:45 ET · una sola compañía al día, la eliges en el Copiloto · si vence hoy y ya pasaron las 10:30 ET, compra la siguiente fecha · sin refuerzo (soporte lo desaconseja con 30–50% de la cuenta).';
+}
+// ---- plan_usuario: fila PERSONAL cacheada en memoria y en el equipo (offline) ----
+const PLAN_K = 'mz_plan_usuario', PLAN_CACHE_MS = 20000;
+const _plan = { fila: undefined, ts: 0, err: null };
+function planUid() { return (typeof sesionActiva !== 'undefined' && sesionActiva && sesionActiva.user && sesionActiva.user.id) || null; }
+function planFilaCache() {
+  const uid = planUid();
+  if (_plan.fila !== undefined) return (_plan.fila && (!uid || _plan.fila.user_id === uid)) ? _plan.fila : null;
+  try { const f = JSON.parse(localStorage.getItem(PLAN_K) || 'null'); if (f && (!uid || f.user_id === uid)) return f; } catch (_) {}
+  return null;
+}
+function planGuardarCache(fila) {
+  _plan.fila = fila || null; _plan.ts = Date.now();
+  try { if (fila) localStorage.setItem(PLAN_K, JSON.stringify(fila)); else localStorage.removeItem(PLAN_K); } catch (_) {}
+}
+// Plan activo del usuario; respaldo Plan 35 si no hay fila, la tabla no existe o falla.
+function planActivo() {
+  const f = planFilaCache();
+  return (f && PLANES[f.plan]) || PLANES.PLAN_35;
+}
+// Lee plan_usuario (máx. cada 20 s salvo forzar). Si falla (sin red o sin la
+// migración 0012) se queda con lo último conocido, y sin nada, Plan 35.
+async function cargarPlanUsuario(forzar) {
+  if (!forzar && _plan.ts && Date.now() - _plan.ts < PLAN_CACHE_MS) return planFilaCache();
+  const uid = planUid();
+  if (!uid) return planFilaCache();
+  _plan.ts = Date.now();
+  try {
+    const { data, error } = await sb.from('plan_usuario').select('*').eq('user_id', uid).maybeSingle();
+    if (error) { _plan.err = error.message || String(error); return planFilaCache(); }
+    _plan.err = null;
+    planGuardarCache(data || null);
+  } catch (e) { _plan.err = String((e && e.message) || e); }
+  return planFilaCache();
+}
+// Upsert PERSONAL en plan_usuario (onConflict user_id); devuelve la fila guardada.
+async function guardarPlanUsuario(cambios) {
+  const uid = planUid();
+  if (!uid) throw new Error('Sin sesión. Sal y vuelve a entrar.');
+  const fila = Object.assign({}, cambios || {}, { user_id: uid, actualizado_at: new Date().toISOString() });
+  const { data, error } = await sb.from('plan_usuario').upsert(fila, { onConflict: 'user_id' }).select('*').single();
+  if (error) {
+    const m = String(error.message || error);
+    throw new Error(/plan_usuario/.test(m) && /not find|does not exist|schema cache/i.test(m) ? 'la tabla plan_usuario aún no existe (falta aplicar la migración 0012)' : m);
+  }
+  planGuardarCache(data || fila);
+  return data || fila;
+}
 function lunesNY() {
   // fecha (YYYY-MM-DD en NY) del lunes de esta semana
   const f = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York',
@@ -851,43 +984,65 @@ function lunesNY() {
 
 async function vistaCopiloto() {
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  // posiciones UNA vez (el builder de Supabase lanza la consulta en cada then): las
+  // ventas GTC/corte se piden solo para las abiertas
+  const posP = Promise.resolve(sb.from('posiciones').select('*').order('abierta_at', { ascending: false }));
   const [sen, pos, bt, ord, gt] = await Promise.all([
     sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }),
-    sb.from('posiciones').select('*').order('abierta_at', { ascending: false }),
+    posP,
     sb.from('broker_trades').select('*'),
     sb.from('ordenes').select('*').in('estado', ['enviada', 'error']).order('creado_at', { ascending: false }).limit(20),   // solo ACTIVAS (y las que no se pudo confirmar)
-    sb.from('ordenes').select('posicion_id,estado').eq('proposito', 'salida_gtc').in('estado', ['enviada', 'ejecutada', 'preview']),
+    // TODAS las ventas GTC y de CORTE de las posiciones abiertas, en cualquier estado
+    // (canceladas incluidas): deciden la GTC pendiente y el veto de la GTC automática
+    posP.then(r => {
+      const ids = ((r && r.data) || []).filter(p => p.estado === 'abierta').map(p => p.id);
+      return ids.length ? sb.from('ordenes').select('posicion_id,estado,proposito,creado_at').in('posicion_id', ids).in('proposito', ['salida_gtc', 'salida_corte']) : { data: [] };
+    }),
+    cargarPlanUsuario(),
   ]);
   const senales = sen.data || [];
   const posic = pos.data || [];
   const abiertas = posic.filter(p => p.estado === 'abierta');
-  // GTC pendiente: posición abierta sin su venta límite del 35% en E*TRADE
-  const pendGtc = gtcPendientes(abiertas, (gt && gt.data) || []);
+  // GTC pendiente: posición abierta sin su venta límite (+% de SU plan) en el bróker
+  const filasGtc = (gt && gt.data) || [];
+  const pendGtc = gtcPendientes(abiertas, filasGtc);
   const pendIds = new Set(pendGtc.map(p => p.id));
-  abiertas.forEach(p => { p._gtcPendiente = pendIds.has(p.id); });
+  const vetoGtc = gtcAutoVetadas(filasGtc);
+  abiertas.forEach(p => { p._gtcPendiente = pendIds.has(p.id); p._gtcAutoVeto = vetoGtc.has(String(p.id)); });
   // Mismo cupo que Disciplina: manual + bróker, deduplicado.
-  const semana = unirOperaciones(posic, bt.data || []).ops.filter(p => (p.abierta_fecha_ny || '') >= lunesNY());
+  const plan = planActivo();
+  const unidas = unirOperaciones(posic, bt.data || []).ops;
   let h = '';
 
-  // cupo semanal
-  const usadas = semana.length;
-  const colorCupo = usadas > OPS_SEMANA ? 'var(--rojo)' : usadas === OPS_SEMANA ? 'var(--oro)' : 'var(--verde)';
-  h += `<div class="card"><div class="fila"><h3>Plan de la semana</h3>
+  if (plan.periodo === 'dia') {
+    // Plan 10%: cupo del DÍA, objetivo y corte, y la compañía de hoy
+    h += tarjetaPlanDia(plan, unidas, hoy, planFilaCache());
+  } else {
+    // Plan 35%: cupo semanal (idéntico a siempre)
+    const semana = unidas.filter(p => (p.abierta_fecha_ny || '') >= lunesNY());
+    const usadas = semana.length;
+    const colorCupo = usadas > OPS_SEMANA ? 'var(--rojo)' : usadas === OPS_SEMANA ? 'var(--oro)' : 'var(--verde)';
+    h += `<div class="card"><div class="fila"><h3>Plan de la semana</h3>
     <span style="font-weight:700;color:${colorCupo}">${usadas} / ${OPS_SEMANA}</span></div>
     <div class="mut">Operaciones esta semana. La doctrina: 3 por semana, ni una más.</div></div>`;
+  }
+
+  // plataforma para operar (encima de todos los botones de orden)
+  const pl = plataformaOrden(brokersOperables(), brokerOrdenGuardado());
+  h += filaPlataforma(pl);
 
   // señales de hoy → ticket
   h += `<div class="sec">SEÑALES DE HOY</div>`;
   if (senales.length) {
-    h += senales.map(s => tarjetaSenal(s, posic)).join('');
+    h += senales.map(s => tarjetaSenal(s, posic, pl)).join('');
   } else {
     h += `<div class="card vacio">Sin señales todavía hoy.<br>CT15A / CT15B (cambio de tendencia en 15 min) y E5 vigilan la apertura de las 9:30 ET; el aviso llega al teléfono.</div>`;
   }
 
-  // registrar a mano (útil siempre) · nueva orden en E*TRADE (vista previa primero)
+  // registrar a mano (útil siempre) · nueva orden en la plataforma elegida (vista previa primero)
   h += `<div class="dos">
     <button class="btnsec" style="padding:12px" onclick="MZ.abrirFill()">+ Registrar una operación</button>
-    <button class="pri" onclick="MZ.abrirOrden({proposito:'entrada'})">+ Nueva orden E*TRADE</button></div>`;
+    ${botonOrden(pl, { proposito: 'entrada' }, '+ Nueva orden')}</div>`;
 
   // posiciones abiertas
   h += `<div class="sec">POSICIONES ABIERTAS</div>`;
@@ -907,17 +1062,66 @@ async function vistaCopiloto() {
   // previsualizada; solo falta tu toque en «Enviar orden» (y el PIN si no está armado).
   abrirGtcAutomatico(pendGtc);
 }
-// Posiciones abiertas (con strike, expiración y fill) que no tienen una venta
-// límite GTC anotada (enviada/ejecutada/preview) → hay que ponerla.
+// Tarjeta «Plan del día» del Plan 10%: N / 1, objetivo y corte, compañía de hoy
+// (4 botones, la elegida resaltada) y el plan cumplido si la de hoy (del Plan 10%,
+// con corte congelado) cerró con la venta en el objetivo: prima_salida ≥ límite +10%.
+function tarjetaPlanDia(plan, ops, hoy, fila) {
+  const deHoy = (ops || []).filter(p => (p.abierta_fecha_ny || '') === hoy);
+  const usadas = deHoy.length;
+  const ganada = deHoy.find(p => {
+    const objetivo = gtcLimite(p.prima_fill, 10);
+    return p.stop_pct != null && p.estado === 'cerrada' && objetivo != null
+      && p.prima_salida != null && p.prima_salida !== '' && Number(p.prima_salida) + 1e-9 >= objetivo;
+  }) || null;
+  const foco = focoDeHoy(fila, hoy);
+  const color = usadas > plan.opsMax ? 'var(--rojo)' : ganada ? 'var(--verde)' : usadas === plan.opsMax ? 'var(--oro)' : 'var(--verde)';
+  return `<div class="card"><div class="fila"><h3>Plan del día</h3>
+    <span style="font-weight:700;color:${color}">${usadas} / ${plan.opsMax}</span></div>
+    <div class="mut">${esc(plan.nombre)}: ${plan.opsMax} operación al día · objetivo GTC +${plan.gtcPct}% · corte -${plan.stopPct}% · ${plan.tamanoMinPct}–${plan.tamanoMaxPct}% de la cuenta.</div>
+    <div class="sec" style="margin-top:10px">COMPAÑÍA DE HOY</div>
+    <div class="periodos">${TICKERS.map(t => `<button class="perbtn${t === foco ? ' on' : ''}" onclick="MZ.elegirFoco('${esc(t)}')">${esc(t)}</button>`).join('')}</div>
+    ${foco ? `<div class="mut" style="margin-top:4px">Hoy operas <b style="color:var(--tx)">${esc(foco)}</b>: una sola compañía.</div>`
+      : `<div class="mut" style="margin-top:4px;color:var(--oro)">Elige la compañía de hoy antes de operar: el Plan 10% va con una sola.</div>`}
+    ${ganada ? `<div class="mut" style="margin-top:6px;color:var(--verde);font-weight:700">✓ Plan del día cumplido (${esc(ganada.symbol)} ${usd(Number(ganada.resultado_usd))}): cierra la computadora; la siguiente entrada es mañana.</div>` : ''}
+  </div>`;
+}
+// Posiciones abiertas (con strike, expiración y fill) sin una venta GTC o de corte
+// viva o ejecutada (enviada/ejecutada) → hay que poner la GTC. Una venta de CORTE en
+// vista previa RECIENTE (menos de PREVIEW_SEG) también cuenta: la posición se está
+// cerrando. Una vista previa vieja es huérfana (la PWA murió con el formulario
+// abierto) y ya no cuenta; tampoco las canceladas, expiradas, rechazadas o en error.
 function gtcPendientes(abiertas, ordenesGtc) {
-  const con = new Set((ordenesGtc || []).filter(o => o.posicion_id != null && o.estado !== 'preview').map(o => String(o.posicion_id)));
+  const ahora = Date.now();
+  const cuenta = (o) => {
+    if (o.estado === 'enviada' || o.estado === 'ejecutada') return true;
+    if (o.estado !== 'preview' || o.proposito !== 'salida_corte') return false;
+    const t = Date.parse(o.creado_at);
+    return Number.isFinite(t) && ahora - t < PREVIEW_SEG * 1000 && ahora - t >= -30000;   // fecha «del futuro» (reloj atrasado) no es reciente
+  };
+  const con = new Set((ordenesGtc || []).filter(o => o && o.posicion_id != null && cuenta(o)).map(o => String(o.posicion_id)));
   return (abiertas || []).filter(p => p && p.estado === 'abierta' && Number(p.prima_fill) > 0 && p.strike != null && p.expiracion
     && ['etrade', 'schwab'].includes(p.broker || 'etrade') && !con.has(String(p.id)));
+}
+// Veto de la GTC automática EN LA BASE (el mismo en todos los equipos): una posición
+// que ya tuvo alguna venta GTC o de corte anotada, en CUALQUIER estado (cancelada
+// incluida), jamás recibe una GTC automática; el resaltado «⚠ PON TU GTC» sigue.
+// Excepción: la vista previa RECIENTE de una GTC (otro equipo la abrió y espera su PIN)
+// no veta, porque no hubo cancelación; si los dos equipos llegan a enviar, el bróker
+// rechaza la segunda porque los contratos ya están reservados (igual que en v47).
+function gtcAutoVetadas(ordenesGtc) {
+  const ahora = Date.now();
+  const gtcEnEspera = (o) => {
+    if (o.proposito !== 'salida_gtc' || o.estado !== 'preview') return false;
+    const t = Date.parse(o.creado_at);
+    return Number.isFinite(t) && ahora - t < PREVIEW_SEG * 1000 && ahora - t >= -30000;   // fecha «del futuro» (reloj atrasado) no es reciente
+  };
+  return new Set((ordenesGtc || []).filter(o => o && o.posicion_id != null && (o.proposito === 'salida_gtc' || o.proposito === 'salida_corte') && !gtcEnEspera(o))
+    .map(o => String(o.posicion_id)));
 }
 // GTC AUTOMÁTICO (pedido de Andrés 2026-09-13, «el cierre apenas la abro»): al
 // enviar una compra, la casilla «Al llenarse, enviar sola la venta GTC» queda
 // anotada en la orden (preview._mz.gtc_auto). Cuando la Mesa detecta el fill,
-// abre la venta GTC +35%, la previsualiza y la ENVÍA: el PIN (armado 15 min) es
+// abre la venta GTC (+35% o +10%, el plan CONGELADO de esa posición), la previsualiza y la ENVÍA: el PIN (armado 15 min) es
 // la única puerta — si está desarmado, lo pide; si lo cancelas, la orden queda
 // abierta para que la envíes tú. Una orden sin la anotación cuenta como SÍ.
 const GTC_AUTO_DEF_K = 'mz_gtc_auto_def', GTC_AUTO_ENV_K = 'mz_gtc_auto_env';
@@ -929,19 +1133,24 @@ const GTC_AUTO_K = 'mz_gtc_auto';
 function gtcAutoYaAbierto(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); return !!m[String(id)]; } catch (_) { return false; } }
 function gtcAutoMarcar(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); m[String(id)] = Date.now(); localStorage.setItem(GTC_AUTO_K, JSON.stringify(m)); } catch (_) {} }
 function abrirGtcAutomatico(pendientes) {
+  // jamás durante un corte: su formulario no puede cruzarse con la venta del corte
+  const hayCorte = () => typeof _corte !== 'undefined' && _corte.enCurso;
+  if (hayCorte()) return;
   if (!pendientes || !pendientes.length) return;
   if (document.querySelector('.modal')) return;                 // no pisar otro cuadro abierto
   const ops = brokersOperables();
-  const p = pendientes.find(x => !gtcAutoYaAbierto(x.id) && ops.includes(x.broker || 'etrade'));   // nunca por otro bróker
+  // nunca por otro bróker, ni en una posición que ya tuvo GTC o corte (veto en la base: _gtcAutoVeto)
+  const p = pendientes.find(x => !x._gtcAutoVeto && !gtcAutoYaAbierto(x.id) && ops.includes(x.broker || 'etrade'));
   if (!p) return;
   gtcAutoMarcar(p.id);                                          // una vez por posición y equipo
   const pre = preSalida(p, 'salida_gtc');
   abrirOrden(pre);
-  toast(`Fill ${p.symbol} ${p.direccion} ${p.strike} ×${Number(p.contratos) || 1} a $${Number(p.prima_fill).toFixed(2)}: GTC +${PLAN_PCT}% a $${gtcDe(Number(p.prima_fill)).toFixed(2)} — revisa y envía`);
+  toast(`Fill ${p.symbol} ${p.direccion} ${p.strike} ×${Number(p.contratos) || 1} a $${Number(p.prima_fill).toFixed(2)}: GTC +${Number(p.plan_pct) > 0 ? Number(p.plan_pct) : 35}% a $${(pre.limitPrice || 0).toFixed(2)} — revisa y envía`);
   setTimeout(async () => {
-    if (!(_ord && $('#modalOrden') && !_ord.orden)) return;
+    // solo SU formulario (_ord.pre === pre): si ya es otro, p. ej. la venta del corte, no se toca nada
+    if (hayCorte() || !(_ord && _ord.pre === pre && $('#modalOrden') && !_ord.orden)) return;
     await ordenPreview();                                       // vista previa automática (sin PIN)
-    if (!(_ord && $('#modalOrden') && _ord.previewIds)) return;
+    if (hayCorte() || !(_ord && _ord.pre === pre && $('#modalOrden') && _ord.previewIds)) return;
     if (gtcAutoQuiere(p.id)) {
       toast('Enviando la venta GTC automática…');
       await ordenPlace();                                        // pide PIN si el equipo está desarmado
@@ -950,8 +1159,8 @@ function abrirGtcAutomatico(pendientes) {
 }
 
 // Ticket armado por el worker en la señal (payload.ticket: strike/exp/ask del
-// rango vivo): el botón «Operar en E*TRADE» abre la orden ya llena; la cadena
-// en vivo permite ajustar con un toque.
+// rango vivo): el botón «Operar en <plataforma elegida>» abre la orden ya llena;
+// la cadena en vivo permite ajustar con un toque.
 function preOrdenDeSenal(s) {
   const pre = { senal_id: s.id, symbol: s.symbol, direccion: s.direccion, proposito: 'entrada' };
   const tk = (s.payload && s.payload.ticket) || null;
@@ -968,20 +1177,76 @@ function textoTicket(s) {
   const rango = (tk.rango && tk.rango[0] != null) ? ` · rango $${Math.round(tk.rango[0])}–$${Math.round(tk.rango[1])}` : '';
   return `<div class="mut mono" style="margin-top:6px">Ticket armado: ${esc(s.symbol)} ${esc(s.direccion || '')} ${esc(tk.strike)} · vence ${esc(tk.exp || '—')}${tk.ask != null ? ' · ask $' + Number(tk.ask).toFixed(2) : ''}${rango}</div>`;
 }
-function tarjetaSenal(s, posic) {
+function tarjetaSenal(s, posic, pl) {
   const yaReg = posic.some(p => p.senal_id === s.id);
+  const plan = planActivo();   // la señal dice el 35% doctrinal (C2); la línea del plan propio va aparte
+  pl = pl || plataformaOrden(brokersOperables(), brokerOrdenGuardado());
   return `<div class="card" style="border-color:rgba(231,181,77,.45)">
     <div class="fila"><span style="font-weight:700;font-size:13.5px">${esc(s.titulo)}</span>
       <span class="fresco">${esc(haceCuanto(s.creado_at).txt)}</span></div>
     <div class="mut" style="margin-top:5px">${esc(s.motivo || '')}</div>
     ${textoTicket(s)}
-    ${s.instruccion_gtc ? `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${esc(s.instruccion_gtc)}</div>` : ''}
+    ${lineasGtcSenal(s.instruccion_gtc, plan)}
     ${yaReg ? `<div class="mut" style="margin-top:8px;color:var(--verde)">✓ ya registraste tu fill</div>`
       : `<div class="dos" style="margin-top:9px">
         <button class="btnsec" onclick='MZ.abrirFill(${JSON.stringify({
           senal_id: s.id, symbol: s.symbol, direccion: s.direccion }).replace(/'/g, "&#39;")})'>Registrar mi fill</button>
-        <button class="pri" onclick='MZ.abrirOrden(${JSON.stringify(preOrdenDeSenal(s)).replace(/'/g, "&#39;")})'>Operar en E*TRADE</button></div>`}
+        ${botonOrden(pl, preOrdenDeSenal(s), 'Operar en')}</div>`}
   </div>`;
+}
+// Instrucción GTC de la señal (Informe y Copiloto). La señal dice el 35% doctrinal
+// (SPEC C2) y no se toca; con el Plan 10% se presenta como doctrina y debajo va la
+// línea del plan propio, que es la que manda. Con el Plan 35% sale como siempre.
+function lineasGtcSenal(instruccion, plan) {
+  const diez = !!(plan && plan.id === 'PLAN_10');
+  let h = '';
+  if (instruccion) h += `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${diez ? 'Doctrina Plan 35%: ' : ''}${esc(instruccion)}</div>`;
+  if (diez) h += `<div class="mut mono" style="margin-top:4px;color:var(--azul)">Tu plan (manda): GTC +${plan.gtcPct}% · corte -${plan.stopPct}%</div>`;
+  return h;
+}
+
+// ---- Plataforma para operar (pedido de Andrés 2026-09-14) ----
+// Las órdenes salen por E*TRADE o Charles Schwab; tastytrade y moomoo solo dan saldo
+// e historial. La elección vive en ESTE equipo, en mz_broker_orden (la misma clave que
+// usan abrirOrden y el selector del formulario), y solo vale con sesión viva: si la
+// elegida no la tiene manda la otra con sesión; si ninguna, «Conecta E*TRADE o Schwab».
+const PLATAFORMAS_ORDEN = ['etrade', 'schwab'];
+function brokerOrdenGuardado() { try { return localStorage.getItem('mz_broker_orden') || ''; } catch (_) { return ''; } }
+// {elegida: 'etrade'|'schwab'|null, ops: plataformas con sesión viva en este equipo}
+function plataformaOrden(operables, guardada) {
+  const ops = PLATAFORMAS_ORDEN.filter(b => (operables || []).includes(b));
+  return { elegida: ops.includes(guardada) ? guardada : (ops[0] || null), ops };
+}
+function filaPlataforma(pl) {
+  pl = pl || { elegida: null, ops: [] };
+  const sub = (t) => `<small style="display:block;margin-top:2px;font-size:10px;font-weight:500;line-height:1.25">${esc(t)}</small>`;
+  const btn = (k) => {
+    const nombre = esc(BROKER_NOMBRE[k] || k);
+    if (!PLATAFORMAS_ORDEN.includes(k)) {
+      return `<button class="perbtn" disabled style="opacity:.45;cursor:not-allowed">${nombre}${sub('solo saldo e historial: órdenes no conectadas')}</button>`;
+    }
+    const viva = pl.ops.includes(k), on = viva && pl.elegida === k;
+    return `<button class="perbtn${on ? ' on' : ''}" onclick="MZ.elegirPlataforma('${k}')">${nombre}${sub(on ? 'elegida' : viva ? 'con sesión' : 'sin sesión · toca para conectar')}</button>`;
+  };
+  return `<div class="card"><div class="fila"><h3>Plataforma para operar</h3><span class="fresco">en este equipo</span></div>
+    <div class="periodos" style="display:grid;grid-template-columns:1fr 1fr;margin-top:8px">${['etrade', 'schwab', 'tasty', 'moomoo'].map(btn).join('')}</div>
+    ${pl.elegida ? '' : `<div class="mut" style="margin-top:6px;color:var(--oro)">Ni E*TRADE ni Schwab tienen sesión en este equipo: conecta una para operar.</div>`}</div>`;
+}
+// Botón de orden con la plataforma elegida («Operar en …», «+ Nueva orden …»); sin
+// ninguna con sesión, lleva a Cuentas.
+function botonOrden(pl, pre, prefijo) {
+  if (!pl || !pl.elegida) return `<button class="pri" onclick="location.hash='#/cuentas'">Conecta E*TRADE o Schwab</button>`;
+  const p = Object.assign({}, pre || {}, { broker: pl.elegida });
+  return `<button class="pri" onclick='MZ.abrirOrden(${JSON.stringify(p).replace(/'/g, "&#39;")})'>${esc(prefijo)} ${esc(BROKER_NOMBRE[pl.elegida] || pl.elegida)}</button>`;
+}
+function elegirPlataforma(k) {
+  const nombre = BROKER_NOMBRE[k] || k;
+  if (!PLATAFORMAS_ORDEN.includes(k)) { toast(nombre + ': solo saldo e historial: órdenes no conectadas'); return; }
+  try { localStorage.setItem('mz_broker_orden', k); } catch (_) {}
+  // sin sesión viva aquí: a conectarla (sin await antes: iOS solo abre la pestaña dentro del toque)
+  if (!brokersOperables().includes(k)) { window.MZ.conectar(k); return; }
+  toast('Operarás en ' + nombre);
+  ruta();
 }
 
 // P&L vivo de una posición abierta: el worker escribe posiciones.mark (prima
@@ -1009,30 +1274,59 @@ function pnlVivo(p) {
     · ${esc(haceCuanto(p.mark_at).txt)}</div>`;
 }
 
+// Prima con 2 decimales, o hasta 4 si hacen falta (un corte de 0.096 no se redondea a 0.10).
+function fmtPrima(v) {
+  let s = Number(v).toFixed(4);
+  while (s.endsWith('0') && s.split('.')[1].length > 2) s = s.slice(0, -1);
+  return s;
+}
+// ¿La posición tocó su corte? El worker lo marca (aviso_corte_at) o el mark ya está en el corte.
+function corteTocado(p) {
+  const corte = corteDe(p && p.prima_fill, p && p.stop_pct);
+  if (corte == null) return false;
+  if (p.aviso_corte_at) return true;
+  return p.mark != null && p.mark !== '' && Number.isFinite(Number(p.mark)) && Number(p.mark) <= corte;
+}
 function tarjetaPosicion(p) {
-  return `<div class="card">
+  const pct = Number(p.plan_pct) > 0 ? Number(p.plan_pct) : 35;            // plan CONGELADO de esta posición
+  const corte = corteDe(p.prima_fill, p.stop_pct);
+  const tocado = corteTocado(p);
+  const operable = ['etrade', 'schwab'].includes(p.broker || 'etrade');
+  return `<div class="card"${tocado ? ' style="border-color:rgba(242,109,95,.6)"' : ''}>
     <div class="fila"><h3>${esc(p.symbol)} ${esc(p.direccion)}${p.strike ? ' ' + esc(p.strike) : ''}</h3>
       <span class="fresco">×${esc(p.contratos)} · ${esc(p.broker || '—')}</span></div>
     <div class="fila" style="margin-top:6px">
       <span class="mut">fill <b class="mono" style="color:var(--tx)">$${esc(p.prima_fill)}</b></span>
       <span class="mut">límite GTC <b class="mono" style="color:var(--oro)">$${esc(p.gtc_limite)}</b></span></div>
+    ${corte != null ? `<div class="fila" style="margin-top:3px">
+      <span class="mut">plan +${esc(pct)}%</span>
+      <span class="mut">corte -${esc(Number(p.stop_pct))}% <b class="mono" style="color:var(--rojo)">$${esc(fmtPrima(corte))}</b></span></div>` : ''}
+    ${tocado ? `<div class="aviso" style="background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.45);color:var(--rojo)">
+      ${p.aviso_corte_at
+        ? `<b>⚠ La Mesa te avisó del corte -${esc(Number(p.stop_pct))}% ($${esc(fmtPrima(corte))})${p.aviso_corte_mark != null ? ` · prima $${esc(fmtPrima(p.aviso_corte_mark))}` : ''}.</b>`
+        : `<b>⚠ El último mark está en tu corte -${esc(Number(p.stop_pct))}% ($${esc(fmtPrima(corte))}) · mark $${esc(fmtPrima(p.mark))}.</b> Aún sin aviso de la Mesa (el mark puede venir de una sola punta): mira el bid.`}
+      Si la entrada fue mala, corta ya: no la dejes ir a cero.${operable ? '' : ' Vende en tu bróker.'}</div>` : ''}
     ${pnlVivo(p)}
     <div class="fila" style="margin-top:9px;gap:8px">
       <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
       <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button></div>
-    ${['etrade', 'schwab'].includes(p.broker || 'etrade') ? `<div class="fila" style="margin-top:8px;gap:8px">
-      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45)${p._gtcPendiente ? ';background:rgba(231,181,77,.14);font-weight:700' : ''}" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>${p._gtcPendiente ? '⚠ PON TU GTC' : 'GTC'} +${PLAN_PCT}% ($${esc(gtcDe(Number(p.prima_fill)).toFixed(2))})</button>
-      <button class="btnsec" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_stop')).replace(/'/g, "&#39;")})'>Trailing stop</button></div>` : ''}
+    ${operable ? `<div class="fila" style="margin-top:8px;gap:8px">
+      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45)${p._gtcPendiente ? ';background:rgba(231,181,77,.14);font-weight:700' : ''}" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>${p._gtcPendiente ? '⚠ PON TU GTC' : 'GTC'} +${pct}% ($${esc((gtcDePosicion(p) || 0).toFixed(2))})</button>
+      ${p.stop_pct == null ? `<button class="btnsec" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_stop')).replace(/'/g, "&#39;")})'>Trailing stop</button>` : ''}</div>` : ''}
+    ${corte != null && operable ? `<div class="fila" style="margin-top:8px">
+      <button class="btnsec" style="${tocado ? 'background:var(--rojo);color:#fff;border-color:var(--rojo);font-weight:700' : 'color:var(--rojo);border-color:rgba(242,109,95,.45)'}" onclick="MZ.cortarPosicion(${Number(p.id)})">Cortar</button></div>` : ''}
   </div>`;
 }
 // Prefill de una orden de SALIDA (SELL_CLOSE) desde una posición abierta.
-function preSalida(p, proposito) {
-  const gtc = proposito === 'salida_gtc';
+// salida_gtc: LIMIT GTC al límite de SU plan · salida_stop: trailing stop GTC ·
+// salida_corte: LIMIT DAY al bid (el corte del Plan 10%; el bid lo pasa cortarPosicion).
+function preSalida(p, proposito, bid) {
+  const gtc = proposito === 'salida_gtc', corte = proposito === 'salida_corte';
   return { proposito, posicion_id: p.id, broker: p.broker || 'etrade', symbol: p.symbol, direccion: p.direccion,
     strike: p.strike == null ? undefined : Number(p.strike), expiracion: p.expiracion || undefined,
-    cantidad: Number(p.contratos) || 1, accion: 'venta', orderTerm: 'GOOD_UNTIL_CANCEL',
-    priceType: gtc ? 'LIMIT' : 'TRAILING_STOP_PRCT',
-    limitPrice: gtc ? gtcDe(Number(p.prima_fill)) : undefined };
+    cantidad: Number(p.contratos) || 1, accion: 'venta', orderTerm: corte ? 'DAY' : 'GOOD_UNTIL_CANCEL',
+    priceType: (gtc || corte) ? 'LIMIT' : 'TRAILING_STOP_PRCT',
+    limitPrice: gtc ? gtcDePosicion(p) : (corte && Number(bid) > 0) ? Math.round(Number(bid) * 100) / 100 : undefined };
 }
 
 // ---- modal de registro de fill ----
@@ -1069,10 +1363,12 @@ function abrirFill(pre) {
   const prima = m.querySelector('#fPrima');
   const sym = m.querySelector('#fSym');
   let rango = null;                 // rango_vivo del ticker seleccionado
+  const planF = planActivo();       // el registro manual congela el plan activo
   const evaluar = () => {
     const v = parseFloat(prima.value);
+    const corteF = corteDe(v, planF.stopPct);
     m.querySelector('#fGtc').textContent = v > 0
-      ? `Límite GTC a colocar: $${gtcDe(v).toFixed(2)}  (fill ×1.35 + $0.02)` : 'Límite GTC: —';
+      ? `Límite GTC a colocar: $${gtcLimite(v, planF.gtcPct).toFixed(2)}  (fill ×${(1 + planF.gtcPct / 100).toFixed(2)} + $0.02)${corteF != null ? ` · corte -${planF.stopPct}%: $${fmtPrima(corteF)}` : ''}` : 'Límite GTC: —';
     const rh = m.querySelector('#fRango');
     if (!rango || rango.lo == null) { rh.textContent = 'Rango óptimo: sin dato'; rh.dataset.n = ''; return; }
     // Rango invertido (cotizaciones fuera de sesión): NO juzgar. Con lo>hi el
@@ -1120,14 +1416,16 @@ async function guardarFill(senalId) {
   if (!uid) { $('#fErr').textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
   const sem = ($('#fRango') || {}).dataset ? $('#fRango').dataset.n : '';  // veredicto del rango
+  const plan = planActivo();       // plan CONGELADO en la posición
   const fila = {
     user_id: uid, symbol: g('fSym'), direccion: g('fDir'),
     strike, expiracion: g('fExp'), contratos: qty, prima_fill: prima,
-    plan_pct: PLAN_PCT, broker: g('fBr'), senal_id: senalId || null,
+    plan_pct: plan.gtcPct, broker: g('fBr'), senal_id: senalId || null,
     abierta_fecha_ny: hoy,
     entrada_semaforo: (sem === 'ok' || sem === 'aviso' || sem === 'alto') ? sem : null,
     fuera_de_rango: sem === 'alto',
   };
+  if (plan.stopPct != null) fila.stop_pct = plan.stopPct;   // sin corte no se envía (compatible sin la migración 0012)
   const { error } = await sb.from('posiciones').insert(fila);
   if (error) { $('#fErr').textContent = 'No se guardó: ' + error.message; return; }
   cerrarModal(); ruta();
@@ -1176,6 +1474,13 @@ function abrirCuenta() {
     <div class="fila" style="align-items:flex-start">
       <div class="mut" id="avEstado" style="flex:1">consultando…</div>
       <button class="btnsec oculto" id="avBtn" style="flex:none;padding:8px 14px" onclick="MZ.avisos()">Activar</button></div>
+    <div class="sec" style="margin-top:14px">PLAN DE TRADING</div>
+    <select id="cpPlan" onchange="this.dataset.tocado='1';MZ.planResumen()">
+      ${Object.values(PLANES).map(pl => `<option value="${pl.id}" ${pl.id === planActivo().id ? 'selected' : ''}>${esc(pl.nombre)}${pl.id === 'PLAN_35' ? ' · doctrina de Joel' : ' · diapositivas del curso'}</option>`).join('')}</select>
+    <div class="mut" id="cpPlanRes" style="margin-top:4px">${esc(textoReglasPlan(planActivo()))}</div>
+    <div class="fresco" style="margin-top:3px">Personal: solo tú lo ves. Cambiarlo no toca tus posiciones abiertas (cada una conserva su plan).</div>
+    <div class="err" id="cpPlanErr" style="text-align:left"></div>
+    <button class="btnsec" style="width:100%" onclick="MZ.guardarPlan()">Guardar plan</button>
     <div class="sec" style="margin-top:14px">ÓRDENES</div>
     <div class="fila" style="align-items:flex-start">
       <div class="mut" id="ordPinEstado" style="flex:1">…</div>
@@ -1189,7 +1494,39 @@ function abrirCuenta() {
   diagSesion().then(t => { const d = $('#cpDiag'); if (d) d.textContent = t; });
   pintarAvisos();
   pintarOrdenesCuenta();
+  // el plan guardado en la nube manda (otro equipo pudo cambiarlo)
+  cargarPlanUsuario(true).then(() => {
+    const s = $('#cpPlan'); if (!s || s.dataset.tocado) return;
+    s.value = planActivo().id; pintarResumenPlan();
+    const e = $('#cpPlanErr'); if (e && _plan.err) e.textContent = 'Plan en respaldo (Plan 35%): ' + _plan.err;
+  });
   setTimeout(() => { const i = $('#cpActual'); if (i) i.focus(); }, 60);
+}
+function pintarResumenPlan() {
+  const s = $('#cpPlan'), r = $('#cpPlanRes'); if (!s || !r) return;
+  r.textContent = textoReglasPlan(PLANES[s.value] || PLANES.PLAN_35);
+}
+async function guardarPlan() {
+  const s = $('#cpPlan'), err = $('#cpPlanErr'); if (!s || !err) return;
+  const id = PLANES[s.value] ? s.value : 'PLAN_35';
+  err.style.color = ''; err.textContent = 'Guardando…';
+  try {
+    await guardarPlanUsuario({ plan: id });
+    err.textContent = '';
+    delete s.dataset.tocado;
+    toast(`Plan guardado: ${PLANES[id].nombre}. Tus posiciones abiertas conservan su plan.`);
+    ruta();
+  } catch (e) { err.style.color = 'var(--rojo)'; err.textContent = 'No se guardó: ' + ((e && e.message) || e); }
+}
+// Compañía de hoy (Plan 10%): se guarda en plan_usuario con la fecha NY de hoy.
+async function elegirFoco(sym) {
+  sym = String(sym || '').trim().toUpperCase();
+  if (!TICKERS.includes(sym)) return;
+  try {
+    await guardarPlanUsuario({ symbol_foco: sym, foco_fecha: hoyNY() });
+    toast(`Compañía de hoy: ${sym}`);
+    ruta();
+  } catch (e) { toast('No se guardó la compañía: ' + ((e && e.message) || e)); }
 }
 
 // ---------- Avisos push (Web Push con VAPID; el worker del VPS los manda) ----------
@@ -1399,7 +1736,8 @@ async function salir() {
   location.hash = '';
   location.reload();
 }
-window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir, avisos: avisosToggle });
+window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir, avisos: avisosToggle,
+  planResumen: pintarResumenPlan, guardarPlan, elegirFoco });
 // Charts de Tickers (registrados AQUÍ, después de la asignación plana de window.MZ).
 window.MZ = Object.assign(window.MZ, { chartAbrir: abrirChart, chartCerrar: cerrarChart, chartVista, chartTf, chartGuardarTarget: guardarTarget });
 
@@ -2455,7 +2793,7 @@ const ORD_K = { pin: 'mz_pin', armado: 'mz_armado_hasta' };
 const ARMADO_MIN = 15;          // el PIN arma este dispositivo 15 min
 const PREVIEW_SEG = 180;        // la vista previa de E*TRADE caduca a los 3 min
 const PRICE_TYPES = ['LIMIT', 'MARKET', 'STOP', 'TRAILING_STOP_PRCT'];
-const PROPOSITOS = ['entrada', 'salida_gtc', 'salida_stop', 'cancelar', 'otro'];
+const PROPOSITOS = ['entrada', 'salida_gtc', 'salida_stop', 'salida_corte', 'cancelar', 'otro'];   // salida_corte: Plan 10% (migración 0012)
 
 // clientOrderId de E*TRADE: ≤20 alfanumérico y único ('mz' + tiempo base36 + 4 al azar).
 function clientOrderIdNuevo(ahora) {
@@ -2679,13 +3017,22 @@ function pintarRangoOrden() {
   const vivo = (_ord.ctx && _ord.ctx.rangos && _ord.ctx.rangos[f.symbol]) || null;
   el.innerHTML = textoRangoOrden(f.symbol, vivo, RANGOS_TABLA[f.symbol] || null, diaSemanaNY());
 }
-// ---- presupuesto por ticket (regla personal de Andrés, 2026-09-13): el 35% del
+// ---- presupuesto por ticket (regla personal de Andrés, 2026-09-13): un % del
 // saldo del BRÓKER de la orden (E*TRADE hoy; Schwab/tasty con su propio saldo
 // cuando operen). La cantidad se prearma sola: presupuesto ÷ valor del contrato.
-// Es sizing personal, NO doctrina: la regla del 10% (TAMANO_PCT) sigue avisando.
+// Es sizing personal, NO doctrina: la regla de tamaño del plan sigue avisando.
+//   Plan 35%: 35% por defecto, 1–100, guardado en este equipo (como siempre).
+//   Plan 10%: 35% por defecto (lo eligió Andrés), 1–100 (por encima del 50% solo
+//   avisa: sin tope duro), guardado en plan_usuario (personal y sincronizado entre
+//   iPhone y Mac).
 const PRESUPUESTO_PCT_DEFECTO = 35;
 const PRESUP_K = 'mz_presup_pct';
-function presupuestoPct() {
+function presupuestoPct(plan) {
+  plan = plan || planActivo();
+  if (plan.id === 'PLAN_10') {
+    const f = planFilaCache(), v = Number(f && f.presupuesto_pct);
+    return (f && f.presupuesto_pct != null && v > 0 && v <= plan.presupMaxPct) ? v : plan.presupDefPct;
+  }
   try { const v = Number(localStorage.getItem(PRESUP_K)); return (v > 0 && v <= 100) ? v : PRESUPUESTO_PCT_DEFECTO; } catch (_) { return PRESUPUESTO_PCT_DEFECTO; }
 }
 // Presupuesto en $ para este ticket a partir del saldo del bróker (null si no se conoce).
@@ -2708,32 +3055,55 @@ function totalOrden(f) {
   if (!(qty > 0) || !(precio > 0)) return null;
   return Math.round(qty * precio * (f.tipo === 'EQ' ? 1 : 100) * 100) / 100;
 }
+// ctx.plan (PLANES.*) decide cupo, tamaño, hora y compañía; SIN plan (o Plan 35%)
+// los textos y conteos son los de siempre. Plan 10%: ctx.opsHoy, ctx.fueraVentana
+// (fuera de 9:30–9:45 ET), ctx.focoHoy (compañía de hoy o null) y
+// ctx.expHoyTras1030 (la fecha NY de hoy si ya pasaron las 10:30 ET; si no, null).
+// ctx.posicionId: la orden es la SALIDA de esa posición (no avisa por el ticker).
 function avisosOrden(f, ctx) {
   f = f || {}; ctx = ctx || {};
   const av = [];
+  const plan = (ctx.plan && ctx.plan.periodo) ? ctx.plan
+    : { opsMax: OPS_SEMANA, periodo: 'semana', tamanoMaxPct: TAMANO_PCT, ventana: 'no_antes_1030' };
   const sym = String(f.symbol || '').trim().toUpperCase();
   const esEntrada = f.accion !== 'venta';
   const esOpt = f.tipo !== 'EQ';
   const qty = Number(f.cantidad) || 0;
   const precio = f.priceType === 'LIMIT' ? Number(f.limitPrice) : null;
-  if (sym && !TICKERS.includes(sym)) av.push(`${sym} no está en tus 4 tickers (${TICKERS.join(', ')})`);
+  // la SALIDA de una posición que ya existe (GTC, stop, corte) no pide override por el
+  // ticker: una QQQ/SPX/META abierta antes del cambio de lista se tiene que poder vender
+  if (sym && !TICKERS.includes(sym) && !(f.accion === 'venta' && ctx.posicionId)) av.push(`${sym} no está en tus ${TICKERS.length} tickers (${TICKERS.join(', ')})`);
   if (!esEntrada) return av;
   if (esOpt && precio > 0 && ctx.rango && ctx.rango.lo != null && semaforoRango(precio, ctx.rango) === 'alto') {
     av.push(`Prima $${(precio * 100).toFixed(0)} FUERA del rango óptimo $${Math.round(ctx.rango.lo)}–$${Math.round(ctx.rango.hi)} — así se perdió en agosto`);
   }
-  const ops = Number(ctx.opsSemana) || 0;
-  if (ops >= OPS_SEMANA) av.push(`Sería la ${ops + 1}ª operación de la semana (plan: ${OPS_SEMANA})`);
-  // la regla del 10% se mide contra la cuenta del BRÓKER de la orden (E*TRADE);
+  if (plan.periodo === 'dia') {
+    const hoy = Number(ctx.opsHoy) || 0;
+    if (hoy >= plan.opsMax) av.push(`Sería la ${hoy + 1}ª operación del día (plan: ${plan.opsMax} al día)`);
+  } else {
+    const ops = Number(ctx.opsSemana) || 0;
+    if (ops >= plan.opsMax) av.push(`Sería la ${ops + 1}ª operación de la semana (plan: ${plan.opsMax})`);
+  }
+  if (plan.companiaDia && sym) {
+    if (!ctx.focoHoy) av.push('Plan 10%: elige la compañía de hoy en el Copiloto');
+    else if (sym !== ctx.focoHoy) av.push(`Plan 10%: hoy operas ${ctx.focoHoy}, no ${sym}`);
+  }
+  // la regla de tamaño se mide contra la cuenta del BRÓKER de la orden (E*TRADE);
   // si no se conoce, contra el total de cuentas
   const saldo = Number(ctx.saldoBroker != null ? ctx.saldoBroker : ctx.saldo) || 0;
   if (precio > 0 && qty > 0 && saldo > 0) {
-    const costo = precio * qty * (esOpt ? 100 : 1), tope = saldo * TAMANO_PCT / 100;
-    if (costo > tope) av.push(`Costo ${usd(costo)}: más del ${TAMANO_PCT}% de la cuenta (${usd(tope)})`);
+    const costo = precio * qty * (esOpt ? 100 : 1), tope = saldo * plan.tamanoMaxPct / 100;
+    if (costo > tope) av.push(`Costo ${usd(costo)}: más del ${plan.tamanoMaxPct}% de la cuenta (${usd(tope)})`);
   }
   if (ctx.spread && ctx.spread.pct != null && ctx.spread.pct >= SPREAD_MAX_PCT) {
     av.push(`Spread bid/ask $${(ctx.spread.bid * 100).toFixed(0)}→$${(ctx.spread.ask * 100).toFixed(0)} = ${ctx.spread.pct.toFixed(0)}%: la academia dice NO comprar con ${SPREAD_MAX_PCT}% o más (desde la compra vas en negativo)`);
   }
-  if (ctx.antes1030) av.push('Antes de las 10:30 ET: la doctrina espera a que el mercado defina');
+  if (plan.ventana === 'apertura_15') {
+    if (ctx.fueraVentana) av.push('Fuera de 9:30–9:45 ET: el Plan 10% identifica el movimiento en los primeros 15 minutos de la apertura');
+  } else if (ctx.antes1030) av.push('Antes de las 10:30 ET: la doctrina espera a que el mercado defina');
+  if (plan.avisoExpHoy && esOpt && ctx.expHoyTras1030 && String(f.expiracion || '') === String(ctx.expHoyTras1030)) {
+    av.push('Vence hoy y ya pasaron las 10:30 ET: la doctrina compra la siguiente fecha de expiración');
+  }
   return av;
 }
 function requiereOverride(avisos) { return Array.isArray(avisos) && avisos.length > 0; }
@@ -2774,8 +3144,9 @@ function filaOrdenDe(f, orden, extra) {
     order_term: o.orderTerm,
   }, extra || {});
 }
-function propositoDe(f) {
+function propositoDe(f, pre) {
   if (f.accion !== 'venta') return 'entrada';
+  if (pre && pre.proposito === 'salida_corte') return 'salida_corte';   // corte del Plan 10%: venta al bid (DAY)
   if (f.priceType === 'LIMIT') return 'salida_gtc';
   if (f.priceType === 'STOP' || f.priceType === 'TRAILING_STOP_PRCT') return 'salida_stop';
   return 'otro';
@@ -2919,6 +3290,7 @@ function abrirOrden(pre) {
   m.innerHTML = `<div class="hoja">
     <div class="fila"><h3 style="margin:0" id="oTitulo">Orden ${esc(BROKER_NOMBRE[broker] || broker)}</h3><span class="fresco" id="oArm"></span></div>
     <div class="mut" id="oSub" style="margin-bottom:4px">${esc(subtituloBroker(broker))}</div>
+    ${pre.proposito === 'salida_corte' ? `<div class="aviso" style="margin-top:2px;background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.45);color:var(--rojo)"><b>Corte</b>: venta de cierre LIMIT DAY al bid${Number(pre.limitPrice) > 0 ? ' ($' + esc(Number(pre.limitPrice).toFixed(2)) + ')' : ': no leí el bid, tócalo en la cadena'}. Tus ventas vivas de esta posición ya están canceladas. Revisa y envía (pide PIN).</div>` : ''}
     ${!fijo && ops.length > 1 ? `<label>Bróker</label><select id="oBroker">${ops.map(b => `<option value="${b}" ${b === broker ? 'selected' : ''}>${esc(BROKER_NOMBRE[b] || b)}</option>`).join('')}</select>` : ''}
     <label>Ticker</label>
     <input id="oSym" list="oSyms" value="${esc(pre.symbol || '')}" placeholder="AAPL" autocapitalize="characters" autocomplete="off" spellcheck="false" style="text-transform:uppercase">
@@ -2951,7 +3323,7 @@ function abrirOrden(pre) {
         <option value="STOP" ${pt === 'STOP' ? 'selected' : ''}>Stop</option>
         <option value="TRAILING_STOP_PRCT" ${pt === 'TRAILING_STOP_PRCT' ? 'selected' : ''}>Trailing stop %</option></select></div>
       <div id="oPrecioWrap"><label id="oPrecioLbl">Límite</label><input id="oPrecio" type="number" inputmode="decimal" step="0.01" value="${precio0 == null ? '' : esc(precio0)}" placeholder="ej. 0.98"></div></div>
-    <label id="oGtcAutoWrap" style="display:flex;align-items:center;gap:8px;margin:8px 2px 0;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--tx)"><input type="checkbox" id="oGtcAuto" ${gtcAutoDefecto() ? 'checked' : ''} style="width:auto;margin:0"> Al llenarse, enviar sola la venta GTC +${PLAN_PCT}% (pide PIN si el equipo está desarmado)</label>
+    <label id="oGtcAutoWrap" style="display:flex;align-items:center;gap:8px;margin:8px 2px 0;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--tx)"><input type="checkbox" id="oGtcAuto" ${gtcAutoDefecto() ? 'checked' : ''} style="width:auto;margin:0"> Al llenarse, enviar sola la venta GTC +${planActivo().gtcPct}% (pide PIN si el equipo está desarmado)</label>
     <div id="oAvisos"></div>
     <div id="oPrev"></div>
     <div class="err" id="oErr" style="text-align:left"></div>
@@ -3005,6 +3377,7 @@ function cambiarBrokerOrden(b) {
 // Una vista previa que no se envía (caduca, se edita o se cierra) queda 'expirada'
 // en la bitácora, para que el Copiloto no se llene de previews muertas.
 function expirarPreviewHuerfana() {
+  if (_ord && _ord.enviando) return;   // la fila está en vuelo: la anota el envío, no es huérfana
   if (!_ord || !_ord.filaId || _ord.estadoFila !== 'preview') return;
   _ord.estadoFila = 'expirada';
   sb.from('ordenes').update({ estado: 'expirada', actualizado_at: new Date().toISOString() }).eq('id', _ord.filaId).then(() => {}, () => {});
@@ -3223,24 +3596,27 @@ function cadenaElegir(lado, strike, ask, bid) {
   // compra: al ask (se llena); venta: al bid — editable después
   const p = f.accion === 'venta' ? (bid != null ? bid : ask) : (ask != null ? ask : bid);
   if (pr && pt && pt.value === 'LIMIT' && p != null) pr.value = Number(p).toFixed(2);
-  autoCantidad();                                   // prearma la cantidad con el presupuesto (35% del saldo)
+  autoCantidad();                                   // prearma la cantidad con el presupuesto del plan (% del saldo)
   ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden(); pintarCadena();
   toast(`${lado} ${strike} elegido${p != null ? ' a $' + Number(p).toFixed(2) : ''}`);
 }
-// Contexto de doctrina (rango por ticker, cupo semanal, saldo, hora): una consulta.
+// Contexto de doctrina (rango por ticker, cupo semanal y del día, saldo, hora, plan): una consulta.
 async function cargarCtxOrden() {
   const [te, pos, bt, cs] = await Promise.all([
     sb.from('ticker_estado').select('symbol,payload'),
     sb.from('posiciones').select('*'),
     sb.from('broker_trades').select('*'),
     sb.from('cuenta_snapshots').select('broker,saldo_neto'),
+    cargarPlanUsuario(),
   ]);
   const est = te.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
   const rangos = {};
   est.forEach(e => { const p = e.payload || {}; rangos[e.symbol] = componerRango(p.rango_vivo || null, p.rango_academia || null, RANGOS_TABLA[e.symbol] || null); });
-  const lun = lunesNY();
-  const opsSemana = unirOperaciones(pos.data || [], bt.data || []).ops.filter(p => (p.abierta_fecha_ny || '') >= lun).length;
+  const lun = lunesNY(), hoy = hoyNY();
+  const unidas = unirOperaciones(pos.data || [], bt.data || []).ops;
+  const opsSemana = unidas.filter(p => (p.abierta_fecha_ny || '') >= lun).length;
+  const opsHoy = unidas.filter(p => (p.abierta_fecha_ny || '') === hoy).length;
   // saldo por bróker (una fila por bróker en cuenta_snapshots) + total
   const saldos = {};
   (cs.data || []).forEach(c => { if (c.broker) saldos[c.broker] = Number(c.saldo_neto) || 0; });
@@ -3250,9 +3626,12 @@ async function cargarCtxOrden() {
   const saldo = Object.values(saldos).reduce((s, v) => s + v, 0);
   const broker = (_ord && _ord.broker) || 'etrade';       // bróker elegido en el formulario
   const saldoBroker = saldos[broker] > 0 ? saldos[broker] : null;
-  if (_ord) _ord.ctx = { rangos, opsSemana, saldo, saldos, broker, saldoBroker, antes1030: antesDe1030NY(merc) };
+  const plan = planActivo(), antes1030 = antesDe1030NY(merc);
+  if (_ord) _ord.ctx = { rangos, opsSemana, opsHoy, saldo, saldos, broker, saldoBroker, antes1030, plan,
+    fueraVentana: fueraVentanaNY(plan.ventanaMin), focoHoy: focoDeHoy(planFilaCache(), hoy),
+    expHoyTras1030: antes1030 ? null : hoy };        // la fecha NY de hoy si ya pasaron las 10:30 ET; si no, null
 }
-// Cantidad prearmada: presupuesto (35% del saldo del bróker) ÷ valor del contrato.
+// Cantidad prearmada: presupuesto (% del plan sobre el saldo del bróker) ÷ valor del contrato.
 // Solo en compras, solo si el usuario no tocó la cantidad a mano y hay precio.
 function autoCantidad() {
   if (!_ord || _ord.qtyManual) return;
@@ -3306,7 +3685,10 @@ function pintarAvisosOrden() {
   const f = leerFormOrden();
   const c = _ord.ctx;
   const cad = (_ord.cadena && String(_ord.cadenaClave || '').split('|')[0] === f.symbol) ? _ord.cadena : null;
-  const av = c ? avisosOrden(f, { rango: c.rangos[f.symbol] || null, opsSemana: c.opsSemana, saldo: c.saldo, saldoBroker: c.saldoBroker, antes1030: c.antes1030, spread: spreadDeForm(f, cad) }) : [];
+  const av = c ? avisosOrden(f, { rango: c.rangos[f.symbol] || null, opsSemana: c.opsSemana, saldo: c.saldo, saldoBroker: c.saldoBroker, antes1030: c.antes1030, spread: spreadDeForm(f, cad),
+    plan: c.plan, opsHoy: c.opsHoy, focoHoy: c.focoHoy, expHoyTras1030: c.expHoyTras1030,
+    posicionId: (_ord.pre && _ord.pre.posicion_id) || null,
+    fueraVentana: (c.plan && c.plan.ventanaMin) ? fueraVentanaNY(c.plan.ventanaMin) : c.fueraVentana }) : [];   // la ventana se mira con el reloj de AHORA
   _ord.avisos = av;
   const txt = av.join('\n');
   if (txt === _ord.avisosTxt) return;   // sin cambios: no tocar el checkbox
@@ -3326,9 +3708,14 @@ function bloquearFormOrden(si) {
 
 async function ordenPreview() {
   if (!_ord) return;
+  const o0 = _ord;   // el formulario que pidió la vista previa (si al volver ya es otro, no se toca)
   const err = $('#oErr'), btn = $('#oBtnPrev');
   if (!err || !btn) return;
   err.textContent = '';
+  // una orden de este formulario aún en vuelo o sin respuesta clara puede estar viva: no se
+  // previsualiza otra encima (verifica en el bróker y abre un formulario nuevo)
+  if (_ord.enviando) { err.textContent = 'Espera la respuesta del bróker a la orden que enviaste.'; return; }
+  if (_ord.indeterminado) { err.textContent = 'Verifica en el bróker si la orden entró antes de reintentar.'; return; }
   const f = leerFormOrden();
   const e1 = validarOrden(f); if (e1) { err.textContent = e1; return; }
   const preB = _ord.pre || {};
@@ -3351,7 +3738,8 @@ async function ordenPreview() {
   pintarArmadoOrden();
   btn.disabled = true; btn.textContent = 'Consultando E*TRADE…';
   const pre = _ord.pre || {};
-  const proposito = propositoDe(f);
+  const proposito = propositoDe(f, pre);
+  const planO = (_ord.ctx && _ord.ctx.plan) || planActivo();   // plan que se CONGELA en la compra
   const orden = construirOrden({ ...f, clientOrderId: clientOrderIdNuevo() });
   const rango = _ord.ctx && _ord.ctx.rangos[f.symbol] || null;
   const semaforo = (f.tipo !== 'EQ' && f.accion !== 'venta' && f.priceType === 'LIMIT') ? semaforoRango(Number(f.limitPrice), rango) : null;
@@ -3379,20 +3767,25 @@ async function ordenPreview() {
     const previewIds = ids.map(x => Object.assign({ previewId: x.previewId }, x.cashMargin ? { cashMargin: x.cashMargin } : {}));
     const fila = { ...filaOrdenDe(f, orden, extra), user_id: uid, estado: 'preview', overrides: av,
       preview: Object.assign({ _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null,
-        gtc_auto: f.accion !== 'venta' && !!($('#oGtcAuto') && $('#oGtcAuto').checked) } }, recortarJson(P, 4000)) };
+        gtc_auto: f.accion !== 'venta' && !!($('#oGtcAuto') && $('#oGtcAuto').checked),
+        plan_pct: f.accion !== 'venta' ? planO.gtcPct : null, stop_pct: f.accion !== 'venta' ? planO.stopPct : null } }, recortarJson(P, 4000)) };
     const ins = await sb.from('ordenes').insert(fila).select('id').single();
     if (ins.error) throw new Error('No pude guardar la vista previa: ' + ins.error.message);
+    // volvió tarde y el formulario ya es otro (cerrado, un corte o la GTC automática):
+    // jamás se guarda en el ajeno — la fila se anota expirada y no se toca nada más
+    if (_ord !== o0) { sb.from('ordenes').update({ estado: 'expirada' }).eq('id', ins.data.id).then(() => {}, () => {}); return; }
     Object.assign(_ord, { f, orden, previewIds, filaId: ins.data.id, estadoFila: 'preview', indeterminado: false, accountIdKey, caduca: Date.now() + PREVIEW_SEG * 1000 });
     pintarPreviewOrden(P);
     bloquearFormOrden(true);
   } catch (e) {
-    err.textContent = String((e && e.message) || e);
+    if (_ord === o0) err.textContent = String((e && e.message) || e);
   }
-  btn.disabled = false; btn.textContent = textoBotonPreview(_ord && _ord.broker);
+  if (_ord === o0) { btn.disabled = false; btn.textContent = textoBotonPreview(_ord && _ord.broker); }
 }
 // Schwab NO tiene vista previa en su API: la «revisión» es local (misma fila
 // 'preview' en la bitácora, mismo reloj de 3 min, mismo PIN al enviar).
 async function ordenPreviewSchwab(f, av, err, btn) {
+  const o0 = _ord;   // ver ordenPreview: la revisión solo se guarda en el formulario que la pidió
   if (!swCreds()) { err.textContent = 'Conecta Schwab primero: Cuentas → Charles Schwab → Conectar (login semanal).'; return; }
   if (swVencido()) { err.textContent = 'El login semanal de Schwab caducó. Reconecta en Cuentas → Charles Schwab.'; return; }
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
@@ -3400,7 +3793,8 @@ async function ordenPreviewSchwab(f, av, err, btn) {
   pintarArmadoOrden();
   btn.disabled = true; btn.textContent = 'Revisando…';
   const pre = _ord.pre || {};
-  const proposito = propositoDe(f);
+  const proposito = propositoDe(f, pre);
+  const planO = (_ord.ctx && _ord.ctx.plan) || planActivo();   // plan que se CONGELA en la compra
   const orden = construirOrdenSchwab(f);
   const rango = _ord.ctx && _ord.ctx.rangos[f.symbol] || null;
   const semaforo = (f.tipo !== 'EQ' && f.accion !== 'venta' && f.priceType === 'LIMIT') ? semaforoRango(Number(f.limitPrice), rango) : null;
@@ -3426,19 +3820,21 @@ async function ordenPreviewSchwab(f, av, err, btn) {
       throw new Error('Schwab rechazó la orden en la revisión: ' + res.rechazos.join(' · '));
     }
     const fila = { ...filaBase(), estado: 'preview',
-      preview: Object.assign({ _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null, gtc_auto: f.accion !== 'venta' && !!($('#oGtcAuto') && $('#oGtcAuto').checked), local: !P },
+      preview: Object.assign({ _mz: { semaforo, rango: rango ? { lo: rango.lo, hi: rango.hi } : null, gtc_auto: f.accion !== 'venta' && !!($('#oGtcAuto') && $('#oGtcAuto').checked), local: !P,
+          plan_pct: f.accion !== 'venta' ? planO.gtcPct : null, stop_pct: f.accion !== 'venta' ? planO.stopPct : null },
         orden: recortarJson(orden, 3000), total: totalOrden(f) }, P ? recortarJson(P, 3500) : {}) };
     const ins = await sb.from('ordenes').insert(fila).select('id').single();
     if (ins.error) throw new Error('No pude guardar la revisión: ' + ins.error.message);
+    if (_ord !== o0) { sb.from('ordenes').update({ estado: 'expirada' }).eq('id', ins.data.id).then(() => {}, () => {}); return; }
     Object.assign(_ord, { f, orden, previewIds: [{ local: !P, schwab: !!P }], filaId: ins.data.id, estadoFila: 'preview', indeterminado: false, accountIdKey: hash, caduca: Date.now() + PREVIEW_SEG * 1000 });
     const msgs = [`Al tocar «Enviar», la orden entra directo a tu cuenta de Schwab${cuentaTxt} (${orden.orderLegCollection[0].instrument.symbol.trim()}).`].concat(res.avisos, nota ? [nota] : []);
     pintarPreviewOrden({ _local: !P, estimatedTotalAmount: res.valor != null ? res.valor : totalOrden(f), estimatedCommission: res.comision,
       Order: [{ messages: { Message: msgs.map(m => ({ description: m })) } }] });
     bloquearFormOrden(true);
   } catch (e) {
-    err.textContent = String((e && e.message) || e);
+    if (_ord === o0) err.textContent = String((e && e.message) || e);
   }
-  btn.disabled = false; btn.textContent = textoBotonPreview('schwab');
+  if (_ord === o0) { btn.disabled = false; btn.textContent = textoBotonPreview('schwab'); }
 }
 // Lee lo útil de la respuesta de previewOrder de Schwab (forma tolerante):
 // valor de la orden, comisión proyectada, rechazos y avisos.
@@ -3484,6 +3880,7 @@ function pintarPreviewOrden(P) {
   tick(); _ord.timer = setInterval(tick, 1000);
 }
 function ordenEditar() {
+  if (_ord && _ord.enviando) { toast('Espera la respuesta del bróker antes de editar la orden.'); return; }
   if (!_ord) return;
   if (_ord.indeterminado) { toast('Verifica en E*TRADE si la orden entró antes de editar'); return; }
   if (_ord.timer) clearInterval(_ord.timer);
@@ -3495,28 +3892,37 @@ function ordenEditar() {
 // El único paso que coloca la orden: lo dispara el usuario con «Enviar orden».
 async function ordenPlace() {
   if (!_ord || !_ord.orden) return;
+  const o0 = _ord;   // el formulario que se va a enviar: tras cada await se usa ESTE, no el global
   const err = $('#oErr'), b = $('#oBtnPlace');
   if (!err || !b) return;
+  if (o0.enviando) return;   // ya hay un envío de este formulario en vuelo
   err.textContent = '';
   if (_ord.indeterminado) { err.textContent = 'Verifica en E*TRADE si la orden entró antes de reintentar.'; return; }
   if (!_ord.previewIds || Date.now() > _ord.caduca) { err.textContent = 'La vista previa caducó (3 min). Vuelve a previsualizar.'; return; }
   if (!armadoHasta() && !(await pedirPin())) { err.textContent = 'Sin PIN no se opera.'; return; }
+  // mientras se tecleaba el PIN el formulario pudo cerrarse o ser OTRO (la GTC automática,
+  // un corte): ese PIN no envía nada ajeno
+  if (_ord !== o0) return;
   // el PIN pudo tardar: la vista previa debe seguir vigente
   if (!_ord.previewIds || Date.now() > _ord.caduca) { err.textContent = 'La vista previa caducó mientras tecleabas el PIN. Vuelve a previsualizar.'; return; }
-  if ((_ord.broker || 'etrade') === 'schwab') return ordenPlaceSchwab(err, b);
+  if ((_ord.broker || 'etrade') === 'schwab') return ordenPlaceSchwab(err, b, o0);
   const cr = etCreds();
   if (!cr) { err.textContent = 'Conecta E*TRADE primero.'; return; }
-  const id = _ord.filaId, ahora = () => new Date().toISOString();
+  const id = o0.filaId, ahora = () => new Date().toISOString();
   const anotar = async (estado, extra) => {
     if (!id) return null;
     const { error } = await sb.from('ordenes').update(Object.assign({ estado, actualizado_at: ahora() }, extra || {})).eq('id', id);
-    if (!error && _ord) _ord.estadoFila = estado;
+    if (!error) o0.estadoFila = estado;
     return error || null;
   };
+  // «Cancelar» sigue activo durante el envío (el POST no tiene tope): si al volver el formulario
+  // ya se cerró o es OTRO (p. ej. un corte), la respuesta se anota y se avisa sin tocar el ajeno.
+  const propio = () => _ord === o0;
+  o0.enviando = true;
   b.disabled = true; b.textContent = 'Enviando a E*TRADE…';
   let r = null, indeterminado = false;
   try {
-    r = await etPost(cr, '/etrade/orden/place', { accountIdKey: _ord.accountIdKey, orden: _ord.orden, previewIds: _ord.previewIds });
+    r = await etPost(cr, '/etrade/orden/place', { accountIdKey: o0.accountIdKey, orden: o0.orden, previewIds: o0.previewIds });
     const d = r.data || {}, R = d.PlaceOrderResponse || d;
     const em = mensajeError(r);
     const ids = R.OrderIds ? (Array.isArray(R.OrderIds) ? R.OrderIds : [R.OrderIds]) : [];
@@ -3538,40 +3944,43 @@ async function ordenPlace() {
     let e2 = await anotar('enviada', datos);
     if (e2) e2 = await anotar('enviada', datos);   // la orden está viva en E*TRADE: reintento de anotación
     if (e2) toast('Orden #' + ids[0].orderId + ' enviada, pero no pude anotarla: verifica en E*TRADE');
-    if (_ord.timer) clearInterval(_ord.timer);
+    if (o0.timer) clearInterval(o0.timer);
     toast('Orden enviada a E*TRADE');
-    cerrarOrden(); ruta();
+    if (propio()) cerrarOrden();
+    ruta();
   } catch (e) {
     const msg = String((e && e.message) || e);
     if (!r || indeterminado) {
       // No se sabe si entró → 'error' y se exige verificar en E*TRADE (jamás
       // inventar éxito ni permitir un reintento a ciegas que la duplique).
-      if (_ord) _ord.indeterminado = true;
+      o0.indeterminado = true;
       try { await anotar('error', { respuesta: { error: msg, nota: 'sin respuesta clara al enviar: verifica en E*TRADE' } }); } catch (_) {}
-      err.textContent = msg + ' Verifica en E*TRADE si la orden entró ANTES de reintentar.';
-      b.disabled = true; b.textContent = 'Verifica en E*TRADE';
+      if (propio()) { err.textContent = msg + ' Verifica en E*TRADE si la orden entró ANTES de reintentar.'; b.disabled = true; b.textContent = 'Verifica en E*TRADE'; }
+      else { alert(msg + ' Verifica en E*TRADE si esa orden entró ANTES de repetirla.'); ruta(); }
       return;
     }
-    err.textContent = msg;
-    b.disabled = false; b.textContent = 'Enviar orden';
-  }
+    if (propio()) { err.textContent = msg; b.disabled = false; b.textContent = 'Enviar orden'; }
+    else toast(msg);
+  } finally { o0.enviando = false; }
 }
 
 // Envío a Schwab: POST directo (201 + id en Location). Misma semántica de
 // rechazo/indeterminado que E*TRADE: solo es rechazo si habló Schwab (400 con
 // message/errors) o el proxy paró ANTES (400/403 con {error}).
-async function ordenPlaceSchwab(err, b) {
-  const id = _ord.filaId, ahora = () => new Date().toISOString();
+async function ordenPlaceSchwab(err, b, o0) {
+  const id = o0.filaId, ahora = () => new Date().toISOString();
   const anotar = async (estado, extra) => {
     if (!id) return null;
     const { error } = await sb.from('ordenes').update(Object.assign({ estado, actualizado_at: ahora() }, extra || {})).eq('id', id);
-    if (!error && _ord) _ord.estadoFila = estado;
+    if (!error) o0.estadoFila = estado;
     return error || null;
   };
+  const propio = () => _ord === o0;   // ver ordenPlace
+  o0.enviando = true;
   b.disabled = true; b.textContent = 'Enviando a Schwab…';
   let r = null, indeterminado = false;
   try {
-    r = await swPost('/schwab/orden/place', { hash: _ord.accountIdKey, orden: _ord.orden });
+    r = await swPost('/schwab/orden/place', { hash: o0.accountIdKey, orden: o0.orden });
     const d = r.data || {};
     const em = swMensajeError(r);
     if (r.status === 401) throw new Error('La sesión de Schwab caducó — reconecta en Cuentas → Charles Schwab.');
@@ -3589,30 +3998,31 @@ async function ordenPlaceSchwab(err, b) {
     let e2 = await anotar('enviada', datos);
     if (e2) e2 = await anotar('enviada', datos);
     if (e2) toast('Orden #' + d.orderId + ' enviada a Schwab, pero no pude anotarla: verifícala en Schwab');
-    if (_ord.timer) clearInterval(_ord.timer);
+    if (o0.timer) clearInterval(o0.timer);
     toast('Orden enviada a Schwab');
-    cerrarOrden(); ruta();
+    if (propio()) cerrarOrden();
+    ruta();
   } catch (e) {
     const msg = String((e && e.message) || e);
     if (!r || indeterminado) {
-      if (_ord) _ord.indeterminado = true;
+      o0.indeterminado = true;
       try { await anotar('error', { respuesta: { error: msg, nota: 'sin respuesta clara al enviar: verifica en Schwab' } }); } catch (_) {}
-      err.textContent = msg + ' Verifica en Schwab si la orden entró ANTES de reintentar.';
-      b.disabled = true; b.textContent = 'Verifica en Schwab';
+      if (propio()) { err.textContent = msg + ' Verifica en Schwab si la orden entró ANTES de reintentar.'; b.disabled = true; b.textContent = 'Verifica en Schwab'; }
+      else { alert(msg + ' Verifica en Schwab si esa orden entró ANTES de repetirla.'); ruta(); }
       return;
     }
-    err.textContent = msg;
-    b.disabled = false; b.textContent = 'Enviar orden';
-  }
+    if (propio()) { err.textContent = msg; b.disabled = false; b.textContent = 'Enviar orden'; }
+    else toast(msg);
+  } finally { o0.enviando = false; }
 }
 
-// ---- Copiloto: ÓRDENES EN E*TRADE ----
+// ---- Copiloto: ÓRDENES EN TU BRÓKER (E*TRADE y Schwab) ----
 function seccionOrdenes(filas) {
   const sinc = _ordSync.err ? `<span style="color:var(--rojo)">${esc(_ordSync.err)} — <a href="#" onclick="location.hash='#/cuentas';return false">Cuentas</a></span>`
     : _ordSync.ts ? `sincronizado con el bróker ${esc(horaNY(_ordSync.ts))} NY · se actualiza sola` : 'se sincroniza sola con el bróker';
-  let h = `<div class="sec fila" style="margin-top:8px">ÓRDENES ACTIVAS EN E*TRADE
+  let h = `<div class="sec fila" style="margin-top:8px">ÓRDENES ACTIVAS EN TU BRÓKER
     <a href="#" onclick="MZ.ordenesActualizar();return false">Actualizar ahora</a></div>`;
-  if (!filas.length) return h + `<div class="card vacio">Sin órdenes activas en E*TRADE.<br><span class="fresco">${sinc}</span></div>`;
+  if (!filas.length) return h + `<div class="card vacio">Sin órdenes activas en tu bróker.<br><span class="fresco">${sinc}</span></div>`;
   return h + filas.map(tarjetaOrden).join('') + `<div class="fresco" style="margin:2px 4px 6px">${sinc}</div>`;
 }
 // Estado que muestra la tarjeta: 'enviada' = ACTIVA en E*TRADE (o CANCELANDO /
@@ -3631,13 +4041,14 @@ function tarjetaOrden(o) {
     : `${o.symbol} ${o.direccion || ''} ${o.strike != null ? Number(o.strike) : ''}${o.expiracion ? ' · ' + fmtFechaNY(o.expiracion + 'T12:00:00Z') : ''}`;
   const precio = o.price_type === 'LIMIT' ? `límite $${n2(o.limit_price)}` : o.price_type === 'STOP' ? `stop $${n2(o.stop_price)}`
     : o.price_type === 'TRAILING_STOP_PRCT' ? `trailing ${Number(o.offset_value)}%` : o.price_type === 'MARKET' ? 'mercado' : esc(o.price_type);
-  const prop = { entrada: 'entrada', salida_gtc: 'salida GTC', salida_stop: 'salida stop', cancelar: 'cancelar', otro: 'otra' }[o.proposito] || o.proposito;
+  const prop = { entrada: 'entrada', salida_gtc: 'salida GTC', salida_stop: 'salida stop', salida_corte: 'salida de corte', cancelar: 'cancelar', otro: 'otra' }[o.proposito] || o.proposito;
   const ov = Array.isArray(o.overrides) ? o.overrides : [];
+  const ppO = planCongelado((o.preview || {})._mz).plan_pct;   // plan congelado en la compra
   return `<div class="card">
     <div class="fila"><span><span class="chip ${chip}">${esc(etiquetaOrden(o))}</span>${o.broker && o.broker !== 'etrade' ? ` <span class="chip c-esp">${esc(BROKER_NOMBRE[o.broker] || o.broker)}</span>` : ''}</span>
       <span class="fresco">${esc(fmtFechaNY(o.creado_at, true))} NY</span></div>
-    ${o.estado === 'error' ? `<div class="mut" style="margin-top:4px;color:var(--rojo);font-size:11px">No se pudo confirmar si E*TRADE la recibió: revísala en la app de E*TRADE antes de repetirla.</div>` : ''}
-    ${o.estado === 'enviada' && /^BUY/.test(String(o.accion || '')) && o.limit_price ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">${((o.preview || {})._mz || {}).gtc_auto === false ? 'Cuando se llene, la Mesa te abre la venta GTC' : 'Cuando se llene, la Mesa ENVÍA sola la venta GTC'} +${PLAN_PCT}% (≈ $${gtcDe(Number(o.limit_price)).toFixed(2)})${((o.preview || {})._mz || {}).gtc_auto === false ? ' lista para enviar' : ' (te pide el PIN si está desarmado)'}.</div>` : ''}
+    ${o.estado === 'error' ? `<div class="mut" style="margin-top:4px;color:var(--rojo);font-size:11px">No se pudo confirmar si ${esc(BROKER_NOMBRE[o.broker || 'etrade'] || o.broker)} la recibió: revísala en la app de ${esc(BROKER_NOMBRE[o.broker || 'etrade'] || o.broker)} antes de repetirla.</div>` : ''}
+    ${o.estado === 'enviada' && /^BUY/.test(String(o.accion || '')) && o.limit_price ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">${((o.preview || {})._mz || {}).gtc_auto === false ? 'Cuando se llene, la Mesa te abre la venta GTC' : 'Cuando se llene, la Mesa ENVÍA sola la venta GTC'} +${ppO}% (≈ $${(gtcLimite(o.limit_price, ppO) || 0).toFixed(2)})${((o.preview || {})._mz || {}).gtc_auto === false ? ' lista para enviar' : ' (te pide el PIN si está desarmado)'}.</div>` : ''}
     <div class="fila" style="margin-top:6px"><b style="font-size:13.5px">${esc(contrato)}</b>
       <span class="mut mono">${esc(o.accion)} ×${esc(Number(o.cantidad))}</span></div>
     <div class="fila" style="margin-top:3px"><span class="mut">${esc(prop)} · ${precio} · ${o.order_term === 'GOOD_UNTIL_CANCEL' ? 'GTC' : 'DAY'}${o.orden_id_ext ? ' · #' + esc(o.orden_id_ext) : ''}</span>
@@ -3645,47 +4056,179 @@ function tarjetaOrden(o) {
     ${ov.length ? `<div class="mut" style="margin-top:4px;color:var(--oro);font-size:11px">override: ${esc(ov.join(' · '))}</div>` : ''}
   </div>`;
 }
-async function cancelarOrden(id, orderId, broker) {
+// op.sinConfirmar: el corte ya pidió confirmación una vez. Devuelve true si el
+// bróker aceptó la solicitud (la cancelación la CONFIRMA después la sincronización).
+async function cancelarOrden(id, orderId, broker, op) {
   if (broker === 'schwab') return cancelarOrdenSchwab(id, orderId);
-  if (!confirm('¿Cancelar en E*TRADE la orden #' + orderId + '?')) return;
+  op = op || {};
+  if (!op.sinConfirmar && !confirm('¿Cancelar en E*TRADE la orden #' + orderId + '?')) return false;
   const cr = etCreds();
-  if (!cr) { toast('Conecta E*TRADE primero'); return; }
-  if (etDiaVencido()) { toast('Sesión de E*TRADE expirada — reconecta'); return; }
+  if (!cr) { toast('Conecta E*TRADE primero'); return false; }
+  if (etDiaVencido()) { toast('Sesión de E*TRADE expirada — reconecta'); return false; }
   toast('Cancelando en E*TRADE…');
   try {
     const accountIdKey = await etCuentaKey(cr);
     const r = await etPost(cr, '/etrade/orden/cancel', { accountIdKey, orderId: Number(orderId) });
     const d = r.data || {}, C = d.CancelOrderResponse || d;
     const em = mensajeError(r);
-    if (r.status === 401) { toast(texto401Ordenes(em)); return; }
+    if (r.status === 401) { toast(texto401Ordenes(em)); return false; }
     // E*TRADE la rechaza (p. ej. ya estaba cancelada desde su app): se avisa y se
     // sincroniza enseguida para que la tarjeta refleje el estado real.
-    if (r.status >= 400 || em) { toast('E*TRADE: ' + (em || 'HTTP ' + r.status)); ordenesActualizar({ silencioso: true, forzar: true }); return; }
+    if (r.status >= 400 || em) { toast('E*TRADE: ' + (em || 'HTTP ' + r.status)); ordenesActualizar({ silencioso: true, forzar: true }); return false; }
     await marcarCancelando(id, C);                       // «being processed»: la sincronización confirma CANCELLED (o FILLED si se llenó antes)
     toast('Cancelación solicitada — se confirma sola');
     ruta();
     setTimeout(() => ordenesActualizar({ silencioso: true, forzar: true }), 4000);
-  } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); }
+    return true;
+  } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); return false; }
 }
 // Cruza las órdenes 'enviadas' con E*TRADE (abiertas + ejecutadas de los últimos
 // 7 días) y actualiza estados; una ENTRADA ejecutada crea la posición y una
 // SALIDA ejecutada cierra la suya.
-async function cancelarOrdenSchwab(id, orderId) {
-  if (!confirm('¿Cancelar en Schwab la orden #' + orderId + '?')) return;
-  if (!swCreds()) { toast('Conecta Schwab primero'); return; }
-  if (swVencido()) { toast('Login semanal de Schwab caducado — reconecta'); return; }
+async function cancelarOrdenSchwab(id, orderId, op) {
+  op = op || {};
+  if (!op.sinConfirmar && !confirm('¿Cancelar en Schwab la orden #' + orderId + '?')) return false;
+  if (!swCreds()) { toast('Conecta Schwab primero'); return false; }
+  if (swVencido()) { toast('Login semanal de Schwab caducado — reconecta'); return false; }
   toast('Cancelando en Schwab…');
   try {
     const hash = await swCuenta();
     const r = await swPost('/schwab/orden/cancel', { hash, orderId: String(orderId) });
     const em = swMensajeError(r);
-    if (r.status === 401) { toast('La sesión de Schwab caducó — reconecta en Cuentas'); return; }
-    if (r.status >= 400 || em) { toast('Schwab: ' + (em || 'HTTP ' + r.status)); ordenesActualizar({ silencioso: true, forzar: true }); return; }
+    if (r.status === 401) { toast('La sesión de Schwab caducó — reconecta en Cuentas'); return false; }
+    if (r.status >= 400 || em) { toast('Schwab: ' + (em || 'HTTP ' + r.status)); ordenesActualizar({ silencioso: true, forzar: true }); return false; }
     await marcarCancelando(id, r.data || {});
     toast('Cancelación solicitada — se confirma sola');
     ruta();
     setTimeout(() => ordenesActualizar({ silencioso: true, forzar: true }), 4000);
-  } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); }
+    return true;
+  } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); return false; }
+}
+// ---- CORTE (Plan 10%): aviso + salida de UN toque, jamás automática ----
+// Nunca un stop del bróker ni OCO: la API de E*TRADE no tiene OCO y un stop suelto
+// se rechaza porque la GTC ya reserva los contratos. Al tocar «Cortar»:
+//  1) busca las ventas de la posición (GTC, stop o un corte anterior) en estado
+//     'enviada' o 'error': si alguna está en 'error' (el envío no se confirmó y
+//     puede estar viva) aborta sin tocar nada; las 'enviada' las cancela en su bróker;
+//  2) sincroniza hasta que el bróker CONFIRME la cancelación (tope 15 s): si
+//     alguna salió ejecutada, vuelve a leer la posición: cerrada → ya se vendió;
+//     abierta → se vendió en parte y quedan contratos sin venta viva (pide volver a
+//     tocar Cortar); si no confirma, aborta (revisa en el bróker) — nunca se vende
+//     con una venta que puede seguir viva;
+//  3) abre la venta SELL_CLOSE LIMIT DAY al bid con propósito 'salida_corte' y la
+//     previsualiza; ENVIAR sigue siendo el toque de Andrés (y el PIN). Jamás abre su
+//     formulario encima de otro cuadro abierto.
+// El candado se pone ANTES del primer await: un doble toque no corre dos cortes.
+const CORTE_TOPE_MS = 15000, CORTE_PASO_MS = 2000;
+const _corte = { enCurso: false };
+async function cortarPosicion(posId) {
+  if (_corte.enCurso) { toast('Ya hay un corte en curso: espera a que termine'); return 'en_curso'; }
+  _corte.enCurso = true;
+  try {
+    if (document.querySelector('.modal')) { alert('Hay otro cuadro abierto: ciérralo y vuelve a tocar Cortar. No se tocó nada.'); return 'modal_abierto'; }
+    const { data: p } = await sb.from('posiciones').select('*').eq('id', posId).maybeSingle();
+    if (!p || p.estado !== 'abierta') { toast('Esa posición ya no está abierta'); return 'cerrada'; }
+    const broker = p.broker || 'etrade', nombre = BROKER_NOMBRE[broker] || broker;
+    if (!['etrade', 'schwab'].includes(broker)) { alert('Esta posición es de ' + nombre + ': córtala en tu bróker y registra la salida.'); return 'sin_broker'; }
+    if (!brokersOperables().includes(broker)) { alert('Reconecta ' + nombre + ' (Cuentas) para cortar esta posición.'); return 'sin_broker'; }
+    const contrato = `${p.symbol} ${p.direccion}${p.strike != null ? ' ' + Number(p.strike) : ''} ×${Number(p.contratos) || 1}`;
+    if (!confirm(`¿Cortar ${contrato}?\n\nSe cancelan tus ventas vivas de esta posición en ${nombre}, se espera a que ${nombre} confirme la cancelación y se abre la venta al bid (DAY). Nada se envía sin tu toque y tu PIN.`)) return 'cancelado';
+    gtcAutoMarcar(p.id);            // este equipo ya no abre la GTC automática de esta posición
+    const { data: vivas, error } = await sb.from('ordenes').select('*').eq('posicion_id', p.id)
+      .in('proposito', ['salida_gtc', 'salida_stop', 'salida_corte']).in('estado', ['enviada', 'error']);
+    if (error) { alert('No pude leer tus órdenes (' + error.message + '). No se tocó nada.'); return 'error'; }
+    let lista = vivas || [];
+    // antes de anotar nada: una venta VIVA sin número del bróker no se puede cancelar desde aquí
+    if (lista.some(o => o.estado !== 'error' && !o.orden_id_ext)) { alert('Hay una venta de esta posición sin número de ' + nombre + ': revísala en ' + nombre + ' antes de cortar. No se tocó nada.'); return 'sin_confirmar'; }
+    // Una venta en 'error' (su envío no se confirmó) puede estar viva y nada la saca de ese
+    // estado: solo Andrés lo sabe. Si confirma que la revisó en su bróker y NO está viva, se
+    // anota cancelada a mano y el corte sigue; si no, se aborta sin tocar nada.
+    const enError = lista.filter(o => o.estado === 'error');
+    if (enError.length) {
+      const cuantas = enError.length > 1 ? enError.length + ' ventas' : 'una venta';
+      if (!confirm(`Hay ${cuantas} de ${contrato} sin confirmar en ${nombre}: puede estar viva.\n\n¿Ya revisaste en ${nombre} que NO está viva? Si sigue viva, cancélala allí primero.`)) { toast(`Revisa tu venta en ${nombre} antes de cortar. No se tocó nada.`); return 'sin_confirmar'; }
+      for (const o of enError) {
+        const resp = o.respuesta && typeof o.respuesta === 'object' && !Array.isArray(o.respuesta) ? o.respuesta : {};
+        const { error: eUp } = await sb.from('ordenes').update({ estado: 'cancelada', actualizado_at: new Date().toISOString(), respuesta: { ...resp, nota_corte: 'resuelta a mano antes del corte' } }).eq('id', o.id).eq('estado', 'error');
+        if (eUp) { alert('No pude anotar la venta como revisada (' + eUp.message + '). No se tocó nada más.'); return 'error'; }
+      }
+      lista = lista.filter(o => o.estado !== 'error');
+    }
+    if (lista.length) {
+      toast(`Cancelando ${lista.length > 1 ? lista.length + ' ventas' : 'tu venta'} en ${nombre}…`);
+      for (const o of lista) {
+        if ((o.broker || 'etrade') === 'schwab') await cancelarOrdenSchwab(o.id, o.orden_id_ext, { sinConfirmar: true });
+        else await cancelarOrden(o.id, o.orden_id_ext, 'etrade', { sinConfirmar: true });
+      }
+      const ids = lista.map(o => o.id), t0 = Date.now();
+      let confirmado = false;
+      for (;;) {
+        await ordenesActualizar({ silencioso: true, forzar: true });
+        const { data: est } = await sb.from('ordenes').select('id,estado').in('id', ids);
+        const filas = est || [];
+        if (filas.some(o => o.estado === 'ejecutada')) {
+          // la sincronización ya anotó lo vendido: ¿sigue abierta la posición (llenado parcial)?
+          const { data: p2 } = await sb.from('posiciones').select('*').eq('id', p.id).maybeSingle();
+          if (p2 && p2.estado === 'abierta') {
+            const n = Number(p2.contratos) || 1;
+            alert(`Se vendió en parte: quedan ${n} contrato${n === 1 ? '' : 's'} sin venta viva. Vuelve a tocar Cortar.`);
+            ruta(); return 'parcial';
+          }
+          alert(`Tu venta de ${contrato} ya se ejecutó en ${nombre} (toda o en parte): ya se vendió, no hace falta cortar. Revisa la posición.`);
+          ruta(); return 'ejecutada';
+        }
+        if (filas.length === ids.length && filas.every(o => ['cancelada', 'expirada', 'rechazada'].includes(o.estado))) { confirmado = true; break; }
+        if (Date.now() - t0 >= CORTE_TOPE_MS) break;
+        await new Promise(r => setTimeout(r, CORTE_PASO_MS));
+      }
+      if (!confirmado) {
+        alert(`${nombre} no confirmó la cancelación en 15 s. Revisa en ${nombre} si tu venta sigue viva ANTES de vender: no se abrió la venta.`);
+        ruta(); return 'sin_confirmar';
+      }
+    }
+    const bid = await bidDeContrato(p);
+    // jamás encima de otro cuadro (p. ej. una orden abierta mientras se esperaba la cancelación)
+    if (document.querySelector('.modal')) {
+      alert(`Tus ventas vivas de ${contrato} ya no están activas, pero hay otro cuadro abierto: ciérralo y vuelve a tocar Cortar para abrir la venta al bid.`);
+      ruta(); return 'modal_abierto';
+    }
+    const pre = preSalida(p, 'salida_corte', bid);
+    abrirOrden(pre);
+    toast(pre.limitPrice ? `Corte: venta al bid $${pre.limitPrice.toFixed(2)} — revisa y envía` : 'Corte: no leí el bid — tócalo en la cadena y envía');
+    if (pre.limitPrice) {
+      setTimeout(async () => {
+        if (!(_ord && _ord.pre === pre && $('#modalOrden') && !_ord.orden)) return;
+        await ordenPreview();       // vista previa automática (no coloca nada); ENVIAR es tu toque
+      }, 900);
+    }
+    return 'abierta';
+  } finally { _corte.enCurso = false; }
+}
+// bid vivo de UN contrato (para la venta del corte) con la sesión del bróker de la posición.
+async function bidDeContrato(p) {
+  const brk = p.broker || 'etrade', sym = String(p.symbol || '').toUpperCase(), exp = String(p.expiracion || ''), k = Number(p.strike);
+  if (!sym || !/^\d{4}-\d{2}-\d{2}$/.test(exp) || !(k > 0)) return null;
+  try {
+    let cad = null;
+    if (brk === 'schwab') {
+      const rc = await conTope(swRead('/marketdata/v1/chains', { symbol: sym, contractType: p.direccion === 'PUT' ? 'PUT' : 'CALL', strike: k, fromDate: exp, toDate: exp }), 8000, 'sin bid');
+      if (rc.status >= 400 || swMensajeError(rc)) return null;
+      cad = parsearCadenaSchwab(rc);
+    } else {
+      const cr = etCreds(); if (!cr) return null;
+      const [y, m, d] = exp.split('-').map(Number);
+      const rc = await conTope(etRead(cr, '/v1/market/optionchains.json', { symbol: sym, expiryYear: y, expiryMonth: m, expiryDay: d, noOfStrikes: 6,
+        includeWeekly: 'true', chainType: 'CALLPUT', priceType: 'ALL', skipAdjusted: 'true', strikePriceNear: k }), 8000, 'sin bid');
+      if (rc.status >= 400 || etError(rc)) return null;
+      cad = parsearCadena(rc);
+    }
+    return bidDeCadena(cad, k, p.direccion);
+  } catch (_) { return null; }
+}
+function bidDeCadena(cad, strike, lado) {
+  const fila = (cad && Array.isArray(cad.filas)) ? cad.filas.find(r => Number(r.strike) === Number(strike)) : null;
+  const o = fila ? (lado === 'PUT' ? fila.put : fila.call) : null;
+  return (o && o.bid != null && Number(o.bid) > 0) ? Number(o.bid) : null;
 }
 // Un cancel aceptado NO es una cancelación confirmada (puede llenarse antes): la
 // fila sigue 'enviada' con estado vivo CANCEL_REQUESTED y la sincronización la
@@ -3846,10 +4389,12 @@ async function ordenesActualizar(opts) {
           const mz = (loc.preview && loc.preview._mz) || {};
           const sem = ['ok', 'aviso', 'alto'].includes(mz.semaforo) ? mz.semaforo
             : (loc.overrides || []).some(t => /FUERA del rango/.test(String(t))) ? 'alto' : null;
+          const pc = planCongelado(mz);     // plan CONGELADO al previsualizar la compra (sin anotación: Plan 35)
           const p = { user_id: uid, symbol: loc.symbol, direccion: loc.direccion, strike: loc.strike, expiracion: loc.expiracion,
-            contratos: qty, prima_fill: fill, plan_pct: PLAN_PCT, broker: brokerLoc, senal_id: loc.senal_id || null,
+            contratos: qty, prima_fill: fill, plan_pct: pc.plan_pct, broker: brokerLoc, senal_id: loc.senal_id || null,
             abierta_at: ejecutadaAt, abierta_fecha_ny: ymdNY(ejecutadaAt) || hoyNY(),
             entrada_semaforo: sem, fuera_de_rango: sem === 'alto' };
+          if (pc.stop_pct != null) p.stop_pct = pc.stop_pct;   // sin corte no se envía (compatible sin la migración 0012)
           const pi = await sb.from('posiciones').insert(p).select('id').single();
           if (!pi.error && pi.data) {
             upd.posicion_id = pi.data.id; nuevasPosiciones++;
@@ -3867,7 +4412,8 @@ async function ordenesActualizar(opts) {
             } else {
               // cierre PARCIAL: el tramo vendido se anota cerrado (fila propia) y
               // la posición sigue abierta con el resto (posiciones como filas-tramo)
-              const { id: _i, gtc_limite: _g, mark: _m, mark_at: _ma, mfe: _f, mae: _e, ...base } = pos;
+              // fuera: la columna generada, lo que escribe el worker y los avisos (el tramo cerrado no se vigila)
+              const { id: _i, gtc_limite: _g, mark: _m, mark_at: _ma, mfe: _f, mae: _e, aviso_corte_at: _ac, aviso_corte_mark: _acm, aviso_cierre_at: _aci, ...base } = pos;
               await sb.from('posiciones').insert({ ...base, user_id: uid, contratos: vend, estado: fill > 0 ? 'cerrada' : 'expirada',
                 prima_salida: fill, resultado_usd: res, cerrada_at: ejecutadaAt });
               await sb.from('posiciones').update({ contratos: tot - vend }).eq('id', loc.posicion_id);
@@ -3891,16 +4437,22 @@ async function ordenesActualizar(opts) {
   _ordSync.enCurso = false;
 }
 window.MZ = Object.assign(window.MZ || {}, {
-  abrirOrden, cerrarOrden, ordenPreview, ordenPlace, ordenEditar, cancelarOrden, ordenesActualizar,
+  abrirOrden, cerrarOrden, ordenPreview, ordenPlace, ordenEditar, cancelarOrden, ordenesActualizar, cortarPosicion, elegirPlataforma,
   cadenaElegir, cadenaRefrescar: () => { if (_ord) _ord.cadenaGen++; cargarCadena(true); },
-  presupuestoPct: () => {
-    const v = prompt('Presupuesto por ticket: % del saldo del bróker de la orden (E*TRADE)', String(presupuestoPct()));
+  presupuestoPct: async () => {
+    const plan = planActivo(), diez = plan.id === 'PLAN_10', max = plan.presupMaxPct || 100;
+    const v = prompt(diez ? `Plan 10%: presupuesto por operación, % del saldo del bróker de la orden (la doctrina: ${plan.tamanoMinPct}–${plan.tamanoMaxPct}%)`
+      : 'Presupuesto por ticket: % del saldo del bróker de la orden (E*TRADE)', String(presupuestoPct()));
     if (v == null) return;
     const n = Number(String(v).replace(',', '.').replace('%', '').trim());
-    if (!(n > 0 && n <= 100)) { toast('Pon un porcentaje entre 1 y 100'); return; }
-    try { localStorage.setItem(PRESUP_K, String(n)); } catch (_) {}
+    if (!(n > 0 && n <= max)) { toast(`Pon un porcentaje entre 1 y ${max}`); return; }
+    if (diez) {
+      try { await guardarPlanUsuario({ presupuesto_pct: n }); } catch (e) { toast('No se guardó: ' + ((e && e.message) || e)); return; }
+    } else { try { localStorage.setItem(PRESUP_K, String(n)); } catch (_) {} }
     if (_ord) { _ord.qtyManual = false; autoCantidad(); pintarAvisosOrden(); pintarTotalOrden(); }
-    toast(`Presupuesto por ticket: ${n}% del saldo`);
+    // sin tope duro: por encima del máximo del plan solo avisa (la orden también lo avisa)
+    const pasa = diez && n > plan.tamanoMaxPct;
+    toast(`Presupuesto por ticket: ${n}% del saldo${pasa ? ` · más del ${plan.tamanoMaxPct}%: el plan dice máximo ${plan.tamanoMaxPct}%` : ''}`);
   },
   cadenaExp: (v) => { const ex = $('#oExp'); if (ex) ex.value = v; if (_ord) { _ord.cadenaExp = v; _ord.cadenaGen++; } cargarCadena(true); },
   pinOrdenes: async () => { await modalPinOrdenes(pinHash() ? 'cambiar' : 'crear'); pintarOrdenesCuenta(); },
@@ -3920,9 +4472,39 @@ function nombreMesNY() {
 //    bróker manda en los $; la manual aporta su veredicto de rango
 //    (entrada_semaforo / fuera_de_rango). Strike/expiración vacíos en la manual
 //    no impiden el emparejamiento.
+//  · Un cierre PARCIAL deja una fila-tramo cerrada con el mismo contrato y la misma
+//    apertura (abierta_at): las filas manuales de UNA operación se agrupan primero
+//    (contratos y resultado sumados), así un tramo no cuenta como otra operación.
 function unirOperaciones(posic, trades) {
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const r2 = (n) => Math.round(n * 100) / 100;
+  const tramos = {}, manualesAgrupadas = [];
+  for (const p of posic || []) {
+    if (!p) continue;
+    if (!p.abierta_at) { manualesAgrupadas.push([p]); continue; }
+    const k = [p.symbol, p.direccion, num(p.strike), p.expiracion || '', p.abierta_at].join('|');
+    if (!tramos[k]) { tramos[k] = [p]; manualesAgrupadas.push(tramos[k]); } else tramos[k].push(p);
+  }
+  const numN = (v) => (v == null || v === '' ? null : num(v));   // null/'' no es 0 (resultado o salida aún sin dato)
+  const unirTramos = (filas) => {
+    if (filas.length === 1) return filas[0];
+    const abierta = filas.find(f => f.estado === 'abierta') || null;
+    const base = abierta || filas.slice().sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0))[0];   // la original: el tramo se inserta después
+    const contratos = filas.reduce((s, f) => s + (num(f.contratos) || 0), 0);
+    const costo = filas.reduce((s, f) => s + (num(f.prima_fill) || 0) * (num(f.contratos) || 0), 0);
+    const conRes = filas.filter(f => numN(f.resultado_usd) != null);
+    const cerradas = filas.filter(f => f.estado !== 'abierta');
+    const conSalida = cerradas.filter(f => numN(f.prima_salida) != null);
+    const nSal = conSalida.reduce((s, f) => s + (num(f.contratos) || 0), 0);
+    return { ...base, contratos,
+      prima_fill: contratos ? Math.round(costo / contratos * 10000) / 10000 : base.prima_fill,
+      resultado_usd: conRes.length ? r2(conRes.reduce((s, f) => s + numN(f.resultado_usd), 0)) : null,
+      estado: abierta ? 'abierta' : cerradas.every(f => f.estado === 'expirada') ? 'expirada' : 'cerrada',
+      prima_salida: (!abierta && conSalida.length === cerradas.length && nSal > 0) ? Math.round(conSalida.reduce((s, f) => s + numN(f.prima_salida) * (num(f.contratos) || 0), 0) / nSal * 10000) / 10000 : (abierta ? null : base.prima_salida),
+      cerrada_at: abierta ? null : filas.map(f => f.cerrada_at || '').sort().pop() || null,
+      fuera_de_rango: filas.some(f => f.fuera_de_rango), _salida_corte: filas.some(f => f._salida_corte), _tramos: filas.length,
+      _filas: filas };   // cada tramo con su fecha de cierre (lo ganado de la semana, cerradasDesde)
+  };
   const grupos = {};
   for (const t of trades || []) {
     const dia = ymdNY(t.abierta_at);
@@ -3931,19 +4513,21 @@ function unirOperaciones(posic, trades) {
       symbol: t.symbol, direccion: t.direccion, strike: num(t.strike), expiracion: t.expiracion || null,
       abierta_fecha_ny: dia, abierta_at: t.abierta_at || null, cerrada_at: t.cerrada_at || null,
       contratos: 0, _costo: 0, resultado_usd: 0, estado: 'cerrada', broker: t.broker,
-      _fuente: t.broker, fuera_de_rango: false, entrada_semaforo: null, _partes: 0,
+      _fuente: t.broker, fuera_de_rango: false, entrada_semaforo: null, _partes: 0, _salida: 0, _salidaN: 0,
     });
     const c = num(t.contratos) || 0;
     g.contratos += c; g._costo += (num(t.prima_fill) || 0) * c; g.resultado_usd += num(t.resultado_usd) || 0;
+    if (t.prima_salida != null && num(t.prima_salida) != null) { g._salida += num(t.prima_salida) * c; g._salidaN += c; }
     if (t.abierta_at && (!g.abierta_at || t.abierta_at < g.abierta_at)) g.abierta_at = t.abierta_at;
     if (t.cerrada_at && (!g.cerrada_at || t.cerrada_at > g.cerrada_at)) g.cerrada_at = t.cerrada_at;
     g._partes++;
   }
   const delBroker = Object.values(grupos).map(g => ({ ...g,
     prima_fill: g.contratos ? Math.round(g._costo / g.contratos * 10000) / 10000 : null,
+    prima_salida: g._salidaN ? Math.round(g._salida / g._salidaN * 10000) / 10000 : null,   // 0 = se fue a cero
     resultado_usd: r2(g.resultado_usd) }));
   const usados = new Set(); let fusionadas = 0; const manual = [];
-  for (const p of posic || []) {
+  for (const p of manualesAgrupadas.map(unirTramos)) {
     const dia = p.abierta_fecha_ny || ymdNY(p.abierta_at);
     const i = delBroker.findIndex((g, j) => !usados.has(j) && g.symbol === p.symbol && g.direccion === p.direccion
       && g.abierta_fecha_ny === dia && (p.strike == null || num(p.strike) === g.strike)
@@ -3952,6 +4536,8 @@ function unirOperaciones(posic, trades) {
       usados.add(i); fusionadas++;
       const g = delBroker[i];
       g.fuera_de_rango = !!p.fuera_de_rango; g.entrada_semaforo = p.entrada_semaforo || null; g._manual_id = p.id;
+      g.plan_pct = p.plan_pct; g.stop_pct = p.stop_pct == null ? null : p.stop_pct;   // el plan congelado viaja con la operación
+      if (p._salida_corte) g._salida_corte = true;                                     // cerrada por la venta del corte
       continue;
     }
     manual.push({ ...p, abierta_fecha_ny: dia, _fuente: 'manual' });
@@ -3961,27 +4547,128 @@ function unirOperaciones(posic, trades) {
   return { ops, fusionadas, fuentes: { manual: (posic || []).length, etrade: cuenta('etrade'), tasty: cuenta('tasty'), schwab: cuenta('schwab') } };
 }
 
+// Filas cerradas (o expiradas) desde `desde` (fecha NY) por fecha de CIERRE, PURA. Una
+// operación agrupada (unirOperaciones) se abre en sus tramos: un cierre parcial cuenta en
+// la semana en que se cerró aunque el resto siga abierto o cierre otra semana.
+function cerradasDesde(ops, desde) {
+  const esCerrada = (p) => p.estado === 'cerrada' || p.estado === 'expirada';
+  return (ops || []).flatMap(p => (p && p._filas) || [p]).filter(p => p && esCerrada(p) && (ymdNY(p.cerrada_at) || '') >= desde);
+}
+
 const TAMANO_PCT = 10;   // doctrina: máximo 10% de la cuenta por operación
+// Reglas rotas del período (Disciplina), PURA. Cada operación se juzga con SU plan
+// congelado (plan_pct); sin plan_pct → Plan 35 (el default de posiciones.plan_pct):
+// cambiar de plan NO es retroactivo. ops en orden de apertura. Tamaño: contra el
+// saldo del bróker de cada operación (saldos[broker]) y, si falta, el total (saldo);
+// sin ninguno (0) la regla no se evalúa.
+//   Plan 35%: fuera de rango, 4ª+ operación de la semana, tamaño >10% (como siempre).
+//   Plan 10%: fuera de rango, 2ª+ del día, tamaño >50%.
+//   Corte (solo operaciones con stop_pct CONGELADO, con SU stop_pct): se fue a cero,
+//   o perdió más que stop_pct + 5 puntos (tolerancia de ejecución: el aviso tarda,
+//   la cancelación se confirma y la venta va al bid). Una operación cerrada por una
+//   orden salida_corte (_salida_corte) cortó: jamás se marca. En esas dos el costo es
+//   lo perdido MÁS ALLÁ del corte.
+function reglasRotas(ops, saldo, saldos) {
+  ops = ops || [];
+  const rotas = [];
+  const esCerrada = (p) => p.estado === 'cerrada' || p.estado === 'expirada';
+  const costoEntrada = (p) => (Number(p.prima_fill) || 0) * (Number(p.contratos) || 0) * 100;
+  const etiqueta = (p) => `${p.symbol} ${p.direccion}${p.strike ? ' ' + p.strike : ''} · ${fmtFechaNY(p.abierta_at)} · ${p._fuente === 'manual' ? 'manual' : p._fuente}`;
+  const planDe = (p) => planDePct(p.plan_pct);                  // sin plan_pct → Plan 35
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const TOLERANCIA_PTS = 5;
+  const saldoDe = (p) => {
+    const b = p.broker || (p._fuente && p._fuente !== 'manual' ? p._fuente : null);
+    const s = (saldos && typeof saldos === 'object' && b) ? Number(saldos[b]) : NaN;
+    return s > 0 ? s : (Number(saldo) || 0);
+  };
+  // (1) entrar FUERA del rango (veredicto que solo existe en el registro manual)
+  for (const p of ops.filter(p => p.fuera_de_rango)) {
+    const r = esCerrada(p) ? Number(p.resultado_usd) : NaN;
+    rotas.push({ regla: 'Entró FUERA del rango óptimo', det: etiqueta(p),
+      costo: (Number.isFinite(r) && r < 0) ? r : 0, gano: Number.isFinite(r) && r > 0 });
+  }
+  // (2) cupo excedido: por semana (lunes NY) en el Plan 35%, por día en el Plan 10%
+  const grupos = {};
+  for (const p of ops) {
+    const d = new Date((p.abierta_fecha_ny || '') + 'T12:00:00Z');
+    if (isNaN(d)) continue;
+    const plan = planDe(p);
+    let key = p.abierta_fecha_ny;
+    if (plan.periodo !== 'dia') { const wk = new Date(d); wk.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); key = wk.toISOString().slice(0, 10); }
+    const k = plan.id + '|' + key;
+    (grupos[k] = grupos[k] || { plan, key, lista: [] }).lista.push(p);
+  }
+  for (const g of Object.values(grupos)) {
+    if (g.lista.length <= g.plan.opsMax) continue;
+    const extra = g.lista.slice(g.plan.opsMax);   // las que sobraron (ya en orden de apertura)
+    const costo = extra.reduce((s, p) => s + Math.min(0, esCerrada(p) ? (Number(p.resultado_usd) || 0) : 0), 0);
+    const sobraron = extra.map(p => p.symbol + ' ' + p.direccion).join(', ');
+    if (g.plan.periodo === 'dia') {
+      rotas.push({ regla: `${g.lista.length} operaciones ese día (plan: ${g.plan.opsMax} al día)`,
+        det: `día ${fmtFechaNY(g.key + 'T12:00:00Z')} · sobraron: ${sobraron}`, costo, gano: false });
+    } else {
+      rotas.push({ regla: `${g.lista.length} operaciones esa semana (plan: ${g.plan.opsMax})`,
+        det: `semana del ${fmtFechaNY(g.key + 'T12:00:00Z')} · sobraron: ${sobraron}`, costo, gano: false });
+    }
+  }
+  // (3) tamaño por encima del tope de SU plan, contra la cuenta de SU bróker
+  // (costo de entrada = prima × contratos × 100)
+  for (const p of ops) {
+    const s = saldoDe(p);
+    if (!(s > 0)) continue;
+    const plan = planDe(p), tope = s * plan.tamanoMaxPct / 100;
+    if (!(costoEntrada(p) > tope)) continue;
+    const r = esCerrada(p) ? Number(p.resultado_usd) : NaN;
+    rotas.push({ regla: `Tamaño ${usd(costoEntrada(p))}: más del ${plan.tamanoMaxPct}% de la cuenta (${usd(tope)})`,
+      det: etiqueta(p), costo: (Number.isFinite(r) && r < 0) ? r : 0, gano: Number.isFinite(r) && r > 0 });
+  }
+  // (4) y (5) corte: solo con stop_pct CONGELADO en la operación · se fue a cero · cortó tarde
+  for (const p of ops) {
+    const stop = Number(p.stop_pct);
+    if (p.stop_pct == null || !(stop > 0 && stop < 100) || !esCerrada(p) || p._salida_corte) continue;
+    const costoE = costoEntrada(p);
+    if (!(costoE > 0)) continue;
+    const cero = p.estado === 'expirada' || (p.prima_salida != null && p.prima_salida !== '' && Number(p.prima_salida) === 0);
+    const r = (p.resultado_usd != null && Number.isFinite(Number(p.resultado_usd))) ? Number(p.resultado_usd) : (cero ? -costoE : NaN);
+    if (!Number.isFinite(r)) continue;
+    const limite = -costoE * stop / 100;               // lo máximo que el plan deja perder
+    if (cero) {
+      rotas.push({ regla: `Se fue a cero: no cortó en -${stop}%`, det: etiqueta(p), costo: Math.min(0, r2(r - limite)), gano: false });
+    } else if (r < -costoE * (stop + TOLERANCIA_PTS) / 100) {
+      rotas.push({ regla: `Cortó por debajo del -${stop}% (-${Math.round(-r / costoE * 100)}%)`, det: etiqueta(p), costo: r2(r - limite), gano: false });
+    }
+  }
+  return rotas;
+}
 async function vistaDisciplina() {
-  const [posR, btR, csR] = await Promise.all([
+  const [posR, btR, csR, corR] = await Promise.all([
     sb.from('posiciones').select('*'),
     sb.from('broker_trades').select('*'),
     sb.from('cuenta_snapshots').select('broker,saldo_neto,capturado_at'),
+    // ventas de CORTE ejecutadas: esa operación cortó (Disciplina no la acusa de no cortar)
+    sb.from('ordenes').select('posicion_id').eq('proposito', 'salida_corte').eq('estado', 'ejecutada'),
+    cargarPlanUsuario(),
   ]);
-  const { ops, fusionadas, fuentes } = unirOperaciones(posR.data || [], btR.data || []);
+  const plan = planActivo();
+  const conCorte = new Set(((corR && corR.data) || []).map(o => String(o.posicion_id)));
+  const posic = (posR.data || []).map(p => conCorte.has(String(p.id)) ? { ...p, _salida_corte: true } : p);
+  const { ops, fusionadas, fuentes } = unirOperaciones(posic, btR.data || []);
   const snaps = csR.data || [];
   const saldo = snaps.reduce((s, c) => s + (Number(c.saldo_neto) || 0), 0);
   const haySaldo = snaps.length > 0 && saldo > 0;
-  const tope = haySaldo ? saldo * TAMANO_PCT / 100 : null;
+  // saldo de cada bróker (una fila por bróker): la regla de tamaño mide contra el de la operación
+  const saldos = {};
+  snaps.forEach(c => { if (c.broker && Number(c.saldo_neto) > 0) saldos[c.broker] = Number(c.saldo_neto); });
+  const topesTxt = (pct) => Object.entries(saldos).map(([b, s]) => `${BROKER_NOMBRE[b] || b} ${usd(s * pct / 100)}`).join(' · ');
   const inicioMes = inicioPeriodo('mes');
   const lun = lunesNY();
   const esCerrada = (p) => p.estado === 'cerrada' || p.estado === 'expirada';
   const delMes = ops.filter(p => (p.abierta_fecha_ny || '') >= inicioMes);
   const semana = ops.filter(p => (p.abierta_fecha_ny || '') >= lun);   // ya viene en orden de apertura
-  // Lo ganado de la semana se mide por fecha de CIERRE (igual que Cuentas); el
-  // cupo 3/semana sí va por fecha de ENTRADA.
-  const cerradasSem = ops.filter(p => esCerrada(p) && (ymdNY(p.cerrada_at) || '') >= lun);
-  const costoEntrada = (p) => (Number(p.prima_fill) || 0) * (Number(p.contratos) || 0) * 100;
+  // Lo ganado de la semana se mide por fecha de CIERRE de cada tramo (igual que Cuentas);
+  // el cupo 3/semana sí va por fecha de ENTRADA y cuenta operaciones agrupadas.
+  const cerradasSem = cerradasDesde(ops, lun);
 
   // cupo de la semana (conjunto deduplicado; el excedente = más allá de la 3ª)
   const usadas = semana.length;
@@ -3992,56 +4679,40 @@ async function vistaDisciplina() {
   const resSem = cerradasSem.reduce((s, p) => s + (Number(p.resultado_usd) || 0), 0);
   const excedente = Math.max(0, resSem);
 
-  // reglas rotas del mes
-  const rotas = [];
-  const etiqueta = (p) => `${p.symbol} ${p.direccion}${p.strike ? ' ' + p.strike : ''} · ${fmtFechaNY(p.abierta_at)} · ${p._fuente === 'manual' ? 'manual' : p._fuente}`;
-  // (1) entrar FUERA del rango (veredicto que solo existe en el registro manual)
-  for (const p of delMes.filter(p => p.fuera_de_rango)) {
-    const r = esCerrada(p) ? Number(p.resultado_usd) : NaN;
-    rotas.push({ regla: 'Entró FUERA del rango óptimo', det: etiqueta(p),
-      costo: (Number.isFinite(r) && r < 0) ? r : 0, gano: Number.isFinite(r) && r > 0 });
-  }
-  // (2) 4ª+ operación de una semana (cupo excedido) — agrupar por semana (lunes NY)
-  const porSemana = {};
-  for (const p of delMes) {
-    const d = new Date((p.abierta_fecha_ny || '') + 'T12:00:00Z');
-    if (isNaN(d)) continue;
-    const wk = new Date(d); wk.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-    const key = wk.toISOString().slice(0, 10);
-    (porSemana[key] = porSemana[key] || []).push(p);
-  }
-  for (const [wk, lista] of Object.entries(porSemana)) {
-    if (lista.length > OPS_SEMANA) {
-      const extra = lista.slice(OPS_SEMANA);   // las que sobraron (ya en orden de apertura)
-      const costo = extra.reduce((s, p) => s + Math.min(0, esCerrada(p) ? (Number(p.resultado_usd) || 0) : 0), 0);
-      rotas.push({ regla: `${lista.length} operaciones esa semana (plan: ${OPS_SEMANA})`,
-        det: `semana del ${fmtFechaNY(wk + 'T12:00:00Z')} · sobraron: ${extra.map(p => p.symbol + ' ' + p.direccion).join(', ')}`,
-        costo, gano: false });
-    }
-  }
-  // (3) tamaño > 10% del saldo (costo de entrada = prima × contratos × 100)
-  if (tope != null) {
-    for (const p of delMes.filter(p => costoEntrada(p) > tope)) {
-      const r = esCerrada(p) ? Number(p.resultado_usd) : NaN;
-      rotas.push({ regla: `Tamaño ${usd(costoEntrada(p))}: más del ${TAMANO_PCT}% de la cuenta (${usd(tope)})`,
-        det: etiqueta(p), costo: (Number.isFinite(r) && r < 0) ? r : 0, gano: Number.isFinite(r) && r > 0 });
-    }
-  }
+  // reglas rotas del mes: cada operación con SU plan congelado (sin plan_pct → Plan 35:
+  // cambiar de plan no es retroactivo) y el tamaño contra la cuenta de SU bróker
+  const rotas = reglasRotas(delMes, haySaldo ? saldo : 0, haySaldo ? saldos : null);
   const costoTotal = rotas.reduce((s, r) => s + (r.costo || 0), 0);
 
   let h = '';
-  // cumplimiento del plan (semana)
-  const costoExtraSem = extraSem.reduce((s, p) => s + Math.min(0, esCerrada(p) ? (Number(p.resultado_usd) || 0) : 0), 0);
-  h += `<div class="card">
+  if (plan.periodo === 'dia') {
+    // Plan 10%: cumplimiento del DÍA (1 operación) y tope de tamaño del 50%
+    const hoyD = hoyNY();
+    const deHoy = ops.filter(p => (p.abierta_fecha_ny || '') === hoyD);
+    const usadasHoy = deHoy.length, extraHoy = deHoy.slice(plan.opsMax);
+    const colHoy = usadasHoy > plan.opsMax ? 'var(--rojo)' : usadasHoy === plan.opsMax ? 'var(--oro)' : 'var(--verde)';
+    const costoExtraHoy = extraHoy.reduce((s, p) => s + Math.min(0, esCerrada(p) ? (Number(p.resultado_usd) || 0) : 0), 0);
+    h += `<div class="card">
+    <div class="fila"><h3>Plan del día</h3>
+      <span style="font-weight:800;font-size:20px;color:${colHoy}">${usadasHoy} / ${plan.opsMax}</span></div>
+    <div class="mut" style="margin-top:3px">${esc(plan.nombre)}: ${plan.opsMax} operación al día · ${plan.tamanoMinPct}–${plan.tamanoMaxPct}% de la cuenta · GTC +${plan.gtcPct}% · corte -${plan.stopPct}% · una compañía al día. El plan manda.</div>
+    ${extraHoy.length ? `<div class="mut" style="margin-top:6px;color:var(--rojo)">Excedente: ${extraHoy.length} op${extraHoy.length > 1 ? 's' : ''} más allá de la ${plan.opsMax}ª de hoy (${esc(extraHoy.map(p => p.symbol + ' ' + p.direccion).join(', '))})${costoExtraHoy < 0 ? ' · te costaron ' + usd(costoExtraHoy) : ''}</div>` : ''}
+    ${haySaldo ? `<div class="fresco" style="margin-top:6px">saldo ${usd(saldo)} · tope por operación (${plan.tamanoMaxPct}% de la cuenta de su bróker, saldo actual): ${topesTxt(plan.tamanoMaxPct)}</div>`
+      : `<div class="fresco" style="margin-top:6px">sin saldo de cuenta todavía (cuenta_snapshots): la regla del ${plan.tamanoMaxPct}% no se evalúa</div>`}</div>`;
+  } else {
+    // cumplimiento del plan (semana) — Plan 35%, como siempre
+    const costoExtraSem = extraSem.reduce((s, p) => s + Math.min(0, esCerrada(p) ? (Number(p.resultado_usd) || 0) : 0), 0);
+    h += `<div class="card">
     <div class="fila"><h3>Plan de la semana</h3>
       <span style="font-weight:800;font-size:20px;color:${colCupo}">${usadas} / ${OPS_SEMANA}</span></div>
-    <div class="mut" style="margin-top:3px">3 operaciones por semana · ${TAMANO_PCT}% de la cuenta por operación · solo tus 4 tickers. El plan manda.</div>
+    <div class="mut" style="margin-top:3px">3 operaciones por semana · ${TAMANO_PCT}% de la cuenta por operación · solo tus ${TICKERS.length} tickers. El plan manda.</div>
     ${extraSem.length ? `<div class="mut" style="margin-top:6px;color:var(--rojo)">Excedente: ${extraSem.length} op${extraSem.length > 1 ? 's' : ''} más allá de la 3ª (${esc(extraSem.map(p => p.symbol + ' ' + p.direccion).join(', '))})${costoExtraSem < 0 ? ' · te costaron ' + usd(costoExtraSem) : ''}</div>` : ''}
-    ${haySaldo ? `<div class="fresco" style="margin-top:6px">saldo ${usd(saldo)} · tope por operación ${usd(tope)} (según el saldo actual)</div>`
+    ${haySaldo ? `<div class="fresco" style="margin-top:6px">saldo ${usd(saldo)} · tope por operación (${TAMANO_PCT}% de la cuenta de su bróker, saldo actual): ${topesTxt(TAMANO_PCT)}</div>`
       : `<div class="fresco" style="margin-top:6px">sin saldo de cuenta todavía (cuenta_snapshots): la regla del ${TAMANO_PCT}% no se evalúa</div>`}</div>`;
+  }
 
-  // excedente a retirar
-  if (excedente > 0) {
+  // excedente a retirar (doctrina del Plan 35%; el Plan 10% no lo define)
+  if (plan.periodo !== 'dia' && excedente > 0) {
     h += `<div class="card" style="border-color:rgba(69,208,140,.4)">
       <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em;color:var(--verde)">EXCEDENTE A RETIRAR ESTE VIERNES</div>
       <div class="mono" style="font-size:26px;font-weight:700;color:var(--verde);margin-top:2px">${usd(excedente)}</div>
