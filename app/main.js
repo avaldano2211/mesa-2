@@ -12,7 +12,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, c => (
   { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
-const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY'];   // 2026-09-14: Andrés vuelve a sus 4 y elige cada día cuál operar (QQQ, SPX y META salen)
+const TICKERS = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'META'];   // 2026-09-25: META vuelve («quiero trabajar con META ahora»); la lista editable desde la app viene en la siguiente entrega
 // Versión que está corriendo: el ?v= con que index.html cargó este archivo. Sirve
 // para detectar que se publicó otra y recargar sola (ver buscarVersionNueva).
 const VERSION_APP = (() => {
