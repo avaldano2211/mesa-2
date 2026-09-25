@@ -197,7 +197,7 @@ async function ruta() {
   $('#titulo').textContent = titulos[tab] || 'Mesa de Mercado 2.0';
   if (tab === 'informe') return vistaInforme(hb);
   if (tab === 'tickers') return vistaTickers();
-  if (tab === 'copiloto') return vistaCopiloto();
+  if (tab === 'copiloto') return vistaCopiloto(hb);   // el latido decide el ritmo de lectura del bróker (v50)
   if (tab === 'cuentas') return vistaCuentas();
   if (tab === 'disciplina') return vistaDisciplina();
   return vistaProx(tab);
@@ -988,8 +988,9 @@ function lunesNY() {
   return d.toISOString().slice(0, 10);
 }
 
-async function vistaCopiloto() {
+async function vistaCopiloto(hb) {
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  carteraDesdeCache();          // v50: pintar con la última cartera leída en este equipo mientras se vuelve a preguntar
   // posiciones UNA vez (el builder de Supabase lanza la consulta en cada then): las
   // ventas GTC/corte se piden solo para las abiertas
   const posP = Promise.resolve(sb.from('posiciones').select('*').order('abierta_at', { ascending: false }));
@@ -1048,17 +1049,17 @@ async function vistaCopiloto() {
     <button class="btnsec" style="padding:12px" onclick="MZ.abrirFill()">+ Registrar una operación</button>
     ${botonOrden(pl, { proposito: 'entrada' }, '+ Nueva orden')}</div>`;
 
-  // posiciones abiertas
-  h += `<div class="sec">POSICIONES ABIERTAS</div>`;
-  if (abiertas.length) {
-    h += abiertas.map(p => tarjetaPosicion(p)).join('');
-  } else {
-    h += `<div class="card vacio">Sin posiciones abiertas.</div>`;
-  }
+  // posiciones abiertas: el libro CASADO contra lo que dicen los brókeres (v50).
+  // Nunca «no hay nada» cuando en realidad no se pudo preguntar (B7).
+  h += seccionPosiciones(abiertas, _cart, plan, hoy);
 
   // órdenes ACTIVAS en E*TRADE (las canceladas/ejecutadas/expiradas ya no salen aquí)
   h += seccionOrdenes(ord.data || []);
   $('#vista').innerHTML = h;
+  // Cartera del bróker: se pregunta DESPUÉS de dibujar (B8) — rápido con mercado
+  // abierto, lento con mercado cerrado — y solo se redibuja si cambió algo.
+  const enCopiloto = () => (location.hash.replace('#/', '') || 'informe') === 'copiloto';
+  cargarCartera(false, hb).then(cambio => { if (cambio && enCopiloto() && !document.querySelector('.modal')) vistaCopiloto(hb); }).catch(() => {});
   // sincronización silenciosa con E*TRADE (cada 60 s mientras haya activas; ruta() corre cada 60 s)
   if ((ord.data || []).some(x => x.estado === 'enviada' && x.orden_id_ext)) ordenesActualizar({ silencioso: true });
   // GTC AUTOMÁTICO (doctrina: «al llenarte pon YA tu venta límite GTC»): si hay una
@@ -1136,6 +1137,18 @@ function gtcAutoQuiere(posId) { try { const m = JSON.parse(localStorage.getItem(
 const GTC_AUTO_K = 'mz_gtc_auto';
 function gtcAutoYaAbierto(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); return !!m[String(id)]; } catch (_) { return false; } }
 function gtcAutoMarcar(id) { try { const m = JSON.parse(localStorage.getItem(GTC_AUTO_K) || '{}'); m[String(id)] = Date.now(); localStorage.setItem(GTC_AUTO_K, JSON.stringify(m)); } catch (_) {} }
+// ¿Puede SALIR sola la GTC automática? Solo si su límite queda POR ENCIMA del último
+// mark: así es una orden en reposo, esperando el objetivo. Si el límite ya está en (o
+// por debajo de) el mercado, la venta se ejecuta en el acto y a un precio peor que el
+// que Andrés está viendo — eso lo decide él con su toque, no la Mesa. El caso típico
+// es una posición vieja cuyo límite sale del costo histórico (una adoptada, o una que
+// se disparó antes de que la Mesa detectara el fill).
+function gtcAutoEnviaSola(p, limite) {
+  if (!gtcAutoQuiere(p && p.id)) return { enviar: false, motivo: 'apagada' };
+  const lim = Number(limite), mark = Number(p && p.mark);
+  if (Number.isFinite(lim) && lim > 0 && Number.isFinite(mark) && mark > 0 && lim <= mark) return { enviar: false, motivo: 'bajo_mercado' };
+  return { enviar: true, motivo: '' };
+}
 function abrirGtcAutomatico(pendientes) {
   // jamás durante un corte: su formulario no puede cruzarse con la venta del corte
   const hayCorte = () => typeof _corte !== 'undefined' && _corte.enCurso;
@@ -1155,9 +1168,12 @@ function abrirGtcAutomatico(pendientes) {
     if (hayCorte() || !(_ord && _ord.pre === pre && $('#modalOrden') && !_ord.orden)) return;
     await ordenPreview();                                       // vista previa automática (sin PIN)
     if (hayCorte() || !(_ord && _ord.pre === pre && $('#modalOrden') && _ord.previewIds)) return;
-    if (gtcAutoQuiere(p.id)) {
+    const d = gtcAutoEnviaSola(p, pre.limitPrice);
+    if (d.enviar) {
       toast('Enviando la venta GTC automática…');
       await ordenPlace();                                        // pide PIN si el equipo está desarmado
+    } else if (d.motivo === 'bajo_mercado') {
+      toast('Tu GTC quedaría POR DEBAJO del mercado (se vendería ya): revísala y envíala tú.');
     }
   }, 900);
 }
@@ -1499,7 +1515,7 @@ function pnlVivo(p) {
     if (p.strike == null || !p.expiracion) {
       return `<div class="mut" style="margin-top:6px;font-size:11.5px">P&amp;L vivo: necesita strike y expiración (regístralos en el fill)</div>`;
     }
-    return `<div class="mut" style="margin-top:6px;font-size:11.5px">P&amp;L vivo: aún sin mark (el worker lo calcula cada 5 min en sesión)</div>`;
+    return `<div class="mut" style="margin-top:6px;font-size:11.5px">P&amp;L vivo: aún sin mark (el worker lo calcula cada minuto en sesión)</div>`;
   }
   const c = Number(p.contratos) || 1, fill = Number(p.prima_fill) || 0, mark = Number(p.mark);
   const pnl = Math.round((mark - fill) * c * 100 * 100) / 100;
@@ -1527,7 +1543,9 @@ function corteTocado(p) {
   if (p.aviso_corte_at) return true;
   return p.mark != null && p.mark !== '' && Number.isFinite(Number(p.mark)) && Number(p.mark) <= corte;
 }
-function tarjetaPosicion(p) {
+// `br` = la MISMA posición leída del bróker (v50), o null si no se pudo leer: sin
+// ella la tarjeta sale igual que en la v49, nunca vacía ni a medias.
+function tarjetaPosicion(p, br, hoy, grupo) {
   const pct = Number(p.plan_pct) > 0 ? Number(p.plan_pct) : 35;            // plan CONGELADO de esta posición
   const corte = corteDe(p.prima_fill, p.stop_pct);
   const tocado = corteTocado(p);
@@ -1547,6 +1565,7 @@ function tarjetaPosicion(p) {
         : `<b>⚠ El último mark está en tu corte -${esc(Number(p.stop_pct))}% ($${esc(fmtPrima(corte))}) · mark $${esc(fmtPrima(p.mark))}.</b> Aún sin aviso de la Mesa (el mark puede venir de una sola punta): mira el bid.`}
       Si la entrada fue mala, corta ya: no la dejes ir a cero.${operable ? '' : ' Vende en tu bróker.'}</div>` : ''}
     ${pnlVivo(p)}
+    ${lineasCartera(p, br, hoy, grupo)}
     <div class="fila" style="margin-top:9px;gap:8px">
       <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
       <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button></div>
@@ -2040,6 +2059,9 @@ function etGuardar(t, s) {
 function etOlvidar() {
   try { Object.values(ET_K).forEach(k => localStorage.removeItem(k)); } catch (_) {}
 }
+// El accountIdKey se cachea para siempre en este equipo: si deja de valer, toda
+// lectura por cuenta falla igual una y otra vez. Se borra para que la siguiente lo pida.
+function etOlvidarCuenta() { try { localStorage.removeItem(ET_K.acct); } catch (_) {} }
 // topeMs: solo para LECTURAS/login/renew (un fetch colgado dejaría la cadena o
 // Cuentas mudas hasta 60 s). Las órdenes NO llevan tope: abortar un place en
 // el cliente dejaría la orden en estado indeterminado.
@@ -2259,7 +2281,11 @@ function emparejarEtrade(txs) {
     && String(x.t.brokerage.product.securityType || '').toUpperCase() === 'OPTN');
   ops.sort((a, b) => num(a.t.transactionDate) - num(b.t.transactionDate)
     || lado(a.t) - lado(b.t) || (b.i - a.i) || num(a.t.transactionId) - num(b.t.transactionId));
-  const abiertos = {}, salidas = [];
+  // A3 (v50): una venta que no encuentra su compra se descartaba EN SILENCIO (el
+  // historial son 180 días: la compra puede ser anterior). Ahora queda constancia
+  // en salidas.huerfanas para decirlo en Cuentas — la propiedad viaja en el array
+  // para no cambiar el shape que ya esperan todos los que llaman aquí.
+  const abiertos = {}, salidas = [], huerfanas = [];
   for (const { t } of ops) {
     const p = t.brokerage.product, b = t.brokerage;
     const right = String(p.callPut || '').toUpperCase() === 'PUT' ? 'PUT' : 'CALL';
@@ -2303,7 +2329,12 @@ function emparejarEtrade(txs) {
       ap.qty -= usa; ap.fee -= feeAp; rest -= usa;   // la comisión restante viaja con el resto del lote
       if (ap.qty <= 1e-9) cola.shift();
     }
+    // sin compra que emparejar: se anota (casi siempre la compra es más vieja que la ventana del historial)
+    if (rest > 1e-9) huerfanas.push({ broker: 'etrade', symbol: p.symbol, osi: contrato, direccion: right,
+      strike, expiracion: exp, contratos: Math.round(rest * 10000) / 10000, prima_salida: precio,
+      cerrada_at: ts, id: t.transactionId, tipo: t.transactionType });
   }
+  salidas.huerfanas = huerfanas;
   return salidas;
 }
 
@@ -2381,6 +2412,7 @@ async function etradeSincronizarImpl(forzar) {
     const ops = txs.filter(t => t && t.brokerage && t.brokerage.product
       && String(t.brokerage.product.securityType || '').toUpperCase() === 'OPTN').length;
     const rts = emparejarEtrade(txs);
+    const huerfanas = (rts.huerfanas || []).length;      // A3: ventas sin compra en la ventana leída
     let nuevos = 0;
     if (rts.length && uid) {
       // Autolimpieza: filas con la clave vieja (formato con '|', sin IDs) se
@@ -2392,7 +2424,7 @@ async function etradeSincronizarImpl(forzar) {
       if (error) return fin({ estado: 'error', detalle: error.message });
       nuevos = (data || []).length;
     }
-    const resumen = fin({ estado: 'ok', txs: txs.length, ops, rts: rts.length, nuevos, dias });
+    const resumen = fin({ estado: 'ok', txs: txs.length, ops, rts: rts.length, nuevos, dias, huerfanas });
     return { ...resumen, cambio: nuevos > 0 };
   } catch (e) {
     return fin({ estado: 'error', detalle: (e && e.message) || 'fallo' });
@@ -2435,6 +2467,9 @@ function swGuardar(d) {
   } catch (_) {}
 }
 function swOlvidar() { try { Object.values(SW_K).forEach(k => localStorage.removeItem(k)); localStorage.removeItem('mz_sw_sync'); } catch (_) {} }
+// Mismo caso que en E*TRADE: un hash de cuenta caducado (o de una cuenta cerrada) da
+// el mismo error para siempre; se borra para volver a pedirlo en la próxima lectura.
+function swOlvidarCuenta() { try { localStorage.removeItem(SW_K.acct); localStorage.removeItem(SW_K.cache); } catch (_) {} }
 // vencido: refresh token de más de 7 días, o Schwab rechazó la renovación
 function swVencido() {
   try {
@@ -2713,7 +2748,11 @@ function etradeLineaHistorial(s) {
   if (s.estado === 'error') return 'historial: no pude sincronizar' + (s.detalle ? ' (' + esc(s.detalle) + ')' : '') + sync;
   if (s.estado === 'sincronizando') return 'historial: sincronizando…';
   const hace = s.ts ? haceCuanto(new Date(s.ts).toISOString()).txt : '';
-  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.txs} transacciones · ${s.ops} de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hace ? ' · ' + hace : ''}${sync}`;
+  // A3: las ventas sin compra se dicen, sin alarmismo: lo normal es que la compra
+  // sea más vieja que la ventana del historial, y el dato no está perdido, falta.
+  const hu = Number(s.huerfanas) > 0
+    ? ` · ${s.huerfanas} venta${s.huerfanas > 1 ? 's' : ''} sin su compra en la ventana leída (no cuentan en la utilidad)` : '';
+  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.txs} transacciones · ${s.ops} de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hu}${hace ? ' · ' + hace : ''}${sync}`;
 }
 async function etSyncAhora() {
   try { localStorage.removeItem(ET_K.sync); } catch (_) {}
@@ -2760,10 +2799,16 @@ function fillsDeOrdenesSchwab(ordenes) {
 // Ejecuciones {osi, symbol, expiracion, direccion, strike, side, qty, price, ts, fee, id}
 // → round-trips FIFO por contrato (el mismo criterio que E*TRADE, tasty y moomoo).
 // Schwab no manda comisiones en las órdenes: fees = 0 (igual que moomoo).
-function emparejarFillsSchwab(fills) {
+// A2 (v50): un contrato que VENCE sin venderse no genera ninguna orden en Schwab, así
+// que su pérdida no existía en ningún sitio y la utilidad salía INFLADA (en E*TRADE sí
+// se cubre: el tipo 'Option Expired' entra como venta a 0). Aquí, terminado el FIFO,
+// todo lote comprado cuya expiración YA PASÓ y no tiene venta se cierra a 0 el día de
+// su vencimiento: pérdida total. Un contrato que vence HOY sigue vivo hasta las 16:00 ET
+// y no se toca. `hoy` (YYYY-MM-DD en NY) se puede pasar para probarlo.
+function emparejarFillsSchwab(fills, hoy) {
   const orden = (fills || []).slice().sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1
     : (a.side === 'BUY' && b.side !== 'BUY') ? -1 : (a.side !== 'BUY' && b.side === 'BUY') ? 1 : String(a.id).localeCompare(String(b.id))));
-  const abiertos = {}, salidas = [];
+  const abiertos = {}, salidas = [], huerfanas = [];
   for (const f of orden) {
     if (f.side === 'BUY') { (abiertos[f.osi] = abiertos[f.osi] || []).push({ qty: f.qty, precio: f.price, ts: f.ts, fee: f.fee || 0, id: f.id }); continue; }
     let rest = f.qty; const cola = abiertos[f.osi] || [];
@@ -2779,8 +2824,47 @@ function emparejarFillsSchwab(fills) {
       ap.qty -= usa; ap.fee -= feeAp; rest -= usa;
       if (ap.qty <= 1e-9) cola.shift();
     }
+    if (rest > 1e-9) huerfanas.push({ broker: 'schwab', symbol: f.symbol, osi: f.osi, direccion: f.direccion,
+      strike: f.strike, expiracion: f.expiracion, contratos: Math.round(rest * 10000) / 10000,
+      prima_salida: f.price, cerrada_at: f.ts, id: f.id });
   }
+  // A2: lo que quedó comprado y ya venció = pérdida total el día del vencimiento.
+  const hoyY = String(hoy || hoyNY()).slice(0, 10);
+  const expiradas = [];
+  for (const osi of Object.keys(abiertos)) {
+    for (const ap of abiertos[osi]) {
+      if (!(ap.qty > 1e-9)) continue;
+      const d = desOsi(osi); const exp = d && d.expiracion;
+      if (!exp || !/^\d{4}-\d{2}-\d{2}$/.test(hoyY) || !(exp < hoyY)) continue;   // sin expiración o aún viva: no se juzga
+      // 20:00Z = 16:00 ET en verano y 15:00 ET en invierno: el mismo día NY en los dos casos.
+      const ts = exp + 'T20:00:00.000Z';
+      const fila = { broker: 'schwab', symbol: d.symbol, osi, direccion: d.direccion, strike: d.strike, expiracion: exp,
+        contratos: ap.qty, prima_fill: ap.precio, prima_salida: 0, abierta_at: ap.ts, cerrada_at: ts,
+        resultado_usd: Math.round((-ap.precio * ap.qty * 100 - (ap.fee || 0)) * 100) / 100,
+        fees: Math.round((ap.fee || 0) * 100) / 100,
+        // La clave NO lleva la cantidad: un lote solo vence una vez. Con la cantidad
+        // dentro, el mismo lote daba «…#3» en una pasada (si la venta aún no se veía) y
+        // «…#2» en otra, y el upsert dejaba en la base la pérdida total Y el round-trip
+        // real: la utilidad bajaba dos veces.
+        clave_ext: `${osi}#${ap.id}>venc${exp}`,
+        raw: { abre: ap.id, cierra: 'vencimiento', nota: 'venció sin venderse (A2): pérdida total PRESUNTA' } };
+      salidas.push(fila); expiradas.push(fila);
+    }
+  }
+  salidas.huerfanas = huerfanas;
+  salidas.expiradas = expiradas;
   return salidas;
+}
+// A2: la fila de vencimiento es una INFERENCIA (Schwab no genera ninguna orden cuando
+// algo vence), y una inferencia no puede quedarse escrita para siempre: si mañana
+// aparece la venta que faltaba, ese lote ya no venció. De cada pasada se borran las
+// vencidas que ya NO se deducen, pero solo de los contratos que esta pasada SÍ leyó
+// (si un tramo antiguo falla, lo que no se pudo recalcular no se toca). PURA.
+function vencidasASobrar(filas, deseadas, osis) {
+  const quiero = new Set(deseadas || []);
+  const leidos = new Set(osis || []);
+  return (filas || []).map(f => (f && typeof f.clave_ext === 'string') ? f.clave_ext : '')
+    .filter(k => k && k.includes('>venc') && leidos.has(k.split('#')[0]) && !quiero.has(k));
 }
 // Órdenes de Schwab en tramos de 60 días hacia atrás (hasta `dias`). Si un tramo
 // antiguo falla (Schwab limita la antigüedad), se conserva lo ya traído.
@@ -2827,6 +2911,24 @@ async function schwabSincronizarImpl(forzar) {
     if (res.error) return fin({ estado: 'error', detalle: String(res.error).slice(0, 80) });
     const fills = fillsDeOrdenesSchwab(res.ordenes);
     const rts = emparejarFillsSchwab(fills);
+    const vencidas = (rts.expiradas || []).length, huerfanas = (rts.huerfanas || []).length;
+    // Autolimpieza de las vencidas que ya no se deducen (apareció su venta): sin esto
+    // la pérdida total quedaba escrita para siempre y desde la app no hay forma de
+    // borrarla. Va ANTES del upsert, igual que la de E*TRADE.
+    let limpiadas = 0;
+    if (uid) {
+      try {
+        const osis = [...new Set(fills.map(f => f.osi))];
+        if (osis.length) {
+          const prevV = await sb.from('broker_trades').select('clave_ext').eq('broker', 'schwab').like('clave_ext', '%>venc%');
+          const sobran = vencidasASobrar((prevV && prevV.data) || [], (rts.expiradas || []).map(r => r.clave_ext), osis);
+          if (sobran.length) {
+            const { error: eDel } = await sb.from('broker_trades').delete().eq('broker', 'schwab').in('clave_ext', sobran);
+            if (!eDel) limpiadas = sobran.length;
+          }
+        }
+      } catch (_) {}
+    }
     let nuevos = 0;
     if (rts.length && uid) {
       const { error, data } = await sb.from('broker_trades')
@@ -2835,8 +2937,8 @@ async function schwabSincronizarImpl(forzar) {
       nuevos = (data || []).length;
     }
     const llenas = res.ordenes.filter(o => o && String(o.status || '').toUpperCase() === 'FILLED').length;
-    const resumen = fin({ estado: 'ok', ordenes: llenas, fills: fills.length, rts: rts.length, nuevos, dias: res.dias });
-    return { ...resumen, cambio: nuevos > 0 };
+    const resumen = fin({ estado: 'ok', ordenes: llenas, fills: fills.length, rts: rts.length, nuevos, dias: res.dias, vencidas, huerfanas, limpiadas });
+    return { ...resumen, cambio: nuevos > 0 || limpiadas > 0 };
   } catch (e) {
     if (/caducó|sin sesión/i.test(String(e && e.message))) return fin({ estado: 'expirado' });
     return fin({ estado: 'error', detalle: String((e && e.message) || 'fallo').slice(0, 80) });
@@ -2849,7 +2951,12 @@ function schwabLineaHistorial(s) {
   if (s.estado === 'error') return 'historial: no pude sincronizar' + (s.detalle ? ' (' + esc(s.detalle) + ')' : '') + sync;
   if (s.estado === 'sincronizando') return 'historial: sincronizando…';
   const hace = s.ts ? haceCuanto(new Date(s.ts).toISOString()).txt : '';
-  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.ordenes} órdenes llenas · ${s.fills} ejecuciones de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hace ? ' · ' + hace : ''}${sync}`;
+  // «presunta»: Schwab no emite ninguna orden al vencer, así que la pérdida se deduce
+  // de una ausencia. Si algo venció DENTRO del dinero se ejerció solo y no es pérdida.
+  const venc = Number(s.vencidas) > 0 ? ` · ${s.vencidas} vencida${s.vencidas > 1 ? 's' : ''} sin venta (presunta pérdida total, ya cuenta; si venció dentro del dinero, dímelo)` : '';
+  const limp = Number(s.limpiadas) > 0 ? ` · ${s.limpiadas} vencida${s.limpiadas > 1 ? 's' : ''} corregida${s.limpiadas > 1 ? 's' : ''} (apareció su venta)` : '';
+  const hu = Number(s.huerfanas) > 0 ? ` · ${s.huerfanas} venta${s.huerfanas > 1 ? 's' : ''} sin su compra en la ventana leída` : '';
+  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.ordenes} órdenes llenas · ${s.fills} ejecuciones de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${venc}${limp}${hu}${hace ? ' · ' + hace : ''}${sync}`;
 }
 async function swSyncAhora() {
   try { localStorage.removeItem(SW_K_SYNC); } catch (_) {}
@@ -2858,21 +2965,910 @@ async function swSyncAhora() {
   ruta();
 }
 
+
+// ═══════════════ Cartera abierta LEÍDA DEL BRÓKER (v50) ═══════════════
+// Por qué existe: hasta la v49 la Mesa solo sabía de una posición si Andrés
+// registraba el fill a mano, si la orden había salido de la app o si un tramo de
+// cierre parcial la anotaba. Todo lo que comprara por fuera era INVISIBLE, y por
+// eso seguía abriendo la mesa vieja «porque me da las operaciones abiertas».
+// Aquí se le PREGUNTA al bróker qué tiene abierto, desde ESTE dispositivo y con
+// el token de aquí (opción B: el VPS solo firma, nada con poder vive allí).
+// Doctrina de esta capa: SOLO LEE. No arma ni envía ninguna orden, y nada se
+// adopta ni se ajusta sin el toque de Andrés.
+//   Refresco (B8): con el mercado abierto se vuelve a preguntar cada minuto; con
+//   el mercado cerrado, cada 15 min (la cartera no se mueve). Una ruta que el
+//   proxy no permite se reintenta solo cada 30 min: si su lista blanca aún no la
+//   tiene, insistir cada minuto solo castiga al VPS y no arregla nada.
+const CART_K = 'mz_cartera';
+const CART_TTL_ABIERTO = 60000, CART_TTL_CERRADO = 15 * 60000, CART_TTL_VETADA = 30 * 60000;
+// Ventana en la que una lectura todavía vale para AFIRMAR algo. Una cartera guardada
+// en este equipo se vuelve a pintar al arrancar (para no salir en blanco), pero con
+// su antigüedad a la vista, y si ya es vieja NO sirve para decir «el bróker ya no la
+// tiene»: eso solo se afirma con una lectura reciente. Doctrina de la casa: un dato
+// viejo jamás se presenta como fresco.
+const CART_FRESCO_MS = 30 * 60000;
+const CART_MIN_MS = 30000;            // piso duro del REFRESCO automático: jamás dos lecturas seguidas en menos de 30 s
+const CART_MIN_FORZAR_MS = 3000;      // «Volver a preguntar» es un toque suyo: el piso baja a 3 s (antes el de 30 s se comía el forzado y la app decía que había preguntado sin preguntar)
+// Estado en memoria por bróker: { ts, estado, detalle, items, otros, truncada }.
+// `estado`: ok | sesion (token/login caducado) | no_permitido (lista blanca del
+// proxy) | error (el bróker contestó mal) | sin_red (no se pudo ni preguntar) | sin (sin sesión aquí).
+const _cart = { etrade: null, schwab: null, enVuelo: {}, firma: '' };
+
+// ¿Mercado abierto ahora? Manda el latido FRESCO del worker; sin él, el reloj de
+// NY (9:30–16:00, lunes a viernes; sin calendario de festivos, igual que antesDe1030NY).
+function mercadoAbiertoNY(hb) {
+  const fresco = hb && hb.latido_at && haceCuanto(hb.latido_at).min <= 5;
+  if (fresco && hb.sesion) return ['regular', 'pre', 'post'].includes(String(hb.sesion));
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  const v = (t) => (f.find(x => x.type === t) || {}).value;
+  if (v('weekday') === 'Sat' || v('weekday') === 'Sun') return false;
+  const m = Number(v('hour')) * 60 + Number(v('minute'));
+  return m >= 570 && m <= 960;
+}
+// Clave de CONTRATO (sin bróker): la misma operación en dos brókeres son dos
+// posiciones distintas, así que el bróker se añade aparte (claveCartera).
+function claveContrato(x) {
+  if (!x || !x.symbol || !x.direccion) return '';
+  // Number(null) es 0, no NaN: sin este filtro una posición SIN strike daba la clave
+  // «SPY|CALL|0|…» y podía casar con otra igual de incompleta. Sin strike no hay clave.
+  if (x.strike == null || x.strike === '') return '';
+  const s = Number(x.strike);
+  if (!Number.isFinite(s) || s <= 0) return '';
+  const exp = String(x.expiracion || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(exp)) return '';
+  return `${String(x.symbol).toUpperCase()}|${String(x.direccion).toUpperCase() === 'PUT' ? 'PUT' : 'CALL'}|${s}|${exp}`;
+}
+function claveCartera(x) {
+  const k = claveContrato(x);
+  return k ? `${(x.broker || 'etrade')}|${k}` : '';
+}
+// Normaliza la cartera de E*TRADE (/v1/accounts/{key}/portfolio.json, view=COMPLETE)
+// al shape común. E*TRADE ya da marketValue, totalGain y comisiones: se prefieren
+// SUS números y se anota de dónde salió cada cifra (origen_*), porque presentar un
+// número recalculado como si fuera del bróker es exactamente lo que costó dinero.
+function normalizarPosEtrade(resp) {
+  const n = (v) => { if (v == null || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const P = (resp && resp.PortfolioResponse) || {};
+  const ap = P.AccountPortfolio;
+  const carteras = Array.isArray(ap) ? ap : (ap ? [ap] : []);
+  const items = [], otros = { acciones: 0, efectivo: 0, vendidas: 0, ilegibles: 0, otros: 0 };
+  let truncada = false;
+  for (const c of carteras) {
+    if (n(c && c.totalPages) > 1) truncada = true;
+    const ps = Array.isArray(c && c.Position) ? c.Position : ((c && c.Position) ? [c.Position] : []);
+    for (const p of ps) {
+      const co = (p && p.Complete) || {}, pr = (p && p.Product) || {}, q = (p && p.Quick) || {};
+      const tipo = String(pr.securityType || '').toUpperCase();
+      if (tipo !== 'OPTN') {
+        if (tipo === 'EQ' || tipo === 'INDX') otros.acciones++;
+        else if (tipo === 'MF' || tipo === 'MMF' || tipo === 'CASH') otros.efectivo++;
+        else otros.otros++;
+        continue;
+      }
+      const cant = n(p.quantity);
+      if (cant == null || cant === 0) { otros.ilegibles++; continue; }
+      if (cant < 0) { otros.vendidas++; continue; }          // Sardiñas solo compra: una vendida se cuenta y se dice, no se adopta
+      // E*TRADE manda expiryYear con 2 dígitos en transacciones y 4 en cartera: se acepta lo que venga.
+      const y0 = n(pr.expiryYear) || 0, anio = (y0 > 0 && y0 < 100) ? 2000 + y0 : y0;
+      const exp = (anio && n(pr.expiryMonth) && n(pr.expiryDay))
+        ? `${anio}-${String(n(pr.expiryMonth)).padStart(2, '0')}-${String(n(pr.expiryDay)).padStart(2, '0')}` : null;
+      const strike = n(pr.strikePrice);
+      if (!exp || strike == null) { otros.ilegibles++; continue; }
+      const dir = String(pr.callPut || '').toUpperCase() === 'PUT' ? 'PUT' : 'CALL';
+      const valor = n(p.marketValue) ?? n(co.marketValue);
+      const pnl = n(p.totalGain) ?? n(co.totalGain);
+      const fill = n(p.pricePaid) ?? n(co.pricePaid);
+      // Invertido: si el bróker da valor y ganancia, la resta ES suya; si no, el costo del fill.
+      const invBroker = (valor != null && pnl != null);
+      const invertido = invBroker ? Math.round((valor - pnl) * 100) / 100
+        : (fill != null ? Math.round(fill * cant * 100 * 100) / 100 : null);
+      const markBroker = n(q.lastTrade) ?? n(co.lastTrade);
+      const mark = markBroker != null ? markBroker
+        : (valor != null && cant ? Math.round(valor / (cant * 100) * 10000) / 10000 : null);
+      const adq = n(p.dateAcquired) ?? n(co.dateAcquired);
+      const abierta = adq && adq > 0 ? new Date(adq < 1e11 ? adq * 1000 : adq).toISOString() : null;
+      items.push({
+        broker: 'etrade', symbol: String(pr.symbol || '').toUpperCase(), direccion: dir, strike, expiracion: exp,
+        contratos: cant, prima_fill: fill, mark, valor_actual: valor, invertido, pnl_usd: pnl,
+        pnl_pct: n(p.totalGainPct) ?? n(co.totalGainPct),
+        comisiones: n(p.commissions) ?? n(co.commissions),
+        abierta_at: abierta, abierta_estimada: !abierta,
+        origen_valor: valor != null ? 'broker' : 'calculado',
+        origen_pnl: pnl != null ? 'broker' : 'calculado',
+        origen_invertido: invBroker ? 'broker' : 'calculado',
+        origen_mark: markBroker != null ? 'broker' : (valor != null ? 'calculado' : 'sin'),
+      });
+    }
+  }
+  items.forEach(it => { it.clave = claveCartera(it); });
+  return { broker: 'etrade', items: items.filter(it => it.clave), otros, truncada };
+}
+// Normaliza la cartera de Schwab (/trader/v1/accounts/{hash} con fields=positions).
+// El path es el MISMO del saldo, así que la lista blanca del proxy ya lo cubre.
+// longOpenProfitLoss es la ganancia DESDE LA APERTURA (la que le importa a Andrés);
+// currentDayProfitLoss es solo la del día y se guarda aparte.
+function normalizarPosSchwab(resp) {
+  const n = (v) => { if (v == null || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const sa = (resp && resp.securitiesAccount) || {};
+  const ps = Array.isArray(sa.positions) ? sa.positions : [];
+  const items = [], otros = { acciones: 0, efectivo: 0, vendidas: 0, ilegibles: 0, otros: 0 };
+  for (const p of ps) {
+    const inst = (p && p.instrument) || {};
+    const tipo = String(inst.assetType || '').toUpperCase();
+    if (tipo !== 'OPTION') {
+      if (tipo === 'EQUITY' || tipo === 'INDEX' || tipo === 'ETF') otros.acciones++;
+      else if (tipo === 'CASH_EQUIVALENT' || tipo === 'CURRENCY') otros.efectivo++;
+      else otros.otros++;
+      continue;
+    }
+    const corta = n(p.shortQuantity) || 0, larga = n(p.longQuantity) || 0;
+    if (corta > 0 && larga <= 0) { otros.vendidas++; continue; }
+    const cant = larga - corta;
+    if (!(cant > 0)) { otros.ilegibles++; continue; }
+    const d = desOsi(inst.symbol);
+    const strike = d ? d.strike : n(inst.strikePrice);
+    const exp = d ? d.expiracion : null;
+    const sym = (d && d.symbol) || String(inst.underlyingSymbol || '').toUpperCase();
+    const dir = d ? d.direccion : (String(inst.putCall || '').toUpperCase() === 'PUT' ? 'PUT' : 'CALL');
+    if (!exp || strike == null || !sym) { otros.ilegibles++; continue; }
+    const valor = n(p.marketValue);
+    const pnl = n(p.longOpenProfitLoss);
+    const fill = n(p.averagePrice);
+    const invBroker = (valor != null && pnl != null);
+    const invertido = invBroker ? Math.round((valor - pnl) * 100) / 100
+      : (fill != null ? Math.round(fill * cant * 100 * 100) / 100 : null);
+    const mark = valor != null && cant ? Math.round(valor / (cant * 100) * 10000) / 10000 : null;
+    items.push({
+      broker: 'schwab', symbol: sym, direccion: dir, strike, expiracion: exp,
+      contratos: cant, prima_fill: fill, mark, valor_actual: valor, invertido, pnl_usd: pnl,
+      pnl_pct: (invertido && pnl != null) ? Math.round(pnl / invertido * 1000) / 10 : null,
+      pnl_dia_usd: n(p.currentDayProfitLoss),
+      comisiones: null,                                  // Schwab no manda comisiones en positions: no se inventan
+      // Schwab NO da fecha de apertura en positions: se dice y, al adoptar, se guarda hoy MARCADO.
+      abierta_at: null, abierta_estimada: true,
+      origen_valor: valor != null ? 'broker' : 'calculado',
+      origen_pnl: pnl != null ? 'broker' : 'calculado',
+      origen_invertido: invBroker ? 'broker' : 'calculado',
+      origen_mark: valor != null ? 'calculado' : 'sin',
+      osi: String(inst.symbol || '').trim(),
+    });
+  }
+  items.forEach(it => { it.clave = claveCartera(it); });
+  return { broker: 'schwab', items: items.filter(it => it.clave), otros, truncada: false };
+}
+// Clasifica la respuesta del proxy para una LECTURA de cartera. El proxy del VPS
+// filtra rutas con lista blanca: una ruta que aún no tiene vuelve como 403/404 con
+// su propio {error}. Eso NO es culpa del token ni del bróker, así que se separa en
+// `no_permitido` para decirlo en pantalla y dejar de insistir (30 min de espera).
+//   Pero un 403/404 también puede venir del BRÓKER (un accountIdKey viejo guardado
+// en este equipo, una cuenta que ya no está autorizada). Antes todo 403/404 se le
+// echaba al servidor: Andrés perseguía un problema del VPS que no existía mientras
+// la Mesa callaba media hora, cuando el arreglo era reconectar. Se mira QUIÉN habló:
+// el proxy manda {error:...} a secas; E*TRADE manda {Error:{...}} y Schwab
+// {errors:[...]} o {message:...} (el mismo criterio que ya usa el camino de órdenes).
+function lecturaBroker(r) {
+  if (!r) return { estado: 'sin_red', detalle: '' };
+  if (r._excepcion) return { estado: 'sin_red', detalle: String(r._excepcion).slice(0, 90) };
+  const st = Number(r.status) || 0;
+  const d = (r && r.data && typeof r.data === 'object') ? r.data : {};
+  const conErrores = Array.isArray(d.errors) && d.errors.length;
+  const msg = (d.Error && d.Error.message) ? String(d.Error.message)
+    : d.error ? String(d.error) : d.message ? String(d.message)
+    : conErrores ? d.errors.map(e => (e && (e.message || e.title)) || '').filter(Boolean).join(' · ') : '';
+  const habloBroker = !!(d.Error || conErrores || d.message);
+  if (st === 401) return { estado: 'sesion', detalle: msg.slice(0, 90) };
+  if (st === 403 || st === 404 || st === 405) {
+    if (!habloBroker) return { estado: 'no_permitido', detalle: (msg || 'HTTP ' + st).slice(0, 90) };
+    // el bróker sí contestó: es un error suyo, con el ritmo normal de reintento
+    return { estado: 'error', detalle: msg.slice(0, 90), cuenta_mala: /invalid|not\s*found|account|cuenta/i.test(msg) };
+  }
+  if (st === 204) return { estado: 'ok', vacio: true, detalle: '' };
+  if (st === 0) return { estado: 'sin_red', detalle: msg.slice(0, 90) };
+  if (st >= 400 || msg) return { estado: 'error', detalle: (msg || 'HTTP ' + st).slice(0, 90) };
+  return { estado: 'ok', detalle: '' };
+}
+// El texto que ve Andrés. Nunca «no hay nada» cuando en realidad no se pudo
+// preguntar: esa confusión ya costó dinero en la mesa vieja.
+function textoLecturaBroker(broker, e) {
+  const n = BROKER_NOMBRE[broker] || broker;
+  const det = (e && e.detalle) ? ` (${e.detalle})` : '';
+  const est = e && e.estado;
+  if (est === 'sesion') return broker === 'schwab'
+    ? `⚠ No sé qué tienes abierto en ${n}: el login semanal caducó. Reconecta en Cuentas → Schwab.`
+    : `⚠ No sé qué tienes abierto en ${n}: la sesión expiró. Reconecta en Cuentas → E*TRADE.`;
+  if (est === 'no_permitido') return `⚠ No pude leer la cartera de ${n}: tu servidor todavía no permite esa lectura${det}. Avísale a Claude; mientras tanto lo que compres por fuera de ${n} no aparece aquí.`;
+  if (est === 'sin_red') return `⚠ No pude preguntarle a ${n} qué tienes abierto (sin conexión con el proxy)${det}. Esto NO quiere decir que no tengas nada.`;
+  if (est === 'error') return `⚠ ${n} no me contestó bien${det}. No sé qué tienes abierto ahí.`
+    + (e && e.cuenta_mala ? ` Puede que la cuenta guardada en este equipo ya no valga: reconecta ${n} en Cuentas.` : '');
+  return '';
+}
+// Casa la cartera del bróker con la tabla posiciones. Tres estados (B2) más uno
+// honesto: `noComprobadas` = posiciones del libro cuyo bróker NO se pudo leer, o
+// sin strike/expiración para comparar. A esas JAMÁS se les dice «el bróker ya no
+// la tiene»: no se preguntó, o no había con qué preguntar.
+//   El bróker AGREGA y el libro NO: /portfolio.json y positions[] devuelven UNA línea
+// por contrato con la cantidad total, mientras el libro puede tener DOS fichas
+// abiertas del mismo contrato (un refuerzo —doctrina del Plan 35—, un fill registrado
+// a mano además del que trae la sincronización, una recompra). Casando ficha a ficha,
+// la segunda caía en «el bróker ya no la tiene» estando VIVA y el botón de ajuste
+// inflaba el libro. Se agrupa por contrato + bróker y se compara la SUMA del grupo:
+// todas las fichas del grupo quedan casadas, y la diferencia se mide contra el total.
+function casarCarteraLibro(items, posiciones, leidos) {
+  leidos = leidos || [];
+  const libro = (posiciones || []).filter(p => p && p.estado === 'abierta');
+  const clave = (p) => claveCartera({ ...p, broker: p.broker || 'etrade' });
+  const grupos = new Map();
+  libro.forEach(p => { const k = clave(p); if (!k) return; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(p); });
+  const casados = new Set();
+  const enAmbos = [], soloBroker = [], soloLibro = [], noComprobadas = [];
+  for (const br of (items || [])) {
+    const k = claveCartera(br);
+    if (!k) continue;
+    const g = grupos.get(k);
+    if (!g || casados.has(k)) { soloBroker.push(br); continue; }
+    casados.add(k);
+    const nl = g.reduce((s, p) => s + (Number(p.contratos) || 0), 0);
+    const dif = Math.round(((Number(br.contratos) || 0) - nl) * 10000) / 10000;
+    g.forEach(p => enAmbos.push({ pos: p, br, dif, fichas: g, libroContratos: nl }));
+  }
+  libro.forEach(p => {
+    const k = clave(p);
+    if (!k) { noComprobadas.push({ pos: p, motivo: 'sin_contrato' }); return; }
+    if (casados.has(k)) return;                   // su grupo casó: ya está en enAmbos
+    if (!leidos.includes(p.broker || 'etrade')) { noComprobadas.push({ pos: p, motivo: 'sin_lectura' }); return; }
+    soloLibro.push(p);
+  });
+  return { enAmbos, soloBroker, soloLibro, noComprobadas };
+}
+// Cuánto le falta a la prima para tocar un precio. `sentido`: 'arriba' (el límite
+// GTC, hay que SUBIR) o 'abajo' (el corte, hay que BAJAR). `falta` es la prima por
+// contrato que aún tiene que moverse; tocado = ya llegó (o pasó).
+function margenHasta(actual, objetivo, sentido) {
+  const a = Number(actual), o = Number(objetivo);
+  if (!(a > 0) || !(o > 0)) return null;
+  const d = sentido === 'abajo' ? a - o : o - a;
+  return { falta: Math.round(d * 10000) / 10000, pct: Math.round(d / a * 1000) / 10, tocado: d <= 0, objetivo: o };
+}
+// Días de calendario hasta el vencimiento (fechas YYYY-MM-DD en NY). 0 = vence HOY.
+function diasAlVencimiento(exp, hoy) {
+  const e = String(exp || '').slice(0, 10), h = String(hoy || hoyNY()).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(e) || !/^\d{4}-\d{2}-\d{2}$/.test(h)) return null;
+  const d = (Date.parse(e + 'T00:00:00Z') - Date.parse(h + 'T00:00:00Z')) / 86400000;
+  return Number.isFinite(d) ? Math.round(d) : null;
+}
+function textoVencimiento(exp, hoy) {
+  const d = diasAlVencimiento(exp, hoy);
+  if (d == null) return '';
+  if (d < 0) return `venció hace ${-d} d`;
+  if (d === 0) return 'VENCE HOY';
+  return `vence en ${d} d`;
+}
+// Totales de la cartera abierta LEÍDA. Suma solo lo que se pudo leer y deja dicho
+// de qué brókeres es; las comisiones solo si algún bróker las dio.
+//   Antes se sumaba campo por campo saltándose los nulos, y las tres cifras acababan
+// describiendo CONJUNTOS DISTINTOS de posiciones: una opción sin marketValue metía su
+// costo en «invertido» y nada en «valor ahora» ni en el P&L (invertido $1.660 / valor
+// $840 al lado de un P&L +11%). Ahora solo suma la posición que trae las tres, y las
+// que faltan se cuentan (`sinDato`) para decirlo. Las comisiones dicen de quién son.
+function totalesCartera(items) {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  let invertido = 0, valor = 0, pnl = 0, com = 0, conCom = 0, n = 0, sinDato = 0, calculado = 0;
+  const brokers = [], comBrokers = [], sinComBrokers = [];
+  for (const it of (items || [])) {
+    if (!it) continue;
+    n++;
+    if (it.broker && !brokers.includes(it.broker)) brokers.push(it.broker);
+    if (it.valor_actual == null || it.pnl_usd == null || it.invertido == null) { sinDato++; continue; }
+    invertido += Number(it.invertido); valor += Number(it.valor_actual); pnl += Number(it.pnl_usd);
+    if (it.origen_invertido === 'calculado') calculado++;
+    if (it.comisiones != null) {
+      com += Number(it.comisiones); conCom++;
+      if (it.broker && !comBrokers.includes(it.broker)) comBrokers.push(it.broker);
+    } else if (it.broker && !sinComBrokers.includes(it.broker)) sinComBrokers.push(it.broker);
+  }
+  const sumadas = n - sinDato;
+  return { n, sumadas, sinDato, calculado, invertido: r2(invertido), valor: r2(valor), pnl: r2(pnl),
+    pnl_pct: invertido > 0 ? Math.round(pnl / invertido * 1000) / 10 : null,
+    comisiones: conCom ? r2(com) : null, com_parcial: !!(conCom && conCom < sumadas),
+    com_brokers: comBrokers, sin_com_brokers: sinComBrokers, brokers };
+}
+// Fila de posiciones para ADOPTAR lo que el bróker tiene y la Mesa no conocía.
+// El plan queda CONGELADO (plan_pct/stop_pct) como en cualquier entrada: cambiar
+// de plan después no toca esta posición. Sin fecha de apertura del bróker se usa
+// HOY y se devuelve `_estimada` para decirlo en pantalla (no hay columna donde
+// anotarlo y en esta entrega no se puede migrar la base).
+function filaAdopcion(br, plan, uid, hoy) {
+  if (!br || !uid || !plan) return null;
+  const h = String(hoy || hoyNY()).slice(0, 10);
+  const estimada = !br.abierta_at;
+  const at = br.abierta_at || new Date().toISOString();
+  const fila = {
+    user_id: uid, symbol: String(br.symbol).toUpperCase(),
+    direccion: String(br.direccion).toUpperCase() === 'PUT' ? 'PUT' : 'CALL',
+    strike: Number(br.strike), expiracion: String(br.expiracion).slice(0, 10),
+    contratos: Number(br.contratos), prima_fill: Number(br.prima_fill),
+    broker: br.broker || 'etrade', estado: 'abierta', plan_pct: plan.gtcPct,
+    abierta_at: at, abierta_fecha_ny: estimada ? h : (ymdNY(at) || h),
+  };
+  if (plan.stopPct != null) fila.stop_pct = plan.stopPct;   // sin corte no se envía (compatible sin la migración 0012)
+  // El precio de AHORA que da el bróker viaja con la ficha (columnas mark/mark_at que ya
+  // existen). Sin él, en OTRO equipo (localStorage limpio) gtcAutoEnviaSola no sabría que
+  // el límite GTC —calculado sobre el costo histórico— puede quedar POR DEBAJO del mercado y
+  // la venta automática saldría sola en el acto. El worker lo refresca cada minuto en sesión.
+  const mk = Number(br.mark);
+  if (Number.isFinite(mk) && mk > 0) { fila.mark = Math.round(mk * 10000) / 10000; fila.mark_at = new Date().toISOString(); }
+  fila._estimada = estimada;
+  return fila;
+}
+// Decisión de adoptar, PURA: idempotente por contrato + bróker. Si ya hay una
+// posición abierta con ese contrato, no se inserta nada (adoptar dos veces no
+// crea dos filas, ni pisa lo que ya estaba: el libro manda sobre el bróker).
+function adoptarDecide(br, posiciones) {
+  const k = claveCartera(br);
+  if (!k) return { accion: 'ilegible' };
+  const ya = (posiciones || []).find(p => p && p.estado === 'abierta'
+    && claveCartera({ ...p, broker: p.broker || 'etrade' }) === k);
+  return ya ? { accion: 'existe', posicion: ya } : { accion: 'insertar' };
+}
+
+// ---- lectura por bróker (reutiliza etRead/swRead y su manejo del 401) ----
+// E*TRADE: /v1/accounts/{accountIdKey}/portfolio.json. OJO: esta ruta es NUEVA
+// para el proxy y su lista blanca no se pudo verificar (sin SSH al VPS). Si la
+// rechaza, lecturaBroker la marca `no_permitido`, se dice en pantalla y no se
+// vuelve a intentar hasta 30 min después: nada de bucles.
+async function leerCarteraEtrade() {
+  const cr = etCreds();
+  if (!cr) return { estado: 'sin', items: [], otros: null };
+  if (etDiaVencido()) return { estado: 'sesion', items: [], otros: null };
+  let r;
+  try {
+    const key = await etCuentaKey(cr);
+    // count=50 es el máximo documentado de esta ruta: pedir más se lo puede rechazar
+    // E*TRADE de plano. Si hubiera más páginas, normalizarPosEtrade lo marca truncada
+    // y esas posiciones NO se dan por desaparecidas.
+    r = await etRead(cr, `/v1/accounts/${encodeURIComponent(key)}/portfolio.json`,
+      { count: '50', view: 'COMPLETE', totalsRequired: 'true' });
+  } catch (e) {
+    const m = String((e && e.message) || e);
+    return /expiró|expiro|caduc/i.test(m) ? { estado: 'sesion', detalle: '', items: [], otros: null }
+      : { estado: 'sin_red', detalle: m.slice(0, 90), items: [], otros: null };
+  }
+  const e = lecturaBroker(r);
+  // E*TRADE contesta con SU código 10033 («no records available») cuando no hay nada
+  // que listar: eso no es un fallo, es una cartera vacía, y se dice de dónde viene
+  // (la Mesa no se inventa un «no tienes nada»: lo cita).
+  const cod = Number((((r || {}).data || {}).Error || {}).code) || 0;
+  if (e.estado === 'error' && cod === 10033) {
+    return { estado: 'ok', detalle: '', vacio: true, nota: 'contestó «no hay registros»: cartera vacía',
+      items: [], otros: { acciones: 0, efectivo: 0, vendidas: 0, ilegibles: 0, otros: 0 }, truncada: false };
+  }
+  if (e.estado === 'error' && e.cuenta_mala) etOlvidarCuenta();   // el key guardado aquí ya no vale
+  if (e.estado !== 'ok') return { ...e, items: [], otros: null };
+  if (e.vacio) return { estado: 'ok', detalle: '', items: [], otros: { acciones: 0, efectivo: 0, vendidas: 0, ilegibles: 0, otros: 0 }, truncada: false };
+  const norm = normalizarPosEtrade(r.data || {});
+  return { estado: 'ok', detalle: '', items: norm.items, otros: norm.otros, truncada: norm.truncada };
+}
+// Schwab: el saldo y las posiciones salen del MISMO path, solo cambia la query
+// (fields=positions) → la lista blanca del proxy ya lo cubre.
+async function leerCarteraSchwab() {
+  if (!swCreds()) return { estado: 'sin', items: [], otros: null };
+  if (swVencido()) return { estado: 'sesion', items: [], otros: null };
+  let r;
+  try {
+    const hash = await swCuenta();
+    r = await swRead(`/trader/v1/accounts/${encodeURIComponent(hash)}`, { fields: 'positions' });
+  } catch (e) {
+    const m = String((e && e.message) || e);
+    return /caducó|caduco|sin sesión/i.test(m) ? { estado: 'sesion', detalle: '', items: [], otros: null }
+      : { estado: 'sin_red', detalle: m.slice(0, 90), items: [], otros: null };
+  }
+  const e = lecturaBroker(r);
+  if (e.estado === 'error' && e.cuenta_mala) swOlvidarCuenta();   // hash de cuenta caducado: se vuelve a pedir
+  if (e.estado !== 'ok') return { ...e, items: [], otros: null };
+  const norm = normalizarPosSchwab(r.data || {});
+  return { estado: 'ok', detalle: '', items: norm.items, otros: norm.otros, truncada: false };
+}
+// ¿Toca volver a preguntarle a este bróker? (B8: rápido con mercado abierto, lento
+// con mercado cerrado, muy lento con una ruta que el proxy no permite.)
+//   El piso de 30 s protege al refresco AUTOMÁTICO, no al toque de Andrés: iba antes
+// del `forzar` y «Volver a preguntar» no releía nada mientras le decía que sí, justo
+// en el momento en que desconfía de la lectura. Con forzar el piso es de 3 s.
+//   Y los fallos SEGUIDOS espacian el reintento (×fallos, hasta la media hora): un
+// error estable no puede golpear el proxy cada minuto con el Copiloto a la vista.
+function carteraToca(prev, abierto, forzar) {
+  if (!prev || !prev.ts) return true;
+  const edad = Date.now() - prev.ts;
+  if (forzar) return edad >= CART_MIN_FORZAR_MS;
+  if (edad < CART_MIN_MS) return false;
+  const base = abierto ? CART_TTL_ABIERTO : CART_TTL_CERRADO;
+  const fallos = Math.max(1, Number(prev.fallos) || 1);
+  const ttl = prev.estado === 'no_permitido' ? CART_TTL_VETADA
+    : (prev.estado === 'error' || prev.estado === 'sin_red') ? Math.min(base * fallos, CART_TTL_VETADA)
+    : base;
+  return edad >= ttl;
+}
+// Firma de lo leído: sirve para redibujar SOLO cuando cambió la ESTRUCTURA (una
+// posición que aparece o desaparece, una cantidad, el estado de un bróker).
+//   Llevaba también el valor y el P&L, que con el mercado abierto se mueven en CADA
+// lectura: la firma cambiaba siempre y el Copiloto se redibujaba entero dos veces por
+// minuto —con sus cinco consultas y su salto de scroll— por un cambio de céntimos.
+// Las cifras se refrescan igual en el repintado de los 60 s de ruta().
+function firmaCartera(cart) {
+  return ['etrade', 'schwab'].map(b => {
+    const c = cart && cart[b];
+    if (!c) return b + ':-';
+    return b + ':' + c.estado + ':' + (c.items || []).map(it => `${it.clave}@${it.contratos}`).sort().join(',');
+  }).join('|');
+}
+// Lee los dos brókeres (los que tengan sesión en ESTE equipo), con caché y sin
+// bloquear el dibujado: quien llama pinta con lo que hay y redibuja si cambió.
+// Devuelve true cuando la firma cambió.
+async function cargarCartera(forzar, hb) {
+  const abierto = mercadoAbiertoNY(hb);
+  const antes = firmaCartera(_cart);
+  const uno = async (b, leer) => {
+    if (!carteraToca(_cart[b], abierto, forzar)) return;
+    if (_cart.enVuelo[b]) return _cart.enVuelo[b];
+    _cart.enVuelo[b] = (async () => {
+      let res;
+      try { res = await leer(); } catch (e) { res = { estado: 'sin_red', detalle: String((e && e.message) || e).slice(0, 90), items: [], otros: null }; }
+      res.ts = Date.now();
+      res.items = (res.items || []).map(it => ({ ...it, clave: claveCartera(it) }));
+      const prev = _cart[b];                       // fallos seguidos: el reintento se va espaciando (carteraToca)
+      res.fallos = ['ok', 'sin'].includes(res.estado) ? 0 : (((prev && Number(prev.fallos)) || 0) + 1);
+      _cart[b] = res;
+    })().finally(() => { delete _cart.enVuelo[b]; });
+    return _cart.enVuelo[b];
+  };
+  await Promise.all([uno('etrade', leerCarteraEtrade), uno('schwab', leerCarteraSchwab)]);
+  try { localStorage.setItem(CART_K, JSON.stringify({ etrade: _cart.etrade, schwab: _cart.schwab })); } catch (_) {}
+  const ahora = firmaCartera(_cart);
+  if (ahora !== antes) { _cart.firma = ahora; return true; }
+  return false;
+}
+// Al arrancar: la última cartera leída en ESTE equipo, con su hora, para no pintar
+// una pantalla vacía mientras se pregunta (y jamás presentarla como fresca).
+function carteraDesdeCache() {
+  if (_cart.etrade || _cart.schwab) return;
+  try {
+    const c = JSON.parse(localStorage.getItem(CART_K) || 'null');
+    if (c && typeof c === 'object') { _cart.etrade = c.etrade || null; _cart.schwab = c.schwab || null; }
+  } catch (_) {}
+}
+// Brókeres que SÍ contestaron (los únicos contra los que vale decir «el bróker ya
+// no la tiene») y los que se leyeron con algún problema. Una cartera TRUNCADA
+// (E*TRADE pagina) tampoco cuenta como leída: lo que no vino en la página que pedí
+// no se puede dar por desaparecido.
+function brokersLeidos(cart, ahora) {
+  const t = ahora == null ? Date.now() : ahora;
+  return ['etrade', 'schwab'].filter(b => cart && cart[b] && cart[b].estado === 'ok' && !cart[b].truncada
+    && cart[b].ts > 0 && t - cart[b].ts < CART_FRESCO_MS);
+}
+// La lectura más VIEJA de las que se están mostrando: su antigüedad va en la barra.
+function carteraLeidaAt(cart) {
+  const ts = ['etrade', 'schwab'].map(b => (cart && cart[b] && cart[b].estado === 'ok') ? Number(cart[b].ts) : 0).filter(n => n > 0);
+  return ts.length ? Math.min(...ts) : 0;
+}
+function itemsCartera(cart) {
+  return ['etrade', 'schwab'].flatMap(b => ((cart && cart[b] && cart[b].estado === 'ok') ? (cart[b].items || []) : []));
+}
+
+// ---- render de la sección POSICIONES ABIERTAS ----
+// Líneas que añade el bróker a la tarjeta de una posición del libro (B5): margen
+// hasta el límite GTC y hasta el corte, tiempo abierta y días al vencimiento.
+function lineasCartera(p, br, hoy, grupo) {
+  const mark = (br && br.mark != null) ? Number(br.mark) : (p.mark != null && Number.isFinite(Number(p.mark)) ? Number(p.mark) : null);
+  const c = Number(p.contratos) || 1;
+  const gtc = gtcDePosicion(p), corte = corteDe(p.prima_fill, p.stop_pct);
+  const mg = margenHasta(mark, gtc, 'arriba'), mc = margenHasta(mark, corte, 'abajo');
+  const enUsd = (m) => usd(Math.round(m.falta * c * 100 * 100) / 100);
+  const dias = diasAlVencimiento(p.expiracion, hoy);
+  let h = '';
+  if (mg || mc) {
+    h += `<div class="mut mono" style="margin-top:4px;font-size:11.5px">`
+      + (mg ? (mg.tocado
+        ? `<span style="color:var(--verde);font-weight:700">GTC $${esc(mg.objetivo.toFixed(2))} YA ALCANZADO</span>`
+        : `faltan <b style="color:var(--oro)">$${esc(mg.falta.toFixed(2))}</b> (${mg.pct.toFixed(0)}% · ${enUsd(mg)}) para tu GTC $${esc(mg.objetivo.toFixed(2))}`) : '')
+      + (mg && mc ? ' · ' : '')
+      + (mc ? (mc.tocado
+        ? `<span style="color:var(--rojo);font-weight:700">corte $${esc(fmtPrima(mc.objetivo))} TOCADO</span>`
+        : `colchón <b style="color:var(--rojo)">$${esc(mc.falta.toFixed(2))}</b> (${mc.pct.toFixed(0)}% · ${enUsd(mc)}) hasta tu corte $${esc(fmtPrima(mc.objetivo))}`) : '')
+      + `</div>`;
+  }
+  // El valor y el P&L del bróker son el titular de la v50 (lo único que la mesa vieja
+  // daba y esta no): van en el estilo de una cifra de dinero, no en la letra pequeña de
+  // las marcas de tiempo. Y un hueco se DICE: un «valor» que falta, callado en una
+  // tarjeta llena de números, se lee como un cero. «Confirma» solo cuando la cantidad
+  // cuadra; si no, «dice», que es lo que de verdad pasa.
+  if (br) {
+    // La cantidad del bróker se compara contra el GRUPO (todas las fichas abiertas de
+    // este contrato), no contra esta ficha: con dos fichas ×2 y ×3, el bróker manda una
+    // sola línea de ×5 y decir «no cuadra» en cada tarjeta sería falso.
+    const nb = Number(br.contratos);
+    const nl = (grupo && Number(grupo.libroContratos) > 0) ? Number(grupo.libroContratos) : (Number(p.contratos) || 0);
+    const cuadra = !(Number.isFinite(nb) && nb !== nl);
+    const varias = !!(grupo && Number(grupo.fichas) > 1);
+    h += `<div class="mut mono" style="margin-top:4px;font-size:11.5px">`
+      + `${esc(BROKER_NOMBRE[br.broker] || br.broker)} ${cuadra ? 'confirma' : 'dice'} ×${esc(br.contratos)}`
+      + (varias ? ` <span class="fresco">(tu libro: ${esc(grupo.fichas)} fichas, ×${esc(nl)} en total)</span>` : '')
+      + ` · ${br.valor_actual != null ? `valor <b style="color:var(--tx)">${usd(br.valor_actual)}</b>` : '<span class="fresco">valor: sin dato</span>'}`
+      + (br.pnl_usd != null ? ` · P&amp;L <b style="color:${colUtil(br.pnl_usd)}">${br.pnl_usd > 0 ? '+' : ''}${usd(br.pnl_usd)}</b> <span class="fresco">(del bróker)</span>`
+        : ' · <span class="fresco">P&amp;L: sin dato</span>')
+      + `</div>`;
+  }
+  const abierta = p.abierta_at ? durTxt(p.abierta_at, new Date().toISOString()) : null;
+  const venceHoy = dias === 0;
+  h += `<div class="fresco" style="margin-top:3px">`
+    + (abierta ? `abierta ${esc(abierta)}` : 'sin fecha de apertura')
+    + (dias != null ? ` · <span style="${venceHoy ? 'color:var(--rojo);font-weight:700' : dias < 0 ? 'color:var(--rojo)' : ''}">${esc(textoVencimiento(p.expiracion, hoy))}</span>` : '')
+    + (br && br.abierta_estimada ? ` · el bróker no da la fecha de apertura` : '')
+    + `</div>`;
+  return h;
+}
+// Diferencia de cantidad (B4): el bróker dice una cosa y el libro otra. No se
+// silencia y no se ajusta solo; un toque iguala el libro al bróker.
+//   Dos casos muy distintos. Con UNA ficha se ofrece el ajuste, y con él va el costo
+// medio del bróker: de prima_fill cuelgan el límite GTC (columna generada), el corte,
+// el invertido y el resultado al cerrar, así que ajustar solo la cantidad de un
+// refuerzo deja el objetivo POR DEBAJO del costo real. Con VARIAS fichas del mismo
+// contrato NO hay botón: igualar una sola ficha al total del bróker siempre duplica.
+function lineaDifContratos(x) {
+  const br = x.br, pos = x.pos, fichas = x.fichas || [pos];
+  const nb = Number(br.contratos) || 0, nl = Number(x.libroContratos) || (Number(pos.contratos) || 0);
+  const detalle = fichas.length > 1 ? ` (${fichas.map(f => '×' + (Number(f.contratos) || 0)).join(' + ')})` : '';
+  let h = `<div class="aviso"><b>El bróker dice ×${esc(nb)} y tu libro ×${esc(nl)}${esc(detalle)}.</b>
+    Puede ser un refuerzo, un cierre parcial que no se registró, o un fill que llegó en dos partes.
+    Los cálculos de la Mesa van con el libro (×${esc(nl)}).`;
+  if (fichas.length > 1) {
+    h += ` Tienes ${fichas.length} fichas de este contrato en la Mesa y el bróker las suma en una sola línea:
+      ajústalas tú (cierra la que no toque, o corrige sus contratos). Igualar una sola al total duplicaría el libro.`;
+  } else {
+    const pl = Number(pos.prima_fill), pb = Number(br.prima_fill);
+    const cambiaPrima = Number.isFinite(pb) && pb > 0 && Number.isFinite(pl) && Math.abs(pb - pl) > 0.005;
+    if (cambiaPrima) h += ` El costo medio también cambió: tu libro $${esc(pl.toFixed(2))} y el bróker $${esc(pb.toFixed(2))} — el ajuste pone los dos, así el GTC y el corte salen del costo de verdad.`;
+    h += `<div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.ajustarContratos(${Number(pos.id)}, ${nb}, ${cambiaPrima ? pb : 'null'}, ${Number.isFinite(pl) ? pl : 'null'})">Ajustar el libro a ×${esc(nb)}</button></div>
+    <div class="fresco" style="margin-top:4px">Si ya tenías una GTC puesta en el bróker, sigue por la cantidad vieja: revísala allá.</div>`;
+  }
+  return h + `</div>`;
+}
+// Tarjeta de una posición que está en el bróker y la Mesa NO conocía (B2 caso b).
+// `lect` = antigüedad de la lectura de ESE bróker: con una lectura vieja no se ofrece
+// adoptar (podría ser un fantasma ya vendido) y se dice de cuándo es.
+function tarjetaSinRegistrar(br, plan, hoy, lect) {
+  const pnl = br.pnl_usd;
+  const viejo = !!(lect && lect.viejo);
+  return `<div class="card" style="border-style:dashed;border-color:rgba(231,181,77,.55)">
+    <div class="fila"><h3>${esc(br.symbol)} ${esc(br.direccion)} ${esc(br.strike)}</h3>
+      <span class="chip c-vig">SIN REGISTRAR</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">×${esc(br.contratos)} · ${esc(BROKER_NOMBRE[br.broker] || br.broker)}</span>
+      <span class="mut">costo medio <b class="mono" style="color:var(--tx)">$${esc(br.prima_fill != null ? Number(br.prima_fill).toFixed(2) : '—')}</b></span></div>
+    <div class="mut mono" style="margin-top:4px;font-size:11.5px">
+      ${br.valor_actual != null ? `valor ${usd(br.valor_actual)}` : 'valor: sin dato'}
+      ${pnl != null ? ` · P&amp;L <b style="color:${colUtil(pnl)}">${pnl > 0 ? '+' : ''}${usd(pnl)}</b>${br.pnl_pct != null ? ` (${br.pnl_pct > 0 ? '+' : ''}${Number(br.pnl_pct).toFixed(0)}%)` : ''}` : ''}
+      · <span class="fresco">cifras del bróker</span></div>
+    <div class="fresco" style="margin-top:3px">${esc(textoVencimiento(br.expiracion, hoy))}${br.abierta_at ? ` · abierta ${esc(durTxt(br.abierta_at, new Date().toISOString()))}` : ' · el bróker no da la fecha de apertura'}</div>
+    <div class="mut" style="margin-top:7px">La Mesa no la conoce: sin ficha no entra al aviso de corte, ni a la GTC pendiente, ni a la Disciplina.</div>
+    <div class="fresco" style="margin-top:3px">Esto solo crea la ficha en la Mesa: <b>no compra nada ni manda ninguna orden a tu bróker.</b></div>
+    <div class="fila" style="margin-top:9px">${viejo
+      ? `<button class="btnsec" style="width:100%" disabled>lectura de ${esc((lect && lect.txt) || 'hace rato')}: preguntando de nuevo…</button>`
+      : `<button class="pri" style="width:100%" onclick="MZ.adoptar('${esc(br.clave)}')">Crear la ficha en la Mesa</button>`}</div>
+  </div>`;
+}
+// Tarjeta de una posición del libro que el bróker ya NO tiene (B2 caso c): se
+// vendió por fuera o venció. No se cambia nada solo; se ofrece cerrarla.
+function tarjetaSoloLibro(p, hoy) {
+  const dias = diasAlVencimiento(p.expiracion, hoy);
+  return `<div class="card" style="border-color:rgba(140,150,171,.45)">
+    <div class="fila"><h3>${esc(p.symbol)} ${esc(p.direccion)}${p.strike ? ' ' + esc(p.strike) : ''}</h3>
+      <span class="chip c-esp">YA NO ESTÁ EN EL BRÓKER</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">×${esc(p.contratos)} · ${esc(BROKER_NOMBRE[p.broker || 'etrade'] || p.broker)}</span>
+      <span class="mut">fill <b class="mono" style="color:var(--tx)">$${esc(p.prima_fill)}</b></span></div>
+    <div class="mut" style="margin-top:6px">${esc(BROKER_NOMBRE[p.broker || 'etrade'] || p.broker)} ya no la tiene abierta: ${dias != null && dias < 0 ? 'venció' : 'se vendió por fuera de la Mesa'}. La Mesa no la cierra sola.</div>
+    <div class="fresco" style="margin-top:3px">${esc(textoVencimiento(p.expiracion, hoy))}</div>
+    <div class="fila" style="margin-top:9px;gap:8px">
+      <button class="btnsec" onclick="MZ.cerrar(${Number(p.id)}, ${Number(p.prima_fill)})">Registrar salida</button>
+      <button class="btnsec" onclick="MZ.carteraRefrescar()">Volver a preguntar</button></div>
+  </div>`;
+}
+// Barra de totales de la cartera abierta (B6).
+function barraTotales(items, cart) {
+  const t = totalesCartera(items);
+  if (!t.n) return '';
+  const nom = (b) => BROKER_NOMBRE[b] || b;
+  const nombres = t.brokers.map(nom).join(' + ');
+  const parcial = ['etrade', 'schwab'].some(b => cart && cart[b] && !['ok', 'sin'].includes(cart[b].estado));
+  const leido = carteraLeidaAt(cart);
+  const viejo = leido > 0 && Date.now() - leido >= CART_FRESCO_MS;
+  // Las comisiones de UN bróker no son las de la cartera: se dice de quién son.
+  const com = t.comisiones != null
+    ? `<span class="mut">comisiones <b class="mono">${usd(t.comisiones)}</b>${t.com_parcial
+        ? ` <span class="fresco">(solo ${esc(t.com_brokers.map(nom).join(' + '))}${t.sin_com_brokers.length ? '; ' + esc(t.sin_com_brokers.map(nom).join(' + ')) + ' no las da' : ''})</span>` : ''}</span>`
+    : `<span class="fresco">comisiones: el bróker no las da</span>`;
+  return `<div class="card">
+    <div class="fila"><span class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">CARTERA ABIERTA · ${esc(nombres.toUpperCase())}</span>
+      <span class="fresco">${t.n} posici${t.n > 1 ? 'ones' : 'ón'}</span></div>
+    <div class="fila" style="margin-top:4px">
+      <span class="mut">invertido <b class="mono" style="color:var(--tx)">${usd(t.invertido)}</b></span>
+      <span class="mut">valor ahora <b class="mono" style="color:var(--tx)">${usd(t.valor)}</b></span></div>
+    <div class="fila" style="margin-top:3px">
+      <span class="mut">P&amp;L <b class="mono" style="color:${colUtil(t.pnl)};font-weight:700">${t.pnl > 0 ? '+' : ''}${usd(t.pnl)}${t.pnl_pct != null ? ` (${t.pnl_pct > 0 ? '+' : ''}${t.pnl_pct.toFixed(0)}%)` : ''}</b></span>
+      ${com}</div>
+    ${t.sinDato ? `<div class="fresco" style="margin-top:4px;color:var(--oro)">${t.sinDato} ${t.sinDato > 1 ? 'posiciones' : 'posición'} sin valor del bróker: no ${t.sinDato > 1 ? 'entran' : 'entra'} en esta suma (suma ${t.sumadas} de ${t.n}).</div>` : ''}
+    <div class="fresco" style="margin-top:4px">cifras del bróker${t.calculado ? ` · el invertido de ${t.calculado} sale del costo de tu fill, no de su resta` : ' (valor y P&amp;L suyos; invertido = valor − P&amp;L)'}${leido ? ' · leído ' + esc(haceCuanto(new Date(leido).toISOString()).txt) : ''}${viejo ? ' · <b style="color:var(--oro)">lectura vieja: preguntando de nuevo…</b>' : ''}${parcial ? ' · <b style="color:var(--oro)">suma SOLO lo que se pudo leer</b>' : ''}</div></div>`;
+}
+// Sección completa POSICIONES ABIERTAS: libro + bróker, con los avisos de B7.
+// Regla dura: «Sin posiciones abiertas» solo si TODOS los brókeres con sesión
+// contestaron y de verdad no hay nada.
+function seccionPosiciones(abiertas, cart, plan, hoy) {
+  const items = itemsCartera(cart);
+  const leidos = brokersLeidos(cart);
+  const { enAmbos, soloBroker, soloLibro, noComprobadas } = casarCarteraLibro(items, abiertas, leidos);
+  // Un grupo (todas las fichas del mismo contrato) comparte bróker, diferencia y lista:
+  // basta el primero, y así el aviso de la diferencia se pinta UNA vez por contrato.
+  const porClave = {};
+  enAmbos.forEach(x => { const k = claveCartera({ ...x.pos, broker: x.pos.broker || 'etrade' }); if (!porClave[k]) porClave[k] = x; });
+  // antigüedad de la lectura de cada bróker: decide si se puede ofrecer «adoptar»
+  const lectDe = (b) => {
+    const c = cart && cart[b], ts = (c && Number(c.ts)) || 0;
+    return { viejo: !ts || (Date.now() - ts) >= CART_FRESCO_MS, txt: ts ? haceCuanto(new Date(ts).toISOString()).txt : '' };
+  };
+  let h = `<div class="sec">POSICIONES ABIERTAS</div>`;
+  h += barraTotales(items, cart);
+  // avisos por bróker: nunca una lista vacía sin decir a quién no se pudo preguntar.
+  // Con su botón: ningún aviso se queda sin salida (ni el veto de 30 min de una ruta).
+  ['etrade', 'schwab'].forEach(b => {
+    const c = cart && cart[b];
+    if (!c || c.estado === 'sin' || c.estado === 'ok') return;
+    h += `<div class="aviso" style="background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.45);color:var(--rojo)">${esc(textoLecturaBroker(b, c))}
+      <div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.carteraRefrescar()">Volver a preguntar</button></div></div>`;
+  });
+  ['etrade', 'schwab'].forEach(b => {
+    const c = cart && cart[b];
+    if (!c || c.estado !== 'ok') return;
+    const o = c.otros || {};
+    const partes = [];
+    if (o.acciones) partes.push(`${o.acciones} en acciones`);
+    if (o.efectivo) partes.push(`${o.efectivo} de efectivo/fondos`);
+    if (o.vendidas) partes.push(`${o.vendidas} ${o.vendidas > 1 ? 'opciones VENDIDAS' : 'opción VENDIDA'} (fuera de la metodología: no se adoptan)`);
+    if (o.otros) partes.push(`${o.otros} de otro tipo`);
+    if (o.ilegibles) partes.push(`${o.ilegibles} que no pude leer`);
+    if (c.truncada) partes.push('la cartera tiene más páginas de las que pedí: lo que falta NO se da por desaparecido');
+    if (partes.length) h += `<div class="fresco" style="padding:0 2px">${esc(BROKER_NOMBRE[b] || b)}: ${esc(partes.join(' · '))} — aquí solo salen opciones compradas.</div>`;
+    if (c.nota) h += `<div class="fresco" style="padding:0 2px">${esc(BROKER_NOMBRE[b] || b)}: ${esc(c.nota)}</div>`;
+  });
+  // 1) las del libro (la tarjeta de siempre, enriquecida con lo que dice el bróker)
+  const difHecha = new Set();
+  (abiertas || []).forEach(p => {
+    const k = claveCartera({ ...p, broker: p.broker || 'etrade' });
+    const x = porClave[k];
+    h += tarjetaPosicion(p, x ? x.br : null, hoy, x ? { libroContratos: x.libroContratos, fichas: (x.fichas || []).length } : null);
+    if (x && x.dif && !difHecha.has(k)) { difHecha.add(k); h += lineaDifContratos(x); }
+  });
+  // 2) las que el bróker tiene y la Mesa no conocía
+  if (soloBroker.length) {
+    h += `<div class="sec">EN TU BRÓKER, SIN REGISTRAR EN LA MESA</div>`;
+    h += soloBroker.map(br => tarjetaSinRegistrar(br, plan, hoy, lectDe(br.broker))).join('');
+  }
+  // 3) las que están en el libro y el bróker ya no tiene
+  if (soloLibro.length) {
+    h += `<div class="sec">EL BRÓKER YA NO LAS TIENE</div>`;
+    h += soloLibro.map(p => tarjetaSoloLibro(p, hoy)).join('');
+  }
+  // 4) las que NO se pudieron comprobar (no se acusa a nadie sin haber preguntado)
+  const sinLectura = noComprobadas.filter(x => x.motivo === 'sin_lectura');
+  const sinContrato = noComprobadas.filter(x => x.motivo === 'sin_contrato');
+  if (sinLectura.length) h += `<div class="fresco" style="padding:0 2px;color:var(--oro)">${sinLectura.length} ${sinLectura.length > 1 ? 'posiciones' : 'posición'} del libro sin comprobar contra el bróker todavía (lectura en curso o no se pudo preguntar): no se da por desaparecida ninguna.</div>`;
+  if (sinContrato.length) h += `<div class="fresco" style="padding:0 2px">${sinContrato.length} ${sinContrato.length > 1 ? 'posiciones' : 'posición'} del libro sin strike o sin expiración: no hay con qué compararla contra el bróker.</div>`;
+  // vacío: SOLO cuando de verdad no hay nada y se pudo preguntar a todos
+  if (!(abiertas || []).length && !soloBroker.length) {
+    const conSesion = brokersOperables();
+    const mudos = conSesion.filter(b => !leidos.includes(b));
+    h += mudos.length
+      ? `<div class="card vacio">La Mesa no tiene posiciones abiertas, pero <b style="color:var(--oro)">no pude preguntarle a ${esc(mudos.map(b => BROKER_NOMBRE[b] || b).join(' ni a '))}</b>. Esto NO es «no tienes nada»: mira tu bróker.</div>`
+      : conSesion.length
+        ? `<div class="card vacio">Sin posiciones abiertas.<br>${esc(conSesion.map(b => BROKER_NOMBRE[b] || b).join(' y '))} ${conSesion.length > 1 ? 'confirman' : 'confirma'} que no hay ninguna.</div>`
+        : `<div class="card vacio">Sin posiciones abiertas en la Mesa.<br>Conecta E*TRADE o Schwab en Cuentas y te digo qué tienes abierto de verdad.</div>`;
+  }
+  return h;
+}
+
+// ---- ADOPTAR: un toque, una pregunta (¿de qué plan es?), una fila ----
+const _adoptando = {};
+function buscarItemCartera(clave) {
+  return itemsCartera(_cart).find(it => it.clave === clave) || null;
+}
+function adoptar(clave) {
+  const br = buscarItemCartera(clave);
+  if (!br) { toast('Esa posición ya no está en la lectura del bróker'); ruta(); return; }
+  // Al arrancar se repinta la cartera guardada en este equipo para no salir en blanco:
+  // con una lectura vieja, esa posición puede llevar horas vendida. No se adopta un
+  // fantasma; se vuelve a preguntar primero.
+  const c = _cart[br.broker];
+  if (!c || !c.ts || Date.now() - c.ts >= CART_FRESCO_MS) {
+    toast('Esa lectura es vieja: vuelvo a preguntarle a tu bróker antes de adoptar');
+    cargarCartera(true).then(() => ruta()).catch(() => {});
+    return;
+  }
+  if ($('#modalAdoptar')) return;
+  const activo = planActivo();
+  const dias = diasAlVencimiento(br.expiracion, hoyNY());
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalAdoptar';
+  m.innerHTML = `<div class="hoja">
+    <h3 style="margin:0 0 2px">Adoptar en la Mesa</h3>
+    <div class="mut" style="margin-bottom:8px">Lo que dice ${esc(BROKER_NOMBRE[br.broker] || br.broker)}. Solo falta una cosa: de qué plan es.</div>
+    <div class="card" style="padding:12px 14px">
+      <div class="fila"><b style="font-size:14px">${esc(br.symbol)} ${esc(br.direccion)} ${esc(br.strike)}</b>
+        <span class="mut">×${esc(br.contratos)}</span></div>
+      <div class="fila" style="margin-top:5px"><span class="mut">costo medio (prima del fill)</span>
+        <b class="mono">$${esc(br.prima_fill != null ? Number(br.prima_fill).toFixed(2) : '—')}</b></div>
+      <div class="fila" style="margin-top:3px"><span class="mut">vence ${esc(br.expiracion)}</span>
+        <span class="mut">${esc(textoVencimiento(br.expiracion, hoyNY()))}</span></div>
+      <div class="fresco" style="margin-top:5px">${br.abierta_at ? 'abierta ' + esc(fmtFechaNY(br.abierta_at, true)) : '⚠ ' + esc(BROKER_NOMBRE[br.broker] || br.broker) + ' no da la fecha de apertura: se guardará HOY'}</div>
+    </div>
+    <label>¿De qué plan es esta operación?</label>
+    <div class="periodos" id="aPlan">
+      ${['PLAN_10', 'PLAN_35'].map(k => `<button class="perbtn${k === activo.id ? ' on' : ''}" data-plan="${k}">${esc(PLANES[k].nombre)}</button>`).join('')}</div>
+    <div class="mut" id="aReglas" style="margin-top:4px"></div>
+    <div class="fresco" style="margin-top:6px">Esto solo crea la ficha en la Mesa: <b>no compra nada ni manda ninguna orden a tu bróker.</b>
+      La venta GTC la pones tú cuando quieras (la tarjeta te lo recuerda con «⚠ PON TU GTC»).</div>
+    <div class="err" id="aErr"></div>
+    <div class="dos" style="margin-top:8px">
+      <button class="btnsec" onclick="MZ.cerrarAdoptar()">Cancelar</button>
+      <button class="pri" onclick="MZ.adoptarConfirmar('${esc(clave)}')">Crear la ficha</button></div>
+  </div>`;
+  document.body.appendChild(m);
+  let elegido = activo.id;
+  const pintar = () => {
+    const pl = PLANES[elegido];
+    const gtc = gtcLimite(br.prima_fill, pl.gtcPct), corte = corteDe(br.prima_fill, pl.stopPct);
+    $('#aReglas').innerHTML = `Entra con GTC +${pl.gtcPct}%${gtc != null ? ` ($${esc(gtc.toFixed(2))})` : ''}${pl.stopPct != null ? ` y corte -${pl.stopPct}%${corte != null ? ` ($${esc(fmtPrima(corte))})` : ''}` : ' y sin corte'}. El plan queda congelado en esta posición.`
+      + (dias === 0 ? ' <b style="color:var(--rojo)">Vence HOY.</b>' : '');
+    m.querySelectorAll('#aPlan .perbtn').forEach(b => b.classList.toggle('on', b.getAttribute('data-plan') === elegido));
+  };
+  m.querySelector('#aPlan').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-plan]'); if (!b) return;
+    elegido = b.getAttribute('data-plan'); pintar();
+  });
+  m._plan = () => elegido;
+  pintar();
+}
+function cerrarAdoptar() { const m = $('#modalAdoptar'); if (m) m.remove(); }
+async function adoptarConfirmar(clave) {
+  const m = $('#modalAdoptar');
+  const err = $('#aErr');
+  if (_adoptando[clave]) return;                      // doble toque: una sola fila
+  const br = buscarItemCartera(clave);
+  if (!br) { if (err) err.textContent = 'Esa posición ya no está en la lectura del bróker.'; return; }
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid) { if (err) err.textContent = 'Sin sesión. Sal y vuelve a entrar.'; return; }
+  if (!(Number(br.prima_fill) > 0)) { if (err) err.textContent = 'El bróker no dio el costo promedio: regístrala a mano con «+ Registrar una operación».'; return; }
+  // Misma doctrina que en el toque: no se escribe una ficha a partir de una lectura
+  // vieja (el cuadro pudo quedarse abierto media hora).
+  const lec = _cart[br.broker];
+  if (!lec || !lec.ts || Date.now() - lec.ts >= CART_FRESCO_MS) {
+    if (err) err.textContent = 'Esa lectura del bróker ya es vieja: cierra, vuelve a preguntar y adóptala con lo que conteste ahora.';
+    return;
+  }
+  const plan = PLANES[(m && m._plan && m._plan()) || planActivo().id] || planActivo();
+  _adoptando[clave] = true;
+  if (err) err.textContent = 'Adoptando…';
+  try {
+    // Idempotencia contra la BASE, no contra la pantalla: otro equipo pudo adoptarla
+    // hace un segundo. Se relee el libro y se decide con adoptarDecide.
+    const { data, error } = await sb.from('posiciones').select('*').eq('estado', 'abierta')
+      .eq('symbol', br.symbol).eq('direccion', br.direccion).eq('broker', br.broker);
+    if (error) throw new Error(error.message);
+    const d = adoptarDecide(br, data || []);
+    if (d.accion === 'existe') { cerrarAdoptar(); toast('Ya estaba registrada: no se creó otra ficha'); ruta(); return; }
+    if (d.accion !== 'insertar') throw new Error('contrato ilegible');
+    const fila = filaAdopcion(br, plan, uid, hoyNY());
+    const { _estimada, ...limpia } = fila;
+    const { data: ins, error: e2 } = await sb.from('posiciones').insert(limpia).select('id');
+    if (e2) throw new Error(e2.message);
+    // OJO, esto es dinero: la ficha adoptada entra a gtcPendientes y ruta() acaba en
+    // abrirGtcAutomatico, que por defecto ENVÍA la venta sola (el PIN armado 15 min es
+    // su única puerta). Y su límite se calcula sobre el costo HISTÓRICO, así que en una
+    // ganadora vieja nace POR DEBAJO del mercado: adoptarla la vendería en el acto.
+    // Se anota «no enviar sola» y se marca como ya vista ANTES de redibujar: queda el
+    // resaltado «⚠ PON TU GTC», que es lo que toca en una posición que Andrés no abrió
+    // desde la Mesa.
+    const nid = Array.isArray(ins) ? ((ins[0] || {}).id) : ((ins || {}).id);
+    if (nid != null) { gtcAutoAnotar(nid, false); gtcAutoMarcar(nid); }
+    cerrarAdoptar();
+    toast(`${br.symbol} ${br.direccion} ${br.strike} adoptada (${plan.nombre})${_estimada ? ' · apertura: HOY (el bróker no la da)' : ''}`);
+    ruta();
+  } catch (e) {
+    if (err) err.textContent = 'No se pudo adoptar: ' + String((e && e.message) || e);
+  } finally { delete _adoptando[clave]; }
+}
+// B4: igualar el libro al bróker, con confirmación. Cambia `contratos` y, cuando el
+// costo medio del bróker se aparta del del libro (un refuerzo, un fill en dos partes),
+// también `prima_fill`: de ella cuelgan el límite GTC (columna generada), el corte, el
+// invertido y el resultado al cerrar, así que ajustar solo la cantidad dejaba el
+// objetivo por debajo del costo real y el corte medio dólar más abajo. El plan
+// congelado no se toca.
+async function ajustarContratos(posId, n, primaBroker, primaLibro) {
+  const q = Number(n);
+  if (!(q > 0)) { toast('Cantidad del bróker ilegible'); return; }
+  const pb = Number(primaBroker), pl = Number(primaLibro);
+  const ajustaPrima = Number.isFinite(pb) && pb > 0 && Number.isFinite(pl) && pl > 0 && Math.abs(pb - pl) > 0.005;
+  const txt = `¿Poner ×${q} contratos en el libro de la Mesa?\n\n`
+    + (ajustaPrima ? `Tu libro dice $${pl.toFixed(2)} de prima y el bróker $${pb.toFixed(2)}: ajusto las dos cosas, así tu GTC y tu corte salen del costo de verdad.\n\n` : '')
+    + 'Es lo que dice tu bróker. Ninguna orden sale de aquí.';
+  if (!confirm(txt)) return;
+  const cambios = ajustaPrima ? { contratos: q, prima_fill: Math.round(pb * 10000) / 10000 } : { contratos: q };
+  const { error } = await sb.from('posiciones').update(cambios).eq('id', Number(posId)).eq('estado', 'abierta');
+  if (error) { toast('No se pudo ajustar: ' + error.message); return; }
+  toast(ajustaPrima ? `Libro ajustado a ×${q} y prima $${pb.toFixed(2)}` : `Libro ajustado a ×${q}`);
+  ruta();
+}
+window.MZ = Object.assign(window.MZ || {}, {
+  adoptar, adoptarConfirmar, cerrarAdoptar, ajustarContratos,
+  carteraRefrescar: async () => {
+    // Honestidad: si el piso de 3 s aún no pasó, no se relee nada y se dice, en vez de
+    // enseñar la misma pantalla haciéndole creer que se preguntó.
+    const abierto = mercadoAbiertoNY(null);
+    const va = ['etrade', 'schwab'].some(b => carteraToca(_cart[b], abierto, true));
+    toast(va ? 'Preguntando a tus brókeres…' : 'Acabo de preguntar hace un instante: dame unos segundos');
+    await cargarCartera(true); ruta();
+  },
+});
+
+// Resumen de un período para Cuentas, PURO y sobre el conjunto DEDUPLICADO (A1).
+// Recibe las operaciones AGRUPADAS (unirOperaciones) y mide con cerradasDesde: la
+// MISMA fuente que Disciplina, por TRAMOS cerrados y por fecha de cierre en NUEVA
+// YORK (antes se cortaba con la fecha UTC del ISO y un cierre de las 20:00 ET del
+// viernes caía en el sábado).
+//   Por qué por tramos: una GTC llenada a medias deja la operación ABIERTA con su
+// tramo cobrado dentro. Filtrando por el estado del grupo, ese dinero ya realizado
+// desaparecía de la pantalla de utilidad mientras Disciplina sí lo contaba —las dos
+// pantallas volvían a contradecirse— y al cerrar el resto se imputaba entero a la
+// semana del último cierre. Una operación sigue siendo UNA (un grupo), aunque cierre
+// en dos tramos. mejor/peor y los aciertos solo miran las que tienen resultado: un
+// null no es una operación de $0.
+function resumenPeriodo(ops, desde) {
+  const d0 = String(desde || '');
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const enP = [], res = [];
+  for (const op of (ops || [])) {
+    if (!op) continue;
+    const filas = cerradasDesde([op], d0);
+    if (!filas.length) continue;
+    enP.push(op);
+    const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
+    if (vs.length) res.push(Math.round(vs.reduce((a, b) => a + b, 0) * 100) / 100);
+  }
+  const util = Math.round(res.reduce((a, b) => a + b, 0) * 100) / 100;
+  const ganadoras = res.filter(n => n > 0).length;
+  return { ops: enP, n: enP.length, util,
+    ganadoras, winrate: res.length ? Math.round(100 * ganadoras / res.length) : 0,
+    mejor: res.length ? Math.max(...res) : null, peor: res.length ? Math.min(...res) : null };
+}
+
 async function vistaCuentas() {
   const [posR, btR, csR] = await Promise.all([
     sb.from('posiciones').select('*'),
     sb.from('broker_trades').select('*'),
     sb.from('cuenta_snapshots').select('*'),
   ]);
-  const manual = (posR.data || []).filter(p => p.estado === 'cerrada' || p.estado === 'expirada')
-    .map(p => ({ ...p, _fuente: 'manual' }));
-  // los round-trips del bróker se normalizan al mismo shape del historial
-  const delBroker = (btR.data || []).map(t => ({
-    ...t, estado: 'cerrada', _fuente: t.broker,
-    abierta_fecha_ny: (t.cerrada_at || '').slice(0, 10),
-  }));
-  const cerradas = [...manual, ...delBroker].sort((a, b) =>
-    (b.cerrada_at || '').localeCompare(a.cerrada_at || ''));
+  // A1 (v50): el mismo conjunto DEDUPLICADO que Disciplina. Antes se concatenaba
+  // manual + bróker a pelo y una operación registrada a mano Y traída del bróker
+  // contaba DOS veces: la utilidad, el número de operaciones, los aciertos y el
+  // mejor/peor de Cuentas contradecían a Disciplina, que sí pasa por
+  // unirOperaciones. Un cierre PARCIAL también se agrupa: es UNA operación.
+  const { ops: todas } = unirOperaciones(posR.data || [], btR.data || []);
+  // El historial enseña las operaciones cerradas Y el tramo ya cobrado de una que sigue
+  // abierta (una GTC llenada a medias): ese dinero existe, tiene su fecha y antes no
+  // aparecía en ninguna parte de esta pantalla.
+  const tramosCobrados = todas.filter(p => p.estado === 'abierta' && Array.isArray(p._filas))
+    .flatMap(p => p._filas.filter(f => f && (f.estado === 'cerrada' || f.estado === 'expirada'))
+      .map(f => ({ ...f, _tramoAbierta: true })));
+  const cerradas = todas.filter(p => p.estado === 'cerrada' || p.estado === 'expirada')
+    .concat(tramosCobrados)
+    .sort((a, b) => (b.cerrada_at || '').localeCompare(a.cerrada_at || ''));
   const saldos = [...(csR.data || [])];
   // E*TRADE vive en el dispositivo (opción B): su saldo se trae en vivo por el
   // proxy; si hay una foto guardada desde otro equipo, la viva la reemplaza.
@@ -2957,18 +3953,17 @@ async function vistaCuentas() {
 
   // resumen del período
   const desde = inicioPeriodo(_periodoSel);
-  const enP = cerradas.filter(p => (p.cerrada_at || '').slice(0, 10) >= desde);
-  const util = enP.reduce((s, p) => s + (Number(p.resultado_usd) || 0), 0);
-  const ganadoras = enP.filter(p => (Number(p.resultado_usd) || 0) > 0).length;
-  const winrate = enP.length ? Math.round(100 * ganadoras / enP.length) : 0;
-  const mejor = enP.reduce((m, p) => Math.max(m, Number(p.resultado_usd) || -1e9), -1e9);
-  const peor = enP.reduce((m, p) => Math.min(m, Number(p.resultado_usd) || 1e9), 1e9);
+  // Sobre TODAS las operaciones, no solo las que el grupo da por cerradas: un cierre
+  // parcial deja la operación abierta y su dinero YA cobrado tiene que verse en la
+  // semana en que se cobró (es lo que hace Disciplina con cerradasDesde).
+  const R = resumenPeriodo(todas, desde);
+  const enP = R.ops, util = R.util, winrate = R.winrate, mejor = R.mejor, peor = R.peor;
   h += `<div class="card">
     <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">UTILIDAD · ${_periodoSel.toUpperCase()}</div>
     <div class="mono" style="font-size:30px;font-weight:700;margin:3px 0;color:${colUtil(util)}">${usd(util)}</div>
     <div class="fila" style="margin-top:4px">
       <span class="mut">${enP.length} ops · ${winrate}% aciertos</span>
-      <span class="mut">mejor ${usd(enP.length?mejor:null)} · peor ${usd(enP.length?peor:null)}</span></div></div>`;
+      <span class="mut">mejor ${usd(mejor)} · peor ${usd(peor)}</span></div></div>`;
 
   // historial completo
   h += `<div class="sec">HISTORIAL DE OPERACIONES</div>`;
@@ -3002,6 +3997,7 @@ function tarjetaHistorial(p) {
       <div><span>venta</span><b class="mono">${usd(venta)}</b></div>
       <div><span>×${esc(c)}</span><b>${esc(p.broker || '—')}</b></div>
     </div>
+    ${p._tramoAbierta ? `<div class="fresco" style="margin-top:4px">tramo cobrado · la posición sigue abierta con el resto</div>` : ''}
   </div>`;
 }
 window.MZ = Object.assign(window.MZ || {}, {
@@ -4794,7 +5790,10 @@ function unirOperaciones(posic, trades) {
 // la semana en que se cerró aunque el resto siga abierto o cierre otra semana.
 function cerradasDesde(ops, desde) {
   const esCerrada = (p) => p.estado === 'cerrada' || p.estado === 'expirada';
-  return (ops || []).flatMap(p => (p && p._filas) || [p]).filter(p => p && esCerrada(p) && (ymdNY(p.cerrada_at) || '') >= desde);
+  // Sin fecha de cierre no pertenece a NINGÚN período: ymdNY(null) devuelve HOY, así
+  // que una fila cerrada sin cerrada_at se colaba en la semana, en el mes y en el año.
+  const dia = (p) => (p.cerrada_at ? (ymdNY(p.cerrada_at) || '') : '');
+  return (ops || []).flatMap(p => (p && p._filas) || [p]).filter(p => p && esCerrada(p) && dia(p) >= desde);
 }
 
 const TAMANO_PCT = 10;   // doctrina: máximo 10% de la cuenta por operación
