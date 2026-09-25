@@ -5746,7 +5746,9 @@ function unirOperaciones(posic, trades) {
   const grupos = {};
   for (const t of trades || []) {
     const dia = ymdNY(t.abierta_at);
-    const k = [t.symbol, t.direccion, num(t.strike), t.expiracion || '', dia].join('|');
+    // POR BRÓKER: el mismo contrato el mismo día en dos cuentas son DOS operaciones (2026-09-25:
+    // META CALL 805 en E*TRADE ×13 se fundía con la de moomoo ×10 en una tarjeta «×23 · moomoo»).
+    const k = [t.symbol, t.direccion, num(t.strike), t.expiracion || '', dia, t.broker || ''].join('|');
     const g = grupos[k] || (grupos[k] = {
       symbol: t.symbol, direccion: t.direccion, strike: num(t.strike), expiracion: t.expiracion || null,
       abierta_fecha_ny: dia, abierta_at: t.abierta_at || null, cerrada_at: t.cerrada_at || null,
@@ -5768,7 +5770,8 @@ function unirOperaciones(posic, trades) {
   for (const p of manualesAgrupadas.map(unirTramos)) {
     const dia = p.abierta_fecha_ny || ymdNY(p.abierta_at);
     const i = delBroker.findIndex((g, j) => !usados.has(j) && g.symbol === p.symbol && g.direccion === p.direccion
-      && g.abierta_fecha_ny === dia && (p.strike == null || num(p.strike) === g.strike)
+      && g.abierta_fecha_ny === dia && (!p.broker || !g.broker || g.broker === p.broker)
+      && (p.strike == null || num(p.strike) === g.strike)
       && (!p.expiracion || p.expiracion === g.expiracion));
     if (i >= 0) {
       usados.add(i); fusionadas++;
