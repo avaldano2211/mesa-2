@@ -6600,7 +6600,9 @@ function tituloPeriodoDiario(sel) {
 }
 // Cobertura por cuenta: desde cuándo hay fills por bróker (primera y última fecha, cuántas) y el
 // estado de la sesión en ESTE equipo. `sesiones`: {etrade:'ok'|'sin'|'caducada', schwab: …,
-// tasty:'worker'} — lo decide quien llama (aquí no se mira localStorage: PURA).
+// tasty:'worker', moomoo:'worker'} — lo decide quien llama (aquí no se mira localStorage: PURA).
+// moomoo (v54: la escribe el worker, moomoo_fills) sale si tiene fills O si quien llama declaró su
+// sesión; sin lo uno ni lo otro (una cuenta que no está en la Mesa) no aparece.
 function coberturaFills(fills, sesiones) {
   const por = {};
   for (const f of (fills || [])) {
@@ -6612,8 +6614,8 @@ function coberturaFills(fills, sesiones) {
     if (f.origen) x.origen[f.origen] = (x.origen[f.origen] || 0) + 1;
   }
   const bs = ['etrade', 'schwab', 'tasty', 'moomoo'];
-  return bs.map(b => ({ broker: b, ...(por[b] || { primera: null, ultima: null, n: 0, origen: {} }), sesion: (sesiones && sesiones[b]) || 'sin' }))
-    .filter(x => x.broker !== 'moomoo' || x.n > 0);
+  return bs.filter(b => b !== 'moomoo' || por[b] || (sesiones && sesiones[b]))
+    .map(b => ({ broker: b, ...(por[b] || { primera: null, ultima: null, n: 0, origen: {} }), sesion: (sesiones && sesiones[b]) || 'sin' }));
 }
 // Contratos ABIERTOS según el libro de fills, contra la cartera del bróker (v50 + foto de tasty) y
 // contra posiciones (el libro de la Mesa). Una fila por contrato+bróker con las tres cantidades;
@@ -6695,7 +6697,7 @@ function tarjetasResumenDiario(M, sel, cob) {
       <div class="mono" style="font-size:30px;font-weight:700;margin:3px 0;color:${colD(M.total)}">${dineroD(M.total)}</div>
       <div class="fila" style="margin-top:4px"><span class="mut">${nOps(M.ops, 'cerradas')} · ${M.ops ? M.aciertos + ' en verde (' + Math.round(M.aciertos / M.ops * 100) + '%)' : 'ninguna'}</span>
         <span class="mut">mejor ${dineroS(M.mejor)} · peor ${dineroS(M.peor)}</span></div>
-      ${M.comisiones ? `<div class="fresco" style="margin-top:3px">comisiones ya descontadas: ${dineroD(M.comisiones)} (E*TRADE las reporta; Schwab no las manda en sus órdenes)</div>` : ''}
+      ${M.comisiones ? `<div class="fresco" style="margin-top:3px">comisiones ya descontadas: ${dineroD(M.comisiones)} (E*TRADE las reporta; Schwab no las manda en sus órdenes ni moomoo en sus ejecuciones)</div>` : ''}
       ${M.vencidas ? `<div class="fresco" style="margin-top:3px;color:var(--oro)">${nOps(M.vencidas)} ${M.vencidas > 1 ? 'vencieron' : 'venció'} sin venderse (toda o en parte): pérdida total el día del vencimiento</div>` : ''}</div>
     <div class="dos" style="display:grid;grid-template-columns:1fr 1fr;gap:9px">
       ${tarjeta('% GANADO POR $ OPERADO', pctD(M.pct), `P&amp;L ÷ ${M.ops === 1 ? 'lo que costó la operación' : 'lo que costaron las ' + M.ops + ' operaciones'} (ponderado)`, colD(M.pct))}
@@ -6727,7 +6729,7 @@ function seccionCoberturaDiario(cob, errLibro) {
 }
 // `diasSel`: fechas ya elegidas (modo 'dias') para resaltar su fila; tocar una fila acota a ese día.
 function seccionDiaADia(dias, brokers, diasSel) {
-  const bs = (brokers && brokers.length) ? brokers : ['etrade', 'schwab', 'tasty'];
+  const bs = (brokers && brokers.length) ? brokers : ['etrade', 'schwab', 'tasty', 'moomoo'];
   const selD = new Set(Array.isArray(diasSel) ? diasSel.map(String) : []);
   if (!(dias || []).length) return `<div class="sec">DÍA A DÍA</div><div class="card vacio">Sin operaciones cerradas en el período.</div>`;
   const filas = dias.slice().reverse();
@@ -6823,7 +6825,7 @@ function seccionAbiertosDiario(abiertos, comparacion, huerfanas) {
 // ejecución (contrato y lado/cantidad/precio; fecha, cuenta, monto y comisión): a 390 px se lee
 // entera, sin desplazar de lado.
 function seccionEjecucionesDiario(fills, filtro, todas) {
-  const bs = ['etrade', 'schwab', 'tasty'];
+  const bs = ['etrade', 'schwab', 'tasty', 'moomoo'];   // v54: moomoo entra al libro por el worker (moomoo_fills)
   const f = filtro || 'todos';
   const lista = (fills || []).filter(x => f === 'todos' || x.broker === f).slice().sort((a, b) => (a.ejecutado_at < b.ejecutado_at ? 1 : a.ejecutado_at > b.ejecutado_at ? -1 : 0));
   const T = 120, n = lista.length, ver = todas ? lista : lista.slice(0, T);
@@ -6831,14 +6833,14 @@ function seccionEjecucionesDiario(fills, filtro, todas) {
   const lado = (l) => l === 'compra' ? '<span style="color:var(--verde)">COMPRA</span>' : l === 'venta' ? '<span style="color:var(--rojo)">VENTA</span>' : `<span style="color:var(--oro)">${esc(String(l || '').toUpperCase())}</span>`;
   let h = `<div class="sec">EJECUCIONES DEL PERÍODO · ${(fills || []).length}</div>
     <div class="chips" style="margin-top:0">${['todos'].concat(bs).map(b => `<button class="chip2${f === b ? ' on' : ''}" onclick="MZ.diarioBroker('${b}')">${b === 'todos' ? 'Todas' : esc(BROKER_CORTO[b])}<small>${cuenta(b)}</small></button>`).join('')}</div>`;
-  if (!n) return h + `<div class="card vacio">Sin ejecuciones ${f === 'todos' ? '' : 'de ' + esc(BROKER_NOMBRE[f] || f) + ' '}en el período.<br><span class="fresco">Se guardan al sincronizar cada bróker en Cuentas (E*TRADE y Schwab desde este equipo; tasty la escribe el worker).</span></div>`;
+  if (!n) return h + `<div class="card vacio">Sin ejecuciones ${f === 'todos' ? '' : 'de ' + esc(BROKER_NOMBRE[f] || f) + ' '}en el período.<br><span class="fresco">Se guardan al sincronizar cada bróker en Cuentas (E*TRADE y Schwab desde este equipo; tasty y moomoo las escribe el worker).</span></div>`;
   h += `<div class="card" style="padding:2px 13px 8px">${ver.map(x => `<div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
       <div class="fila"><span><b style="font-size:13.5px">${esc(x.symbol)} ${esc(x.direccion || '')} ${x.strike != null ? esc(x.strike) : ''}</b> <span class="fresco">${esc(fechaCorta(x.expiracion))}</span></span>
         <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap">${lado(x.lado)} ×${esc(x.contratos)} @ $${esc(Number(x.precio).toFixed(2))}</span></div>
       <div class="fila fresco" style="margin-top:2px"><span>${x.broker === 'etrade' ? esc(fechaCorta(x.fecha_ny)) + ' (sin hora)' : esc(fmtFechaNY(x.ejecutado_at, true))} · ${esc(BROKER_CORTO[x.broker] || x.broker)}</span>
         <span>monto ${dineroD(Number(x.precio) * Number(x.contratos) * 100)}${Number(x.comision) ? ' · com ' + dineroD(x.comision) : ''}</span></div></div>`).join('')}
     ${n > T && !todas ? `<div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.diarioMasEjec()">Ver las ${n - T} restantes</button></div>` : ''}
-    <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución y solo la fecha; Schwab no manda comisiones en sus órdenes.</div></div>`;
+    <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución y solo la fecha; Schwab (órdenes) y moomoo (ejecuciones de OpenD) no mandan comisiones.</div></div>`;
   return h;
 }
 
@@ -7082,6 +7084,7 @@ async function vistaDiario(forzar) {
     etrade: etCreds() ? (etDiaVencido() ? 'caducada' : 'ok') : 'sin',
     schwab: swCreds() ? (swVencido() ? 'caducada' : 'ok') : 'sin',
     tasty: 'worker',
+    moomoo: 'worker',   // v54: OpenD headless en el VPS; el worker escribe sus ejecuciones (moomoo_fills), sin sesión en este equipo
   };
   const cob = coberturaFills(fills, sesiones).map(c => ({ ...c, pnl_periodo: Math.round(cerradasSel.filter(x => x.broker === c.broker).reduce((s, x) => s + x.pnl, 0) * 100) / 100 }));
   const brokersDias = ['etrade', 'schwab', 'tasty', 'moomoo'].filter(b => cerradasSel.some(c => c.broker === b));   // solo columnas con $ en el período
@@ -7108,7 +7111,7 @@ async function vistaDiario(forzar) {
   h += seccionAbiertosDiario(F.abiertos, cmp, F.huerfanas);
   h += seccionEjecucionesDiario(fillsSel, _diario.brokerFiltro, _diario.masEjec);
   h += `<div id="diarioNotas">${seccionNotasDiario(_notas.lista || [], notaBorradorLeer(), _diario.syms, posic, _notas.editando, _notas.err, _notas.edTexto)}</div>`;
-  h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">El Diario se calcula en este equipo sobre el libro de fills (compras y ventas guardadas para siempre). E*TRADE y Schwab lo alimentan desde aquí al sincronizar; tastytrade lo alimenta el worker. <a href="#" class="lnk" onclick="MZ.diarioSincronizar();return false">Sincronizar ahora</a></div>`;
+  h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">El Diario se calcula en este equipo sobre el libro de fills (compras y ventas guardadas para siempre). E*TRADE y Schwab lo alimentan desde aquí al sincronizar; tastytrade y moomoo los alimenta el worker (24/5). <a href="#" class="lnk" onclick="MZ.diarioSincronizar();return false">Sincronizar ahora</a></div>`;
   pintarConservandoFoco($('#vista'), h);
   if (_diario.enfocarNota) { _diario.enfocarNota = false; const t = $('#nTexto'); if (t) { try { t.scrollIntoView({ block: 'center' }); t.focus(); } catch (_) {} } }
 }
@@ -7440,7 +7443,7 @@ window.MZ = Object.assign(window.MZ || {}, {
   diarioMasEjec: () => { _diario.masEjec = true; vistaDiario(true); },
   diarioSincronizar: async () => {
     const tiene = [etCreds() ? 'E*TRADE' : '', swCreds() ? 'Schwab' : ''].filter(Boolean);
-    if (!tiene.length) { toast('Sin login de E*TRADE ni de Schwab en este equipo: conéctalos en Cuentas. Lo de tastytrade lo escribe el worker solo.'); return; }
+    if (!tiene.length) { toast('Sin login de E*TRADE ni de Schwab en este equipo: conéctalos en Cuentas. Lo de tastytrade y moomoo lo escribe el worker solo.'); return; }
     try { localStorage.removeItem(ET_K.sync); localStorage.removeItem(SW_K_SYNC); } catch (_) {}
     toast('Sincronizando ' + tiene.join(' y ') + '…');
     await Promise.all([etradeSincronizar(true).catch(() => null), schwabSincronizar(true).catch(() => null)]);
