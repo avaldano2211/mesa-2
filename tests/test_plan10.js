@@ -265,7 +265,7 @@ function armarCorte(E) {
     // sondeos de la sincronización (CORTE_PASO_MS) tiene que correr de verdad
     setTimeout: (fn, ms) => { if (ms === 900) { reg.timers.push({ fn, ms }); return 0; } return setTimeout(fn, ms); },
     CORTE_TOPE_MS: E.tope == null ? 15000 : E.tope, CORTE_PASO_MS: E.tope == null ? 2000 : 1 };
-  const M = construir(['cortarPosicion', 'preSalida', 'gtcDePosicion', 'gtcLimite'], deps,
+  const M = construir(['cortarPosicion', 'cancelarVentasVivas', 'preSalida', 'gtcDePosicion', 'gtcLimite'], deps,   // v55: el tramo de cancelación lo comparte Vender
     { consts: ['_corte'], prefijo: 'let _ord = null; function __setOrd(v) { _ord = v; }', extras: ['__setOrd'] });
   return { M, reg, sb, E };
 }

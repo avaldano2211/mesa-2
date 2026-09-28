@@ -52,7 +52,7 @@ const hoyNY = () => HOY;
 
 // ════════════════ 3. el banner de corte en la tarjeta: «La Mesa te avisó» vs «El último mark» ════════════════
 {
-  const T = construir(['tarjetaPosicion', 'corteDe', 'corteTocado', 'fmtPrima', 'pnlVivo', 'preSalida', 'gtcDePosicion', 'gtcLimite'], { esc, usd, haceCuanto, BROKER_NOMBRE, lineasCartera: () => '', hoyNY });
+  const T = construir(['tarjetaPosicion', 'avisoCorteHtml', 'corteDe', 'corteTocado', 'fmtPrima', 'pnlVivo', 'preSalida', 'gtcDePosicion', 'gtcLimite'], { esc, usd, haceCuanto, BROKER_NOMBRE, lineasCartera: () => '', hoyNY, bloqueGestor: () => '' });   // v55: el gestor se prueba aparte
   const p = { id: 5, symbol: 'SPY', direccion: 'CALL', strike: 769, expiracion: '2026-09-26', contratos: 2, prima_fill: 3.30, gtc_limite: 3.65, plan_pct: 10, stop_pct: 20, mark: 3.40, mark_at: new Date().toISOString(), broker: 'etrade' };
   const h0 = T.tarjetaPosicion(p, null, HOY);
   assert(!/⚠ La Mesa te avisó/.test(h0) && !/El último mark/.test(h0) && !/border-color:rgba\(242,109,95,\.6\)/.test(h0), 'con el mark por encima del corte no hay banner ni borde rojo');

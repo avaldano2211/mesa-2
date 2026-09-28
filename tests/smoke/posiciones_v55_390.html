@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="es" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mesa 2.0 · v55 · POSICIONES · 390 px</title>
+<style>
+  :root{
+    --bg:#0B0E14; --bg2:#0D1119; --card:#141A26; --line:rgba(255,255,255,.07);
+    --tx:#E9EDF5; --tx2:#8C96AB; --tx3:#5C6678; --oro:#E7B54D;
+    --verde:#45D08C; --rojo:#F26D5F; --azul:#6FA8F5; --morado:#B48CF2; --itm:rgba(111,168,245,.16);
+    --mono:ui-monospace,'SF Mono',Menlo,monospace;
+    --sans:'Instrument Sans',system-ui,-apple-system,sans-serif;
+  }
+  @media(prefers-color-scheme:light){:root:not([data-theme="dark"]){
+    --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
+    --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --morado:#6E44C4; --itm:rgba(46,107,199,.11);
+  }}
+  :root[data-theme="light"]{
+    --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
+    --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --morado:#6E44C4; --itm:rgba(46,107,199,.11);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;overscroll-behavior-y:none}
+  a{color:var(--oro)}
+  .oculto{display:none!important}
+  /* ---- login ---- */
+  #login{min-height:100dvh;display:flex;flex-direction:column;justify-content:center;
+    align-items:center;padding:32px;gap:18px}
+  #login .marca{font-family:'Newsreader',Georgia,serif;font-size:30px;font-weight:600;letter-spacing:.01em}
+  #login .sub{color:var(--tx2);font-size:13px;margin-top:-10px}
+  #login form{width:100%;max-width:340px;display:flex;flex-direction:column;gap:11px;margin-top:8px}
+  input{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:13px 14px;color:var(--tx);font-size:15px;font-family:var(--sans);width:100%}
+  input:focus{outline:none;border-color:var(--oro)}
+  button.pri{background:var(--oro);color:#0B0E14;border:none;border-radius:12px;
+    padding:13px;font-size:15px;font-weight:700;font-family:var(--sans);cursor:pointer}
+  .err{color:var(--rojo);font-size:12.5px;min-height:16px;text-align:center}
+  /* ---- app ---- */
+  #app{max-width:440px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column}
+  header.top{padding:calc(env(safe-area-inset-top) + 16px) 20px 10px;display:flex;
+    align-items:center;justify-content:space-between}
+  header.top .t{font-family:'Newsreader',Georgia,serif;font-size:23px;font-weight:500}
+  header.top .fecha{font-size:10.5px;font-weight:700;letter-spacing:.13em;color:var(--tx2)}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
+    font-size:11px;font-weight:700;letter-spacing:.02em}
+  .dot{width:7px;height:7px;border-radius:99px;flex:none}
+  .b-vivo{background:rgba(69,208,140,.13);color:var(--verde)}
+  .b-cerrado{background:rgba(140,150,171,.14);color:var(--tx2)}
+  .b-caido{background:rgba(242,109,95,.13);color:var(--rojo)}
+  main.vista{flex:1;padding:8px 16px 96px;display:flex;flex-direction:column;gap:11px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px}
+  .card h3{margin:0 0 3px;font-size:15px;font-weight:700}
+  .fila{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .chip{display:inline-flex;padding:3px 9px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em}
+  .c-op{background:rgba(69,208,140,.13);color:var(--verde)}
+  .c-vig{background:rgba(231,181,77,.16);color:var(--oro)}
+  .c-esp{background:rgba(140,150,171,.14);color:var(--tx2)}
+  .c-vet{background:rgba(242,109,95,.13);color:var(--rojo)}
+  .sec{font-size:10.5px;font-weight:700;letter-spacing:.12em;color:var(--tx2);margin:6px 2px 2px}
+  .mut{color:var(--tx2);font-size:12.5px;line-height:1.45}
+  .mono{font-family:var(--mono)}
+  .tend{display:flex;gap:5px;flex-wrap:wrap}
+  .tg{font-size:10.5px;color:var(--tx2)}
+  .tg b{color:var(--tx)}
+  .vacio{text-align:center;color:var(--tx3);font-size:12.5px;padding:14px}
+  /* nav */
+  nav.tabs{position:fixed;bottom:0;left:0;right:0;max-width:440px;margin:0 auto;
+    display:flex;justify-content:space-between;padding:9px 16px calc(env(safe-area-inset-bottom) + 12px);
+    border-top:1px solid var(--line);background:var(--bg2)}
+  nav.tabs a{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+    color:var(--tx2);text-decoration:none;font-size:9.5px;font-weight:600}
+  nav.tabs a.on{color:var(--oro)}
+  nav.tabs svg{width:22px;height:22px}
+  .prox{text-align:center;color:var(--tx3);padding:60px 24px;font-size:13.5px;line-height:1.6}
+  .fresco{font-size:10px;color:var(--tx3)}
+  button.pri{cursor:pointer}
+  .btnsec{flex:1;background:transparent;border:1px solid var(--line);color:var(--tx);
+    border-radius:11px;padding:10px;font-size:13px;font-weight:600;font-family:var(--sans);cursor:pointer}
+  .btnsec:active{background:var(--card)}
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;
+    justify-content:center;z-index:50;animation:fade .15s ease}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .hoja{background:var(--bg2);border:1px solid var(--line);border-radius:20px 20px 0 0;
+    width:100%;max-width:440px;padding:20px 18px calc(env(safe-area-inset-bottom) + 20px);
+    display:flex;flex-direction:column;gap:6px;max-height:92dvh;overflow:auto}
+  .hoja h3{font-size:16px;font-weight:700}
+  .hoja label{font-size:10.5px;font-weight:700;letter-spacing:.06em;color:var(--tx2);margin:8px 2px 1px}
+  .hoja input,.hoja select{background:var(--card);border:1px solid var(--line);border-radius:11px;
+    padding:12px;color:var(--tx);font-size:15px;font-family:var(--sans);width:100%}
+  .hoja input:focus,.hoja select:focus{outline:none;border-color:var(--oro)}
+  .hoja .dos{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .gtcprev{margin-top:10px;padding:11px 12px;border-radius:11px;background:rgba(231,181,77,.12);
+    border:1px solid rgba(231,181,77,.3);color:var(--oro);font-family:var(--mono);font-size:13px;font-weight:700;text-align:center}
+  .rango{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;
+    font-size:11px;color:var(--tx2)}
+  .rango b{color:var(--oro);font-size:13px}
+  .rangohint{margin-top:9px;padding:9px 11px;border-radius:10px;font-size:12px;text-align:center;
+    background:var(--card);border:1px solid var(--line);color:var(--tx2)}
+  .rangohint[data-n="ok"]{background:rgba(69,208,140,.12);border-color:rgba(69,208,140,.3);color:var(--verde)}
+  .rangohint[data-n="aviso"]{background:rgba(231,181,77,.12);border-color:rgba(231,181,77,.3);color:var(--oro)}
+  .rangohint[data-n="alto"]{background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.3);color:var(--rojo)}
+  .rangohint b{font-weight:700}
+  .periodos{display:flex;gap:7px;margin:2px 0 2px}
+  .perbtn{flex:1;background:var(--card);border:1px solid var(--line);color:var(--tx2);
+    border-radius:11px;padding:9px;font-size:13px;font-weight:700;font-family:var(--sans);cursor:pointer}
+  .perbtn.on{background:var(--oro);border-color:var(--oro);color:#0B0E14}
+  .hist{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:9px}
+  .hist>div{display:flex;flex-direction:column;gap:1px}
+  .hist span{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase}
+  .hist b{font-size:12.5px;font-weight:600}
+  .cfg{background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:999px;
+    width:32px;height:32px;font-size:15px;line-height:1;cursor:pointer;flex:none;padding:0}
+  .cfg:active{background:var(--card)}
+  /* órdenes E*TRADE */
+  .aviso{margin-top:10px;padding:10px 12px;border-radius:11px;background:rgba(231,181,77,.12);
+    border:1px solid rgba(231,181,77,.35);color:var(--oro);font-size:12.5px;line-height:1.45}
+  .aviso .check{display:flex;gap:8px;align-items:center;margin:8px 0 0;font-size:13px;font-weight:700;
+    letter-spacing:0;color:var(--tx);cursor:pointer}
+  .aviso .check input{width:auto;height:auto;margin:0;accent-color:var(--oro)}
+  .cadena{margin-top:10px;padding:9px 10px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:12px}
+  .cadena table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+  .cadena th{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;padding:2px 4px;text-align:center}
+  .cadena th:first-child,.cadena td:first-child{text-align:left}
+  .cadena th:last-child,.cadena td:last-child{text-align:right}
+  .cadena td{padding:6px 4px;border-top:1px solid var(--line);white-space:nowrap}
+  .cadena td.k{text-align:center;font-weight:700;color:var(--tx)}
+  .cadena td.cel{cursor:pointer}
+  .cadena td.cel small{color:var(--tx3);font-size:9.5px}
+  .cadena td.cel small.sp{color:var(--rojo);font-weight:700}
+  .cadena td.itm{background:var(--itm)}
+  .cadena td.en-rango{color:var(--oro);font-weight:700}
+  .cadena td.en-rango:not(.itm){background:rgba(231,181,77,.16)}
+  .cadena td.borde:not(.itm){background:rgba(231,181,77,.07)}
+  .cadena td.itm.en-rango{box-shadow:inset 0 0 0 1.5px var(--oro)}
+  .cadena tr.atm td.k{color:var(--oro)}
+  .cadena tr.atm-linea td{padding:0;height:0;border-top:2px solid var(--oro);text-align:center;line-height:0}
+  .cadena tr.atm-linea span{display:inline-block;background:var(--card);color:var(--oro);font-size:9.5px;font-weight:700;letter-spacing:.08em;padding:0 7px;line-height:13px;transform:translateY(-7px);border:1px solid var(--oro);border-radius:8px}
+  .cadena .leyenda .sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;border:1px solid var(--line)}
+  .cadena .leyenda .sw.itm{background:var(--itm)}
+  .cadena .leyenda .sw.otm{background:transparent}
+  .cadena .leyenda .sw.rango{background:rgba(231,181,77,.16);border-color:var(--oro)}
+  .prevbox{margin-top:10px;padding:11px 12px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:13px}
+  .prevbox .fila{padding:2px 0}
+  .hoja input.pin{text-align:center;letter-spacing:.3em;font-size:18px}
+  .hoja input:disabled,.hoja select:disabled{opacity:.55}
+  .sec a{color:var(--oro);text-decoration:none;font-size:11px;letter-spacing:0}
+  /* señales de hoy: Quitar / Restaurar (v49) */
+  .sec .acc{display:inline-flex;align-items:center;gap:24px;flex:none}
+  .sec .acc a{display:inline-block;padding:10px 0;margin:-10px 0}
+  @media (max-width:380px){.sec .acc{gap:18px}}   /* a 375 px el encabezado del Informe cabe en 1 línea */
+  .btnquitar{flex:none;background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:999px;
+    min-height:32px;padding:0 12px;font-size:12px;font-weight:600;font-family:var(--sans);cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .btnquitar:active{background:var(--line)}
+  .btnquitar:disabled{opacity:.6;cursor:default}
+  .card.quitada{background:transparent;border-style:dashed}
+  .card.quitada .tenue{opacity:.55}
+  .card.quitada .btnquitar,.vacio .btnquitar{color:var(--oro);border-color:rgba(231,181,77,.45)}
+  .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
+    background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
+    box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
+  /* charts de Tickers (velas + Bollinger + H-lines) */
+  .chart{margin-top:9px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chart .fila{margin-bottom:4px}
+  .chart svg{display:block;width:100%;height:auto;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .chart svg text{font-family:var(--mono);font-size:9px}
+  .chart .vacio{padding:26px 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .hl{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
+  .hl:first-child{border-top:none}
+  .hl i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:7px}
+  .hl .fresco{text-align:right;white-space:nowrap}
+  /* Diario (v52): tablas compactas con scroll horizontal, chips de período y notas */
+  .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:4px}
+  .tbl{width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap}
+  .tbl th{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;text-align:right;padding:5px 6px;border-bottom:1px solid var(--line)}
+  .tbl td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono)}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl th:first-child,.tbl td:first-child{text-align:left;font-family:var(--sans)}
+  .tbl tr.pick{cursor:pointer}
+  .tbl tr.sel td{background:rgba(231,181,77,.10)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chip2{background:var(--card);border:1px solid var(--line);color:var(--tx2);border-radius:999px;padding:9px 12px;font-size:11.5px;font-weight:600;font-family:var(--sans);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chip2.on{background:var(--oro);border-color:var(--oro);color:#0B0E14}
+  .chip2 small{font-weight:600;margin-left:5px;font-size:10.5px}
+  /* 16 px: por debajo, Safari en el iPhone amplía la página al enfocar el campo y no vuelve solo */
+  .card textarea{background:var(--bg2);border:1px solid var(--line);border-radius:11px;padding:11px;color:var(--tx);font-size:16px;line-height:1.45;font-family:var(--sans);width:100%;min-height:76px;resize:vertical}
+  .card textarea:focus{outline:none;border-color:var(--oro)}
+  .card select,.card input[type=date]{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:9px 10px;color:var(--tx);font-size:16px;font-family:var(--sans);width:100%;min-width:0}
+  .tbl-dias td{padding:7px 4px}
+  /* enlaces pequeños con área de toque de 32 px sin cambiar el texto */
+  a.lnk{display:inline-block;padding:10px 8px;margin:-10px -2px;font-size:12px}
+  #tkSym::placeholder{text-transform:none}
+  /* Diario v55: igual a la mesa vieja. En pantallas anchas el envoltorio se ensancha solo con el Diario
+     (#app.ancho); dentro, .diario es un contenedor (@container) y su CSS reacciona al ancho REAL que tiene:
+     en el iPhone tarjetas a dos columnas e historial apilado; en el Mac fila de tarjetas y una sola línea. */
+  @media (min-width:900px){#app.ancho{max-width:1180px} #app.ancho main.vista{padding:8px 24px 96px}}
+  .diario{display:flex;flex-direction:column;gap:11px;container-type:inline-size}
+  .diario .etq{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--tx3);align-self:center;min-width:52px}
+  .dcards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .dcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-width:0}
+  .dcard .lb{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--tx2);text-transform:uppercase}
+  .dcard .vl{font-family:var(--mono);font-size:19px;font-weight:800;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dcard .sb{font-size:11px;color:var(--tx2);margin-top:2px;line-height:1.35}
+  .histcta{font-size:12px;color:var(--tx2);line-height:1.55;padding:10px 13px}
+  .histcta .hcl{display:block;font-weight:700;color:var(--tx2)}
+  .histcta .hc{display:block}
+  .histcta .hc b{color:var(--tx)}
+  .tbl-res td.util{font-size:14.5px}
+  @container (min-width:860px){
+    .dcards{grid-template-columns:repeat(auto-fill,minmax(168px,1fr))}
+    .histcta .hcl,.histcta .hc{display:inline}
+    .histcta .hc+.hc::before{content:' · ';color:var(--tx3)}
+    .diario .tbl{font-size:12.5px}
+    .diario .tbl td{padding:7px 9px}
+  }
+  /* Gestor de posiciones v55 (igual al de la mesa vieja): la TABLA de 10 columnas en Mac (≥ 900 px,
+     dentro de #app.ancho) y el mismo bloque en cada tarjeta en iPhone. */
+  .gtbl{width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap}
+  .gtbl th{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;text-align:left;padding:6px 6px;border-bottom:1px solid var(--line)}
+  .gtbl td{padding:8px 5px 5px;vertical-align:top}
+  .gtbl tr.grow td{border-top:1px solid var(--line)}
+  .gtbl tr.grow td:first-child{white-space:normal;max-width:150px}
+  .gtbl tr.gdet td{padding:0 6px 10px;white-space:normal;font-size:11.5px;color:var(--tx2)}
+  .gtbl tr.gdet .aviso{margin-top:6px}
+  .gtbl tr.hot td{background:rgba(242,109,95,.07)}
+  .gtbl tr.dormida td{background:rgba(242,109,95,.13);opacity:.75}
+  .gtbl td.gparams{white-space:nowrap}
+  .gtbl .gp1,.gtbl .gp2{display:block}
+  .gtbl .gp2{margin-top:5px}
+  .gtbl .gchips{flex-direction:column;align-items:flex-start;gap:4px}
+  .gtbl .gsalta{min-width:128px}
+  .gsub2{display:block;font-size:10px;color:var(--tx3);white-space:nowrap;margin-top:2px;line-height:1.3}
+  .gl{font-size:11px;color:var(--tx2)}
+  .gin{width:52px;padding:4px 5px;font-size:12px;border-radius:8px;background:var(--bg2);border:1px solid var(--line);color:var(--tx);font-family:var(--mono);min-width:0;display:inline-block;-moz-appearance:textfield}
+  .gin::-webkit-inner-spin-button,.gin::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  .gin:focus{outline:none;border-color:var(--oro)}
+  .gchk{font-size:11.5px;color:var(--tx);white-space:nowrap;cursor:pointer;margin-left:6px;display:inline-flex;align-items:center;gap:4px}
+  .gchk input,.gact{width:auto;height:auto;margin:0;accent-color:var(--oro);vertical-align:middle}
+  .gchips{display:inline-flex;gap:4px;flex-wrap:wrap}
+  .gchip{background:var(--card);border:1px solid var(--line);color:var(--tx2);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:700;font-family:var(--sans);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .gchip.on{background:var(--oro);border-color:var(--oro);color:#0B0E14}
+  .gbrk{font-size:9px;border:1px solid var(--tx3);border-radius:4px;padding:0 4px;margin-left:5px;color:var(--tx2);vertical-align:middle;font-weight:600}
+  .gvender{background:var(--rojo);color:#fff;border:none;border-radius:9px;padding:8px 10px;font-size:12px;font-weight:700;font-family:var(--sans);cursor:pointer;white-space:nowrap}
+  .gtbl .gvender{white-space:normal;max-width:96px;line-height:1.25}
+  .gbarra .gnums{display:flex;gap:22px;flex-wrap:wrap;align-items:baseline;margin-top:6px}
+  .gbarra .gnums b{font-family:var(--mono);font-size:19px;margin-left:8px}
+  .gbarra .gnums .gl{font-size:10.5px;letter-spacing:.05em;font-weight:700}
+  .gbarra .gnums .gsub2{margin-left:8px}
+  .gest{margin-top:9px;padding:9px 10px;border-radius:11px;background:var(--bg2);border:1px solid var(--line)}
+  .gest.dormida{background:rgba(242,109,95,.10);border-color:rgba(242,109,95,.4)}
+  .gest .gparams{display:flex;flex-wrap:wrap;align-items:center;gap:4px;row-gap:7px}
+  .gest .gsalta b{font-size:17px}
+  .gest .gsalta .gsub2{white-space:normal}
+  .card.dormida{background:rgba(242,109,95,.08);border-color:rgba(242,109,95,.45)}
+  .gcard .gchipbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .gchart{margin-top:8px;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
+  .gchart:active{cursor:grabbing}
+  .gchart svg{display:block;width:100%;height:auto;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .gchart svg text{font-family:var(--mono);font-size:9px}
+  .gchart .vacio{padding:26px 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .gleg{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;margin-top:8px;align-items:center}
+  .gleg span i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:5px}
+  .gleg span.prima i{border-top-style:dotted}
+  .gin[disabled],.gchip[disabled]{opacity:.45;cursor:not-allowed}
+  /* iPhone (< 900 px): controles del gestor y del gráfico con área de toque (≥ 32 px; la casilla Activo decide si una
+     posición queda sin vigilancia y medía 13 px). En Mac las reglas de arriba siguen tal cual. */
+  @media (max-width:899px){
+    .gchip{padding:9px 12px;font-size:12px;min-height:34px}
+    .gin{padding:8px 6px;font-size:14px;min-height:34px;width:58px}
+    .gvender{padding:10px 13px;font-size:13px;min-height:36px}
+    .gchk{padding:8px 6px;margin:-8px 0 -8px 0;min-height:34px}
+    .gchk input,.gact{width:22px;height:22px}
+  }
+</style>
+<style>
+  body{padding:22px 18px 60px}
+  .tablero{display:flex;flex-direction:column;gap:30px;align-items:flex-start;max-width:none}
+  .caso{flex:none}
+  .caso > h2{font-family:'Newsreader',Georgia,serif;font-size:17px;font-weight:600;margin:0 0 3px;color:var(--tx)}
+  .caso > p{margin:0 0 9px;color:var(--tx2);font-size:11.5px;line-height:1.5;max-width:900px}
+  .marco{background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:10px 16px 18px;display:flex;flex-direction:column;gap:11px}
+  .marco.ancho{padding:10px 24px 18px}
+  .cab{font-family:'Newsreader',Georgia,serif;font-size:21px;color:var(--tx);margin:2px 0 0}
+  .nota{max-width:1240px;margin:0 0 20px;color:var(--tx2);font-size:12.5px;line-height:1.55}
+  .nota b{color:var(--tx)}
+</style></head><body>
+<h1 style="font-family:'Newsreader',Georgia,serif;font-weight:600;font-size:26px;margin:0 0 6px">Mesa de Mercado 2.0 · v55 · POSICIONES igual al Gestor de la mesa vieja</h1>
+<p class="nota">Dibujado evaluando <b>app/main.js entero</b> en un DOM de juguete con un Supabase falso (libro inventado: E*TRADE leído en el equipo, Schwab sin sesión, moomoo y tasty por la foto del worker; velas de SPY de 5 y 15 min) y el CSS real de <code>index.html</code>. Tema oscuro; sin fuentes externas ni ninguna llamada de red. Ninguna orden se arma ni se envía en este camino.</p>
+<div class="tablero">
+  <section class="caso" style="width:390px"><h2>iPhone · 390 px · Copiloto → Posiciones abiertas</h2><p>La vista REAL (vistaCopiloto) apilada como en el teléfono: banner de bróker, alarma 🔕 SIN VIGILANCIA, la barra INVERTIDO · VALOR AHORA · GANANCIA/PÉRDIDA, y una tarjeta por posición con el gestor entero (modo, parámetros, SALTA EN, Activo, Vender). Debajo, el gráfico «SPY · 5 min» con los strikes y las líneas Sardiñas.</p>
+    <div class="marco " style="width:390px"><div class="cab">Copiloto</div><div class="sec">POSICIONES ABIERTAS <span class="fresco" style="letter-spacing:0;font-weight:500">gestor: la Mesa avisa (el worker vigila estos niveles cada minuto en sesión) y pre-arma la venta, tú confirmas con un toque</span></div><div class="fresco" style="padding:0 2px">tastytrade: sin filas en la foto del worker (posiciones_broker). O no tienes opciones abiertas ahí, o el worker aún no la escribió: no lo sé desde aquí.</div><div class="aviso galarma" style="background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.5);color:var(--tx)">🔕 <b>1 posición(es) SIN VIGILANCIA</b> — $200.00 sin trailing ni avisos de venta. La casilla <b>Activo</b> está apagada: sin trailing ni avisos del gestor; el corte del Plan 10 y el cierre de las 15:30 siguen sonando.
+    <div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.gestorVigilarTodas()">Vigilar todas</button></div></div><div class="card gbarra">
+    <div class="fila"><span class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">CARTERA ABIERTA · E*TRADE + CHARLES SCHWAB + MOOMOO</span>
+      <span class="fresco">6 posición(es) abierta(s) · 2 sin registrar</span></div>
+    <div class="gnums">
+      <div><span class="gl">INVERTIDO</span><b class="mono" id="g_sum_inv">$2,494.00</b></div>
+      <div><span class="gl">VALOR AHORA</span><b class="mono" id="g_sum_val">$2,739.00</b></div>
+      <div><span class="gl">GANANCIA / PÉRDIDA</span><b class="mono" id="g_sum_dif" style="color:var(--verde)">+$241.75 <span style="font-size:13px">(+9.7%)</span></b>
+        <span class="gsub2">neto — el bróker se llevó $3.25 en comisiones</span></div>
+    </div>
+    <div class="fresco" style="margin-top:6px">P&amp;L neto del bróker en 5 de 6 · leído hace segundos</div></div><div class="fresco" style="padding:0 2px">E*TRADE: 1 en acciones — aquí solo salen opciones compradas.</div><div class="fresco" style="padding:0 2px">moomoo: foto del worker de hace 1 min · la Mesa no opera moomoo: avisa y pre-arma, la venta se confirma en su app.</div><div class="card">
+    <div class="fila"><h3>SPY CALL 770</h3>
+      <span class="fresco">×2 · etrade</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">fill <b class="mono" style="color:var(--tx)">$3.3</b></span>
+      <span class="mut">límite GTC <b class="mono" style="color:var(--oro)">$3.65</b></span></div>
+    <div class="fila" style="margin-top:3px">
+      <span class="mut">plan +10%</span>
+      <span class="mut">corte -20% <b class="mono" style="color:var(--rojo)">$2.64</b></span></div>
+    
+    <div class="mut mono" style="margin-top:6px;font-size:11.5px">mark <b style="color:var(--tx)">$4.18</b>
+    · P&amp;L <b style="color:var(--verde)">+$176 (+27%)</b>
+    · MFE <span style="color:var(--verde)">+$340</span> / MAE <span style="color:var(--rojo)">-$40</span>
+    · hace 1 min</div>
+    <div class="mut mono" style="margin-top:4px;font-size:11.5px"><span style="color:var(--verde);font-weight:700">GTC $3.65 YA ALCANZADO</span> · colchón <b style="color:var(--rojo)">$1.56</b> (37% · $312) hasta tu corte $2.64</div><div class="mut mono" style="margin-top:4px;font-size:11.5px">E*TRADE confirma ×2 · valor <b style="color:var(--tx)">$840</b> · P&amp;L <b style="color:var(--verde)">+$179</b> <span class="fresco">(del bróker)</span></div><div class="fresco" style="margin-top:3px">abierta 1 d · <span style="">vence en 4 d</span></div>
+    <div class="gest" id="g_bloque_1">
+    <div class="fila"><span class="gl" style="font-weight:700;letter-spacing:.06em">MODO DE SALIDA</span><div class="gchips"><button type="button" class="gchip on" title="Sigue al máximo ganado" onclick="MZ.gestorModo(1, 'trailing')">Trailing</button><button type="button" class="gchip" title="Objetivo y stop en precios fijos sobre lo pagado" onclick="MZ.gestorModo(1, 'fijo')">Objetivo+Stop</button></div></div>
+    <div class="gparams" style="margin-top:7px"><span class="gp1"><span class="gl">cae</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="1" data-min="1" data-max="95" id="g_trail_pct_1" value="20" oninput="MZ.gestorTeclear(1, 'trail_pct', this.value)" onblur="MZ.gestorSoltar(1, 'trail_pct', this.value)"> <span class="gl">% del máx</span></span>
+      <span class="gp2"><span class="gl" title="El trailing se arma solo cuando la posición haya ganado este % (0 = armado desde el inicio). Evita que el ruido del primer minuto te saque.">armar +</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="5" data-min="0" data-max="500" id="g_arm_pct_1" value="0" oninput="MZ.gestorTeclear(1, 'arm_pct', this.value)" onblur="MZ.gestorSoltar(1, 'arm_pct', this.value)"> <span class="gl">%</span>
+      <label class="gchk" title="Una vez armado, el piso nunca baja de tu costo: un ganador no vuelve a ser perdedor."><input type="checkbox" id="g_protege_costo_1" checked onchange="MZ.gestorCasilla(1, 'protege_costo', this.checked)"> 🛡️ costo</label></span></div>
+    <div class="fila" style="margin-top:8px;align-items:flex-start"><span class="gl" style="font-weight:700;letter-spacing:.06em;padding-top:3px">SALTA EN</span><div class="gsalta" id="g_salta_1" style="text-align:right"><b class="mono" style="font-size:15px">4.00</b><span class="gsub2">−20% del máx 5.00</span><span class="gsub2" style="color:var(--oro)">margen 5.0%</span></div></div>
+    <div class="fila" style="margin-top:9px"><span class="gl">Activo <label class="gchk" style="margin:0"><input type="checkbox" class="gact" id="g_activo_1" checked onchange="MZ.gestorActivo(1, this.checked)"></label></span><button type="button" class="gvender" onclick="MZ.venderGestor(1)">Vender</button></div>
+  </div>
+    
+    <div class="fila" style="margin-top:9px;gap:8px">
+      <button class="btnsec" onclick="MZ.copiar('3.65')">Copiar GTC</button>
+      <button class="btnsec" onclick="MZ.cerrar(1, 3.3)">Registrar salida</button>
+      <button class="btnsec" style="flex:none;padding:10px 12px" onclick="MZ.notaDePosicion(1, 'SPY')" title="Nota del día en el Diario">Nota</button></div>
+    <div class="fila" style="margin-top:8px;gap:8px">
+      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45);background:rgba(231,181,77,.14);font-weight:700" onclick='MZ.abrirOrden({"proposito":"salida_gtc","posicion_id":1,"broker":"etrade","symbol":"SPY","direccion":"CALL","strike":770,"expiracion":"2026-10-02","cantidad":2,"accion":"venta","orderTerm":"GOOD_UNTIL_CANCEL","priceType":"LIMIT","limitPrice":3.65})'>⚠ PON TU GTC +10% ($3.65)</button>
+      </div>
+    <div class="fila" style="margin-top:8px">
+      <button class="btnsec" style="color:var(--rojo);border-color:rgba(242,109,95,.45)" onclick="MZ.cortarPosicion(1)">Cortar</button></div>
+  </div><div class="card">
+    <div class="fila"><h3>NVDA CALL 185</h3>
+      <span class="fresco">×3 · schwab</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">fill <b class="mono" style="color:var(--tx)">$2.1</b></span>
+      <span class="mut">límite GTC <b class="mono" style="color:var(--oro)">$2.86</b></span></div>
+    
+    
+    <div class="mut mono" style="margin-top:6px;font-size:11.5px">mark <b style="color:var(--tx)">$2.25</b>
+    · P&amp;L <b style="color:var(--verde)">+$45 (+7%)</b>
+    · MFE <span style="color:var(--verde)">+$60</span> / MAE <span style="color:var(--rojo)">-$45</span>
+    · hace 1 min</div>
+    <div class="mut mono" style="margin-top:4px;font-size:11.5px">faltan <b style="color:var(--oro)">$0.61</b> (27% · $183) para tu GTC $2.86</div><div class="fresco" style="margin-top:3px">abierta 5.0 h · <span style="">vence en 18 d</span></div>
+    <div class="gest" id="g_bloque_4">
+    <div class="fila"><span class="gl" style="font-weight:700;letter-spacing:.06em">MODO DE SALIDA</span><div class="gchips"><button type="button" class="gchip on" title="Sigue al máximo ganado" onclick="MZ.gestorModo(4, 'trailing')">Trailing</button><button type="button" class="gchip" title="Objetivo y stop en precios fijos sobre lo pagado" onclick="MZ.gestorModo(4, 'fijo')">Objetivo+Stop</button></div></div>
+    <div class="gparams" style="margin-top:7px"><span class="gp1"><span class="gl">cae</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="1" data-min="1" data-max="95" id="g_trail_pct_4" value="25" oninput="MZ.gestorTeclear(4, 'trail_pct', this.value)" onblur="MZ.gestorSoltar(4, 'trail_pct', this.value)"> <span class="gl">% del máx</span></span>
+      <span class="gp2"><span class="gl" title="El trailing se arma solo cuando la posición haya ganado este % (0 = armado desde el inicio). Evita que el ruido del primer minuto te saque.">armar +</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="5" data-min="0" data-max="500" id="g_arm_pct_4" value="25" oninput="MZ.gestorTeclear(4, 'arm_pct', this.value)" onblur="MZ.gestorSoltar(4, 'arm_pct', this.value)"> <span class="gl">%</span>
+      <label class="gchk" title="Una vez armado, el piso nunca baja de tu costo: un ganador no vuelve a ser perdedor."><input type="checkbox" id="g_protege_costo_4"  onchange="MZ.gestorCasilla(4, 'protege_costo', this.checked)"> 🛡️ costo</label></span></div>
+    <div class="fila" style="margin-top:8px;align-items:flex-start"><span class="gl" style="font-weight:700;letter-spacing:.06em;padding-top:3px">SALTA EN</span><div class="gsalta" id="g_salta_4" style="text-align:right"><span style="color:var(--oro);font-size:12px">💤 se arma a +25%</span><span class="gsub2">máx 2.30 · aún +9.5%</span></div></div>
+    <div class="fila" style="margin-top:9px"><span class="gl">Activo <label class="gchk" style="margin:0"><input type="checkbox" class="gact" id="g_activo_4" checked onchange="MZ.gestorActivo(4, this.checked)"></label></span><button type="button" class="gvender" onclick="MZ.venderGestor(4)">Vender</button></div>
+  </div>
+    
+    <div class="fila" style="margin-top:9px;gap:8px">
+      <button class="btnsec" onclick="MZ.copiar('2.86')">Copiar GTC</button>
+      <button class="btnsec" onclick="MZ.cerrar(4, 2.1)">Registrar salida</button>
+      <button class="btnsec" style="flex:none;padding:10px 12px" onclick="MZ.notaDePosicion(4, 'NVDA')" title="Nota del día en el Diario">Nota</button></div>
+    <div class="fila" style="margin-top:8px;gap:8px">
+      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45);background:rgba(231,181,77,.14);font-weight:700" onclick='MZ.abrirOrden({"proposito":"salida_gtc","posicion_id":4,"broker":"schwab","symbol":"NVDA","direccion":"CALL","strike":185,"expiracion":"2026-10-16","cantidad":3,"accion":"venta","orderTerm":"GOOD_UNTIL_CANCEL","priceType":"LIMIT","limitPrice":2.86})'>⚠ PON TU GTC +35% ($2.86)</button>
+      <button class="btnsec" onclick='MZ.abrirOrden({"proposito":"salida_stop","posicion_id":4,"broker":"schwab","symbol":"NVDA","direccion":"CALL","strike":185,"expiracion":"2026-10-16","cantidad":3,"accion":"venta","orderTerm":"GOOD_UNTIL_CANCEL","priceType":"TRAILING_STOP_PRCT"})'>Trailing stop</button></div>
+    
+  </div><div class="card">
+    <div class="fila"><h3>META PUT 700</h3>
+      <span class="fresco">×1 · moomoo</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">fill <b class="mono" style="color:var(--tx)">$5</b></span>
+      <span class="mut">límite GTC <b class="mono" style="color:var(--oro)">$5.52</b></span></div>
+    <div class="fila" style="margin-top:3px">
+      <span class="mut">plan +10%</span>
+      <span class="mut">corte -20% <b class="mono" style="color:var(--rojo)">$4.00</b></span></div>
+    
+    <div class="mut mono" style="margin-top:6px;font-size:11.5px">mark <b style="color:var(--tx)">$4.90</b>
+    · P&amp;L <b style="color:var(--rojo)">-$10 (-2%)</b>
+    · MFE <span style="color:var(--verde)">+$40</span> / MAE <span style="color:var(--rojo)">-$40</span>
+    · hace 1 min</div>
+    <div class="mut mono" style="margin-top:4px;font-size:11.5px">faltan <b style="color:var(--oro)">$0.62</b> (13% · $62) para tu GTC $5.52 · colchón <b style="color:var(--rojo)">$0.90</b> (18% · $90) hasta tu corte $4.00</div><div class="mut mono" style="margin-top:4px;font-size:11.5px">moomoo confirma ×1 · valor <b style="color:var(--tx)">$490</b> · P&amp;L <b style="color:var(--rojo)">-$10</b> <span class="fresco">(del bróker)</span></div><div class="fresco" style="margin-top:2px">foto del worker de hace 1 min</div><div class="fresco" style="margin-top:3px">abierta 1 d · <span style="">vence en 18 d</span> · el bróker no da la fecha de apertura</div>
+    <div class="gest" id="g_bloque_7">
+    <div class="fila"><span class="gl" style="font-weight:700;letter-spacing:.06em">MODO DE SALIDA</span><div class="gchips"><button type="button" class="gchip" title="Sigue al máximo ganado" onclick="MZ.gestorModo(7, 'trailing')">Trailing</button><button type="button" class="gchip on" title="Objetivo y stop en precios fijos sobre lo pagado" onclick="MZ.gestorModo(7, 'fijo')">Objetivo+Stop</button></div></div>
+    <div class="gparams" style="margin-top:7px"><span class="gp1"><span class="gl" style="color:var(--verde)">+</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="5" data-min="1" data-max="2000" id="g_target_pct_7" value="60" oninput="MZ.gestorTeclear(7, 'target_pct', this.value)" onblur="MZ.gestorSoltar(7, 'target_pct', this.value)"> <span class="gl">% objetivo</span></span>
+    <span class="gp2"><span class="gl" style="color:var(--rojo)">−</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="5" data-min="1" data-max="99" id="g_stop_fijo_pct_7" value="45" oninput="MZ.gestorTeclear(7, 'stop_fijo_pct', this.value)" onblur="MZ.gestorSoltar(7, 'stop_fijo_pct', this.value)"> <span class="gl" title="El stop del modo fijo. NO toca el corte del Plan 10 (stop_pct), que sigue vigilándose aparte.">% stop</span></span></div>
+    <div class="fila" style="margin-top:8px;align-items:flex-start"><span class="gl" style="font-weight:700;letter-spacing:.06em;padding-top:3px">SALTA EN</span><div class="gsalta" id="g_salta_7" style="text-align:right"><span class="mono" style="color:var(--verde);font-weight:700">8.00</span> / <span class="mono" style="color:var(--rojo);font-weight:700">2.75</span><span class="gsub2">calculado sobre 5.00</span><span class="gsub2" style="color:var(--tx3)">objetivo a +63.3% · stop a −43.9%</span><span class="gsub2">el corte −20% del Plan 10 sigue aparte</span></div></div>
+    <div class="fila" style="margin-top:9px"><span class="gl">Activo <label class="gchk" style="margin:0"><input type="checkbox" class="gact" id="g_activo_7" checked onchange="MZ.gestorActivo(7, this.checked)"></label></span><button type="button" class="gvender" onclick="MZ.venderGestor(7)">Vender en moomoo</button></div>
+  </div>
+    <div class="fresco" style="margin-top:6px;color:var(--rojo)">Corte -20% ($4.00): <b>vende en tu bróker</b> — la Mesa no manda órdenes a moomoo; aquí solo registras la salida.</div>
+    <div class="fila" style="margin-top:9px;gap:8px">
+      <button class="btnsec" onclick="MZ.copiar('5.52')">Copiar GTC</button>
+      <button class="btnsec" onclick="MZ.cerrar(7, 5)">Registrar salida</button>
+      <button class="btnsec" style="flex:none;padding:10px 12px" onclick="MZ.notaDePosicion(7, 'META')" title="Nota del día en el Diario">Nota</button></div>
+    
+    
+  </div><div class="card dormida">
+    <div class="fila"><h3>🔕 TSLA CALL 400</h3>
+      <span class="fresco">×1 · etrade</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">fill <b class="mono" style="color:var(--tx)">$2</b></span>
+      <span class="mut">límite GTC <b class="mono" style="color:var(--oro)">$2.22</b></span></div>
+    <div class="fila" style="margin-top:3px">
+      <span class="mut">plan +10%</span>
+      <span class="mut">corte -20% <b class="mono" style="color:var(--rojo)">$1.60</b></span></div>
+    
+    <div class="mut mono" style="margin-top:6px;font-size:11.5px">mark <b style="color:var(--tx)">$1.62</b>
+    · P&amp;L <b style="color:var(--rojo)">-$38 (-19%)</b>
+    · MFE <span style="color:var(--verde)">+$40</span> / MAE <span style="color:var(--rojo)">-$40</span>
+    · hace 1 min</div>
+    <div class="mut mono" style="margin-top:4px;font-size:11.5px">faltan <b style="color:var(--oro)">$0.60</b> (37% · $60) para tu GTC $2.22 · colchón <b style="color:var(--rojo)">$0.02</b> (1% · $2) hasta tu corte $1.60</div><div class="mut mono" style="margin-top:4px;font-size:11.5px">E*TRADE confirma ×1 · valor <b style="color:var(--tx)">$162</b> · P&amp;L <b style="color:var(--rojo)">-$39</b> <span class="fresco">(del bróker)</span></div><div class="fresco" style="margin-top:3px">abierta 3.0 h · <span style="">vence en 11 d</span> · el bróker no da la fecha de apertura</div>
+    <div class="gest dormida" id="g_bloque_9">
+    <div class="fila"><span class="gl" style="font-weight:700;letter-spacing:.06em">MODO DE SALIDA</span><div class="gchips"><button type="button" class="gchip on" title="Sigue al máximo ganado" onclick="MZ.gestorModo(9, 'trailing')">Trailing</button><button type="button" class="gchip" title="Objetivo y stop en precios fijos sobre lo pagado" onclick="MZ.gestorModo(9, 'fijo')">Objetivo+Stop</button></div></div>
+    <div class="gparams" style="margin-top:7px"><span class="gp1"><span class="gl">cae</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="1" data-min="1" data-max="95" id="g_trail_pct_9" value="20" oninput="MZ.gestorTeclear(9, 'trail_pct', this.value)" onblur="MZ.gestorSoltar(9, 'trail_pct', this.value)"> <span class="gl">% del máx</span></span>
+      <span class="gp2"><span class="gl" title="El trailing se arma solo cuando la posición haya ganado este % (0 = armado desde el inicio). Evita que el ruido del primer minuto te saque.">armar +</span> <input class="gin" type="text" inputmode="decimal" autocomplete="off" data-step="5" data-min="0" data-max="500" id="g_arm_pct_9" value="0" oninput="MZ.gestorTeclear(9, 'arm_pct', this.value)" onblur="MZ.gestorSoltar(9, 'arm_pct', this.value)"> <span class="gl">%</span>
+      <label class="gchk" title="Una vez armado, el piso nunca baja de tu costo: un ganador no vuelve a ser perdedor."><input type="checkbox" id="g_protege_costo_9"  onchange="MZ.gestorCasilla(9, 'protege_costo', this.checked)"> 🛡️ costo</label></span></div>
+    <div class="fila" style="margin-top:8px;align-items:flex-start"><span class="gl" style="font-weight:700;letter-spacing:.06em;padding-top:3px">SALTA EN</span><div class="gsalta" id="g_salta_9" style="text-align:right"><b class="mono" style="font-size:15px;color:var(--rojo)">1.92</b><span class="gsub2">−20% del máx 2.40</span><span class="gsub2" style="color:var(--rojo)">margen -15.6%</span></div></div>
+    <div class="fila" style="margin-top:9px"><span class="gl">Activo <label class="gchk" style="margin:0"><input type="checkbox" class="gact" id="g_activo_9"  onchange="MZ.gestorActivo(9, this.checked)"> <span title="sin vigilancia">🔕</span></label> <span style="color:var(--rojo)">sin vigilancia</span></span><button type="button" class="gvender" onclick="MZ.venderGestor(9)">Vender</button></div>
+  </div>
+    
+    <div class="fila" style="margin-top:9px;gap:8px">
+      <button class="btnsec" onclick="MZ.copiar('2.22')">Copiar GTC</button>
+      <button class="btnsec" onclick="MZ.cerrar(9, 2)">Registrar salida</button>
+      <button class="btnsec" style="flex:none;padding:10px 12px" onclick="MZ.notaDePosicion(9, 'TSLA')" title="Nota del día en el Diario">Nota</button></div>
+    <div class="fila" style="margin-top:8px;gap:8px">
+      <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45);background:rgba(231,181,77,.14);font-weight:700" onclick='MZ.abrirOrden({"proposito":"salida_gtc","posicion_id":9,"broker":"etrade","symbol":"TSLA","direccion":"CALL","strike":400,"expiracion":"2026-10-09","cantidad":1,"accion":"venta","orderTerm":"GOOD_UNTIL_CANCEL","priceType":"LIMIT","limitPrice":2.22})'>⚠ PON TU GTC +10% ($2.22)</button>
+      </div>
+    <div class="fila" style="margin-top:8px">
+      <button class="btnsec" style="color:var(--rojo);border-color:rgba(242,109,95,.45)" onclick="MZ.cortarPosicion(9)">Cortar</button></div>
+  </div><div class="sec">EN TU BRÓKER, SIN REGISTRAR EN LA MESA</div><div class="card" style="border-style:dashed;border-color:rgba(231,181,77,.55)">
+    <div class="fila"><h3>AAPL CALL 235</h3>
+      <span class="chip c-vig">SIN REGISTRAR</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">×2 · E*TRADE</span>
+      <span class="mut">costo medio <b class="mono" style="color:var(--tx)">$1.32</b></span></div>
+    <div class="mut mono" style="margin-top:4px;font-size:11.5px">
+      valor $310
+       · P&amp;L <b style="color:var(--verde)">+$45</b> (+17%)
+      · <span class="fresco">cifras del bróker</span></div>
+    <div class="fresco" style="margin-top:3px">vence en 11 d · el bróker no da la fecha de apertura</div>
+    <div class="mut" style="margin-top:7px">La Mesa no la conoce: sin ficha no entra al aviso de corte, ni a la GTC pendiente, ni a la Disciplina.</div>
+    <div class="fresco" style="margin-top:3px">Esto solo crea la ficha en la Mesa: <b>no compra nada ni manda ninguna orden a tu bróker.</b></div>
+    <div class="fila" style="margin-top:9px"><button class="pri" style="width:100%" onclick="MZ.adoptar('etrade|AAPL|CALL|235|2026-10-09')">Crear la ficha en la Mesa</button></div>
+  </div><div class="card" style="border-style:dashed;border-color:rgba(231,181,77,.55)">
+    <div class="fila"><h3>QQQ CALL 600</h3>
+      <span class="chip c-vig">SIN REGISTRAR</span></div>
+    <div class="fila" style="margin-top:6px">
+      <span class="mut">×1 · moomoo</span>
+      <span class="mut">costo medio <b class="mono" style="color:var(--tx)">$2.40</b></span></div>
+    <div class="mut mono" style="margin-top:4px;font-size:11.5px">
+      valor $262
+       · P&amp;L <b style="color:var(--verde)">+$22</b> (+9%)
+      · <span class="fresco">cifras del bróker</span></div>
+    <div class="fresco" style="margin-top:3px">vence en 11 d · el bróker no da la fecha de apertura · foto del worker de hace 1 min</div>
+    <div class="mut" style="margin-top:7px">La Mesa no la conoce: sin ficha no entra al aviso de corte, ni a la GTC pendiente, ni a la Disciplina. La Mesa no opera moomoo: adoptarla la vigila (marks, trailing, avisos) y pre-arma la venta; la confirmas en la app de moomoo.</div>
+    <div class="fresco" style="margin-top:3px">Esto solo crea la ficha en la Mesa: <b>no compra nada ni manda ninguna orden a tu bróker.</b></div>
+    <div class="fila" style="margin-top:9px"><button class="pri" style="width:100%" onclick="MZ.adoptar('moomoo|QQQ|CALL|600|2026-10-09')">Crear la ficha en la Mesa</button></div>
+  </div><div class="fresco" style="padding:2px 4px 6px;line-height:1.6"><b>Trailing</b> — el % es la <b>caída máxima que toleras desde el mejor momento</b> de la posición, no un porcentaje del precio: compras a 2.59, la prima sube a 5.00 y con un 25 % te avisa cuando caiga a 3.75. Vale igual para calls y puts (se sigue la prima del contrato). <b>Objetivo+Stop</b> — tú das los <b>porcentajes sobre lo que pagaste</b> y la Mesa calcula los precios de salida y te avisa al tocarlos. Son excluyentes. La venta siempre pasa por tu toque y tu PIN (E*TRADE/Schwab) o por la app de tu bróker (moomoo/tasty). <span id="g_guardado" style="margin-left:6px"></span></div><div class="fresco" style="padding:0 2px;color:var(--oro)">1 posición del libro sin comprobar contra el bróker todavía (lectura en curso o no se pudo preguntar): no se da por desaparecida ninguna.</div><div class="sec">GRÁFICO <span class="fresco" style="letter-spacing:0;font-weight:500">tus strikes y las líneas Sardiñas sobre el precio · sin muros de dealers</span></div>
+  <div class="card gcard">
+    <div class="fila" style="flex-wrap:wrap;gap:6px"><b id="gchTitulo" style="font-size:14.5px">SPY · 5 min</b>
+      <div class="gchips"><button type="button" class="gchip" onclick="MZ.gchSym('AAPL')">AAPL</button><button type="button" class="gchip" onclick="MZ.gchSym('TSLA')" title="con posición abierta">TSLA •</button><button type="button" class="gchip" onclick="MZ.gchSym('NVDA')" title="con posición abierta">NVDA •</button><button type="button" class="gchip on" onclick="MZ.gchSym('SPY')" title="con posición abierta">SPY •</button><button type="button" class="gchip" onclick="MZ.gchSym('META')" title="con posición abierta">META •</button></div></div>
+    <div class="gchipbar">
+      <div class="gchips"><button type="button" class="gchip" onclick="MZ.gchTf('m1')">1m</button><button type="button" class="gchip on" onclick="MZ.gchTf('m5')">5m</button><button type="button" class="gchip" onclick="MZ.gchTf('m15')">15m</button></div>
+      <div class="gchips"><button type="button" class="gchip" onclick="MZ.gchRango(120)">2h</button><button type="button" class="gchip on" onclick="MZ.gchRango(240)">4h</button><button type="button" class="gchip" onclick="MZ.gchRango(480)">8h</button><button type="button" class="gchip" onclick="MZ.gchRango(960)">Sesión</button></div>
+      <div class="gchips"><button type="button" class="gchip on" onclick="MZ.gchBB()" title="Bollinger Bands (20, 2σ)">BB</button><button type="button" class="gchip" onclick="MZ.gchZoom(1.35)" title="Alejar (menos zoom)">−</button><button type="button" class="gchip" onclick="MZ.gchZoom(0.75)" title="Acercar (más zoom)">+</button><button type="button" class="gchip" onclick="MZ.gchReset()" title="Ver todo el rango">⤢</button></div>
+    </div>
+    <div class="gleg" id="gchLeg"><span class="" style="color:var(--azul)" title=""><i></i>BB (20, 2σ)</span><span class="" style="color:var(--verde)" title=""><i></i>770.00 CALL ×2  +27%</span><span class="prima" style="color:var(--oro)" title="prima del contrato (no es un precio del subyacente)"><i></i>GTC $3.65</span><span class="prima" style="color:var(--rojo)" title="prima del contrato (no es un precio del subyacente)"><i></i>corte $2.64</span><span class="prima" style="color:var(--morado)" title="prima del contrato (no es un precio del subyacente)"><i></i>trailing $4.00</span><span class="" style="color:var(--tx)" title=""><i></i>techo hora 774.60</span><span class="" style="color:var(--tx)" title=""><i></i>piso hora 767.30</span><span class="" style="color:var(--azul)" title=""><i></i>máx 120 d 780.50</span><span class="" style="color:var(--azul)" title=""><i></i>mín 120 d 742.00</span><span class="" style="color:var(--oro)" title=""><i></i>cierre ayer 766.20</span><span class="" style="color:var(--tx3)" title=""><i></i>apertura 768.10</span><span class="fresco">· en punteado, PRIMAS del contrato (no van sobre el precio)</span></div>
+    <div class="gchart" id="gchSvg"><svg viewBox="0 0 400 260" width="100%" role="img" aria-label="SPY 5 min Bollinger" style="display:block;font-family:var(--mono);font-size:9px"><defs><clipPath id="cp-SPY-m5-bb-260-400"><rect x="6" y="8" width="346.0" height="234.0"/></clipPath></defs><line x1="6" y1="199.7" x2="352.0" y2="199.7" stroke="var(--line)" stroke-width="1"/><text class="ejey" x="356.0" y="202.7" fill="var(--tx3)">765.00</text><line x1="6" y1="141.9" x2="352.0" y2="141.9" stroke="var(--line)" stroke-width="1"/><text class="ejey" x="356.0" y="144.9" fill="var(--tx3)">770.00</text><line x1="6" y1="84.1" x2="352.0" y2="84.1" stroke="var(--line)" stroke-width="1"/><text class="ejey" x="356.0" y="87.1" fill="var(--tx3)">775.00</text><line x1="6" y1="26.3" x2="352.0" y2="26.3" stroke="var(--line)" stroke-width="1"/><text class="ejey" x="356.0" y="29.3" fill="var(--tx3)">780.00</text><line x1="6" y1="242.5" x2="352.0" y2="242.5" stroke="var(--line)" stroke-width="1"/><text class="ejex" x="51.9" y="255.0" text-anchor="middle" fill="var(--tx3)">06:00</text><text class="ejex" x="136.6" y="255.0" text-anchor="middle" fill="var(--tx3)">07:00</text><text class="ejex" x="221.4" y="255.0" text-anchor="middle" fill="var(--tx3)">08:00</text><text class="ejex" x="306.1" y="255.0" text-anchor="middle" fill="var(--tx3)">09:00</text><g clip-path="url(#cp-SPY-m5-bb-260-400)"><polygon data-bb="banda" points="9.5,73.1 16.6,78.4 23.7,84.5 30.7,91.2 37.8,98.4 44.8,105.7 51.9,112.7 59.0,118.5 66.0,122.1 73.1,122.8 80.1,120.1 87.2,114.5 94.3,106.7 101.3,97.9 108.4,88.7 115.4,79.8 122.5,71.7 129.6,64.7 136.6,58.9 143.7,54.7 150.8,51.8 157.8,50.3 164.9,50.0 171.9,50.8 179.0,52.5 186.1,54.8 193.1,57.7 200.2,61.0 207.2,64.7 214.3,68.4 221.4,71.3 228.4,71.9 235.5,69.4 242.6,64.7 249.6,59.0 256.7,53.2 263.7,47.8 270.8,43.2 277.9,39.8 284.9,37.8 292.0,37.5 299.0,39.0 306.1,42.4 313.2,47.6 320.2,54.6 327.3,63.3 334.3,73.3 341.4,84.3 341.4,226.3 334.3,228.7 327.3,229.3 320.2,228.0 313.2,224.6 306.1,219.1 299.0,211.6 292.0,202.3 284.9,191.5 277.9,179.6 270.8,166.9 263.7,153.9 256.7,141.2 249.6,129.3 242.6,119.0 235.5,111.2 228.4,107.4 221.4,108.4 214.3,113.5 207.2,120.9 200.2,130.0 193.1,140.2 186.1,151.3 179.0,163.0 171.9,174.8 164.9,186.4 157.8,197.3 150.8,207.1 143.7,215.4 136.6,221.9 129.6,226.4 122.5,228.9 115.4,229.5 108.4,228.2 101.3,225.5 94.3,222.0 87.2,218.2 80.1,215.2 73.1,213.6 66.0,214.0 59.0,215.9 51.9,218.4 44.8,220.7 37.8,221.9 30.7,221.6 23.7,219.7 16.6,216.1 9.5,211.0" fill="var(--azul)" fill-opacity=".08" stroke="none"/><polyline data-bb="sup" points="9.5,73.1 16.6,78.4 23.7,84.5 30.7,91.2 37.8,98.4 44.8,105.7 51.9,112.7 59.0,118.5 66.0,122.1 73.1,122.8 80.1,120.1 87.2,114.5 94.3,106.7 101.3,97.9 108.4,88.7 115.4,79.8 122.5,71.7 129.6,64.7 136.6,58.9 143.7,54.7 150.8,51.8 157.8,50.3 164.9,50.0 171.9,50.8 179.0,52.5 186.1,54.8 193.1,57.7 200.2,61.0 207.2,64.7 214.3,68.4 221.4,71.3 228.4,71.9 235.5,69.4 242.6,64.7 249.6,59.0 256.7,53.2 263.7,47.8 270.8,43.2 277.9,39.8 284.9,37.8 292.0,37.5 299.0,39.0 306.1,42.4 313.2,47.6 320.2,54.6 327.3,63.3 334.3,73.3 341.4,84.3" fill="none" stroke="var(--azul)" stroke-width="1" stroke-dasharray="3 3" opacity=".85"/><polyline data-bb="inf" points="9.5,211.0 16.6,216.1 23.7,219.7 30.7,221.6 37.8,221.9 44.8,220.7 51.9,218.4 59.0,215.9 66.0,214.0 73.1,213.6 80.1,215.2 87.2,218.2 94.3,222.0 101.3,225.5 108.4,228.2 115.4,229.5 122.5,228.9 129.6,226.4 136.6,221.9 143.7,215.4 150.8,207.1 157.8,197.3 164.9,186.4 171.9,174.8 179.0,163.0 186.1,151.3 193.1,140.2 200.2,130.0 207.2,120.9 214.3,113.5 221.4,108.4 228.4,107.4 235.5,111.2 242.6,119.0 249.6,129.3 256.7,141.2 263.7,153.9 270.8,166.9 277.9,179.6 284.9,191.5 292.0,202.3 299.0,211.6 306.1,219.1 313.2,224.6 320.2,228.0 327.3,229.3 334.3,228.7 341.4,226.3" fill="none" stroke="var(--azul)" stroke-width="1" stroke-dasharray="3 3" opacity=".85"/><polyline data-bb="medio" points="9.5,142.0 16.6,147.3 23.7,152.1 30.7,156.4 37.8,160.1 44.8,163.2 51.9,165.6 59.0,167.2 66.0,168.1 73.1,168.2 80.1,167.6 87.2,166.3 94.3,164.4 101.3,161.7 108.4,158.5 115.4,154.6 122.5,150.3 129.6,145.5 136.6,140.4 143.7,135.0 150.8,129.4 157.8,123.8 164.9,118.2 171.9,112.8 179.0,107.7 186.1,103.1 193.1,99.0 200.2,95.5 207.2,92.8 214.3,90.9 221.4,89.8 228.4,89.7 235.5,90.3 242.6,91.9 249.6,94.2 256.7,97.2 263.7,100.8 270.8,105.0 277.9,109.7 284.9,114.7 292.0,119.9 299.0,125.3 306.1,130.7 313.2,136.1 320.2,141.3 327.3,146.3 334.3,151.0 341.4,155.3" fill="none" stroke="var(--azul)" stroke-width="1" opacity=".85"/><line x1="9.5" y1="191.1" x2="9.5" y2="202.4" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="7.2" y="196.0" width="4.7" height="1.6" fill="var(--rojo)"/><line x1="16.6" y1="192.0" x2="16.6" y2="202.4" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="14.3" y="196.9" width="4.7" height="1.0" fill="var(--verde)"/><line x1="23.7" y1="188.8" x2="23.7" y2="201.7" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="21.3" y="193.6" width="4.7" height="3.2" fill="var(--verde)"/><line x1="30.7" y1="183.2" x2="30.7" y2="198.5" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="28.4" y="188.1" width="4.7" height="5.5" fill="var(--verde)"/><line x1="37.8" y1="175.7" x2="37.8" y2="192.9" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="35.4" y="180.6" width="4.7" height="7.5" fill="var(--verde)"/><line x1="44.8" y1="166.5" x2="44.8" y2="185.4" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="42.5" y="171.3" width="4.7" height="9.2" fill="var(--verde)"/><line x1="51.9" y1="156.3" x2="51.9" y2="176.2" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="49.6" y="161.2" width="4.7" height="10.2" fill="var(--verde)"/><line x1="59.0" y1="145.5" x2="59.0" y2="166.0" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="56.6" y="150.3" width="4.7" height="10.9" fill="var(--verde)"/><line x1="66.0" y1="134.8" x2="66.0" y2="155.2" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="63.7" y="139.7" width="4.7" height="10.6" fill="var(--verde)"/><line x1="73.1" y1="124.7" x2="73.1" y2="144.5" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="70.8" y="129.5" width="4.7" height="10.2" fill="var(--verde)"/><line x1="80.1" y1="115.4" x2="80.1" y2="134.4" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="77.8" y="120.3" width="4.7" height="9.2" fill="var(--verde)"/><line x1="87.2" y1="107.6" x2="87.2" y2="125.1" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="84.9" y="112.4" width="4.7" height="7.9" fill="var(--verde)"/><line x1="94.3" y1="101.1" x2="94.3" y2="117.3" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="91.9" y="105.9" width="4.7" height="6.5" fill="var(--verde)"/><line x1="101.3" y1="96.0" x2="101.3" y2="110.8" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="99.0" y="100.8" width="4.7" height="5.1" fill="var(--verde)"/><line x1="108.4" y1="92.3" x2="108.4" y2="105.7" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="106.1" y="97.2" width="4.7" height="3.7" fill="var(--verde)"/><line x1="115.4" y1="89.5" x2="115.4" y2="102.0" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="113.1" y="94.4" width="4.7" height="2.8" fill="var(--verde)"/><line x1="122.5" y1="87.6" x2="122.5" y2="99.2" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="120.2" y="92.4" width="4.7" height="2.0" fill="var(--verde)"/><line x1="129.6" y1="85.9" x2="129.6" y2="97.3" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="127.2" y="90.8" width="4.7" height="1.6" fill="var(--verde)"/><line x1="136.6" y1="84.4" x2="136.6" y2="95.6" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="134.3" y="89.3" width="4.7" height="1.5" fill="var(--verde)"/><line x1="143.7" y1="82.9" x2="143.7" y2="94.1" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="141.4" y="87.8" width="4.7" height="1.5" fill="var(--verde)"/><line x1="150.8" y1="81.2" x2="150.8" y2="92.6" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="148.4" y="86.1" width="4.7" height="1.7" fill="var(--verde)"/><line x1="157.8" y1="79.2" x2="157.8" y2="90.9" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="155.5" y="84.1" width="4.7" height="2.0" fill="var(--verde)"/><line x1="164.9" y1="77.3" x2="164.9" y2="88.9" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="162.5" y="82.1" width="4.7" height="2.0" fill="var(--verde)"/><line x1="171.9" y1="75.4" x2="171.9" y2="87.0" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="169.6" y="80.3" width="4.7" height="1.8" fill="var(--verde)"/><line x1="179.0" y1="74.0" x2="179.0" y2="85.1" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="176.7" y="78.9" width="4.7" height="1.4" fill="var(--verde)"/><line x1="186.1" y1="73.5" x2="186.1" y2="83.7" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="183.7" y="78.3" width="4.7" height="1.0" fill="var(--verde)"/><line x1="193.1" y1="73.5" x2="193.1" y2="83.9" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="190.8" y="78.3" width="4.7" height="1.0" fill="var(--rojo)"/><line x1="200.2" y1="74.2" x2="200.2" y2="86.2" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="197.9" y="79.0" width="4.7" height="2.3" fill="var(--rojo)"/><line x1="207.2" y1="76.5" x2="207.2" y2="90.2" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="204.9" y="81.3" width="4.7" height="4.0" fill="var(--rojo)"/><line x1="214.3" y1="80.5" x2="214.3" y2="96.2" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="212.0" y="85.4" width="4.7" height="6.0" fill="var(--rojo)"/><line x1="221.4" y1="86.5" x2="221.4" y2="104.0" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="219.0" y="91.4" width="4.7" height="7.7" fill="var(--rojo)"/><line x1="228.4" y1="94.3" x2="228.4" y2="113.6" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="226.1" y="99.1" width="4.7" height="9.6" fill="var(--rojo)"/><line x1="235.5" y1="103.9" x2="235.5" y2="124.3" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="233.2" y="108.7" width="4.7" height="10.7" fill="var(--rojo)"/><line x1="242.6" y1="114.6" x2="242.6" y2="136.0" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="240.2" y="119.5" width="4.7" height="11.7" fill="var(--rojo)"/><line x1="249.6" y1="126.3" x2="249.6" y2="148.0" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="247.3" y="131.1" width="4.7" height="12.0" fill="var(--rojo)"/><line x1="256.7" y1="138.3" x2="256.7" y2="159.7" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="254.3" y="143.1" width="4.7" height="11.7" fill="var(--rojo)"/><line x1="263.7" y1="150.0" x2="263.7" y2="170.4" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="261.4" y="154.8" width="4.7" height="10.7" fill="var(--rojo)"/><line x1="270.8" y1="160.7" x2="270.8" y2="179.8" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="268.5" y="165.6" width="4.7" height="9.4" fill="var(--rojo)"/><line x1="277.9" y1="170.1" x2="277.9" y2="187.3" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="275.5" y="174.9" width="4.7" height="7.5" fill="var(--rojo)"/><line x1="284.9" y1="177.6" x2="284.9" y2="192.6" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="282.6" y="182.4" width="4.7" height="5.3" fill="var(--rojo)"/><line x1="292.0" y1="182.9" x2="292.0" y2="195.7" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="289.6" y="187.7" width="4.7" height="3.1" fill="var(--rojo)"/><line x1="299.0" y1="186.0" x2="299.0" y2="196.5" stroke="var(--rojo)" stroke-width="1" opacity="0.9"/><rect class="vela" x="296.7" y="190.9" width="4.7" height="1.0" fill="var(--rojo)"/><line x1="306.1" y1="185.6" x2="306.1" y2="196.5" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="303.8" y="190.4" width="4.7" height="1.3" fill="var(--verde)"/><line x1="313.2" y1="182.7" x2="313.2" y2="195.3" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="310.8" y="187.5" width="4.7" height="2.9" fill="var(--verde)"/><line x1="320.2" y1="178.5" x2="320.2" y2="192.4" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="317.9" y="183.4" width="4.7" height="4.2" fill="var(--verde)"/><line x1="327.3" y1="173.4" x2="327.3" y2="188.2" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="325.0" y="178.3" width="4.7" height="5.1" fill="var(--verde)"/><line x1="334.3" y1="167.9" x2="334.3" y2="183.1" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="332.0" y="172.7" width="4.7" height="5.5" fill="var(--verde)"/><line x1="341.4" y1="162.3" x2="341.4" y2="177.6" stroke="var(--verde)" stroke-width="1" opacity="0.9"/><rect class="vela" x="339.1" y="167.2" width="4.7" height="5.5" fill="var(--verde)"/><line x1="348.5" y1="119.9" x2="348.5" y2="132.6" stroke="var(--verde)" stroke-width="1" opacity="0.55"/><rect class="vela viva" x="346.1" y="125.7" width="4.7" height="2.3" fill="var(--verde)" fill-opacity=".45" stroke="var(--verde)" stroke-width="1" stroke-dasharray="2 2"/></g><line data-nivel="cierre_ayer" x1="6" y1="185.8" x2="352.0" y2="185.8" stroke="var(--oro)" stroke-width="1" stroke-dasharray="4 3" opacity="0.85"/><text x="9.0" y="182.8" text-anchor="start" fill="var(--oro)" font-weight="700" stroke="var(--bg2)" stroke-width="3" stroke-linejoin="round" paint-order="stroke">cierre ayer</text><line data-nivel="piso" x1="6" y1="173.1" x2="352.0" y2="173.1" stroke="var(--tx)" stroke-width="1.2" opacity="0.9"/><text x="9.0" y="170.1" text-anchor="start" fill="var(--tx)" font-weight="700" stroke="var(--bg2)" stroke-width="3" stroke-linejoin="round" paint-order="stroke">piso</text><line data-nivel="apertura_hoy" x1="6" y1="163.8" x2="352.0" y2="163.8" stroke="var(--tx3)" stroke-width="1" stroke-dasharray="2 3" opacity="0.7"/><text x="9.0" y="160.8" text-anchor="start" fill="var(--tx3)" font-weight="700" stroke="var(--bg2)" stroke-width="3" stroke-linejoin="round" paint-order="stroke">apertura</text><line data-nivel="strike" x1="6" y1="141.9" x2="352.0" y2="141.9" stroke="var(--verde)" stroke-width="1.6" opacity="0.95"/><text x="9.0" y="138.9" text-anchor="start" fill="var(--verde)" font-weight="700" stroke="var(--bg2)" stroke-width="3" stroke-linejoin="round" paint-order="stroke">770.00 CALL ×2  +27%</text><line data-nivel="techo" x1="6" y1="88.7" x2="352.0" y2="88.7" stroke="var(--tx)" stroke-width="1.2" opacity="0.9"/><text x="9.0" y="85.7" text-anchor="start" fill="var(--tx)" font-weight="700" stroke="var(--bg2)" stroke-width="3" stroke-linejoin="round" paint-order="stroke">techo</text><line data-nivel="ath" x1="6" y1="20.5" x2="352.0" y2="20.5" stroke="var(--azul)" stroke-width="1.2" opacity="0.9"/><text x="9.0" y="17.5" text-anchor="start" fill="var(--azul)" font-weight="700" stroke="var(--bg2)" stroke-width="3" stroke-linejoin="round" paint-order="stroke">máx 120 d</text><line x1="6" y1="125.7" x2="352.0" y2="125.7" stroke="var(--verde)" stroke-width="1" stroke-dasharray="2 4" opacity=".4"/><path data-spot="1" d="M353 125.7 l4 -7 h39 a2.5 2.5 0 0 1 2.5 2.5 v9 a2.5 2.5 0 0 1 -2.5 2.5 h-39 Z" fill="var(--verde)"/><text x="359.0" y="128.9" fill="var(--bg)" font-weight="700">771.40</text></svg></div>
+    <div class="fresco" id="gchNota" style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap"><span id="gchFresco">última vela hace segundos · en curso</span><span id="gchZoomTxt"></span>
+      <span style="margin-left:auto">arrastra para moverte en el tiempo · pellizca para acercar</span></div>
+  </div></div></section>
+</div></body></html>

@@ -331,11 +331,15 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   igual((await LS3.leerCarteraSchwab()).estado, 'sin', 'Schwab sin sesión en este equipo: estado «sin» (no es un error)');
 
   // ════════════════ 9. LA LISTA nunca dice «no hay nada» cuando no se pudo preguntar ════════════════
-  const S = construir(['seccionPosiciones', 'barraTotales', 'totalesCartera', 'itemsCartera', 'brokersLeidos',
+  // v55: seccionPosiciones lleva la alarma, la barra del gestor (totalesGestor) y el formato tabla/tarjetas
+  const S = construir(['seccionPosiciones', 'barraTotales', 'totalesGestor', 'brokerCuadraConFicha', 'gestorVigilado', 'alarmaSinVigilancia', 'anchoVista', 'gestorFormato', 'notaGestorHtml', 'itemsCartera', 'brokersLeidos',
     'casarCarteraLibro', 'claveCartera', 'claveContrato', 'textoLecturaBroker', 'lineaDifContratos',
     'tarjetaSinRegistrar', 'tarjetaSoloLibro', 'diasAlVencimiento', 'textoVencimiento', 'durTxt',
     'carteraLeidaAt', 'haceCuanto'], {
     esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000,
+    CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'], BROKERS_WORKER: ['tasty', 'moomoo'], GESTOR_ANCHO_TABLA: 900, _gestor: { filas: [], pend: {} },
+    dineroD: (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    markGestor: (p, br) => (br && Number(br.mark) > 0) ? Number(br.mark) : (p && Number(p.mark) > 0 ? Number(p.mark) : null),
     tarjetaPosicion: (p) => `<div class="card">POS ${p.symbol} ${p.strike}</div>`,
     brokersOperables: () => ['etrade', 'schwab'],
   });
@@ -347,11 +351,14 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   const h2 = S.seccionPosiciones([], cartVacia, PLANES.PLAN_10, HOY);
   assert(/Sin posiciones abiertas/.test(h2) && /confirman que no hay ninguna/.test(h2), 'vacío DE VERDAD: se dice que los brókeres lo confirman', h2.slice(0, 220));
   // sin ningún bróker conectado en este equipo: se invita a conectar, no se miente
-  const S0 = construir(['seccionPosiciones', 'barraTotales', 'totalesCartera', 'itemsCartera', 'brokersLeidos',
+  const S0 = construir(['seccionPosiciones', 'barraTotales', 'totalesGestor', 'brokerCuadraConFicha', 'gestorVigilado', 'alarmaSinVigilancia', 'anchoVista', 'gestorFormato', 'notaGestorHtml', 'itemsCartera', 'brokersLeidos',
     'casarCarteraLibro', 'claveCartera', 'claveContrato', 'textoLecturaBroker', 'lineaDifContratos',
     'tarjetaSinRegistrar', 'tarjetaSoloLibro', 'diasAlVencimiento', 'textoVencimiento', 'durTxt',
     'carteraLeidaAt', 'haceCuanto'], {
     esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000,
+    CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'], BROKERS_WORKER: ['tasty', 'moomoo'], GESTOR_ANCHO_TABLA: 900, _gestor: { filas: [], pend: {} },
+    dineroD: (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    markGestor: (p, br) => (br && Number(br.mark) > 0) ? Number(br.mark) : (p && Number(p.mark) > 0 ? Number(p.mark) : null),
     tarjetaPosicion: (p) => '', brokersOperables: () => [],
   });
   const h2b = S0.seccionPosiciones([], { etrade: { estado: 'sin', items: [] }, schwab: { estado: 'sin', items: [] } }, PLANES.PLAN_10, HOY);
@@ -376,7 +383,7 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   assert(!/El bróker dice/.test(h5s) && (h5s.match(/POS SPY 769/g) || []).length === 2, 'dos fichas que SUMAN lo del bróker (2 + 1 = 3) no producen ningún aviso: cada una se pinta como posición normal');
   assert(/YA NO ESTÁ EN EL BRÓKER/.test(h5) && /MZ\.cerrar\(2,/.test(h5), 'la del libro que el bróker no tiene ofrece registrar la salida');
   assert(!/YA NO ESTÁ EN EL BRÓKER[\s\S]*NVDA/.test(h5), 'la de Schwab (bróker sin leer) NO se acusa de haber desaparecido');
-  assert(/CARTERA ABIERTA/.test(h1) && /invertido/.test(h1) && /valor ahora/.test(h1), 'la barra de totales sale encima de la lista');
+  assert(/CARTERA ABIERTA/.test(h1) && /INVERTIDO/.test(h1) && /VALOR AHORA/.test(h1) && /GANANCIA \/ PÉRDIDA/.test(h1) && /2 posición\(es\) abierta\(s\) · 2 sin registrar/.test(h1), 'la barra de totales sale encima de la lista (v55: INVERTIDO · VALOR AHORA · GANANCIA / PÉRDIDA · N posición(es) abierta(s))', h1.slice(h1.indexOf('CARTERA ABIERTA'), h1.indexOf('CARTERA ABIERTA') + 200));
   assert(/leído hace segundos/.test(h1), 'la barra dice CUÁNDO se leyó (un dato viejo jamás se presenta como fresco)', h1.slice(h1.indexOf('cifras del bróker'), h1.indexOf('cifras del bróker') + 160));
   // caché de ayer: se pinta para no salir en blanco, pero NO sirve para acusar a nadie
   const cartVieja = { etrade: { estado: 'ok', items: [e0], otros: {}, ts: Date.now() - 20 * 3600000 }, schwab: { estado: 'sin', items: [] } };

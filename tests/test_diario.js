@@ -383,7 +383,7 @@ function sbGrabador(respuestas) {
   const hM = V.tarjetasResumenDiario(M, { modo: 'todo' }, cob.map(c => ({ ...c, pnl_periodo: -1 })));
   const etiquetas = (h) => [...h.matchAll(/<div class="lb">([^<]+)<\/div>/g)].map(x => x[1]);
   igual(etiquetas(hM), ['TOTAL DEL PERÍODO', '% GANADO POR $ OPERADO', 'ACIERTOS', 'E*TRADE', 'CHARLES SCHWAB', 'TASTYTRADE', 'PROMEDIO POR DÍA', 'PROYECCIÓN MENSUAL', 'PROYECCIÓN ANUAL'], 'v55 tarjetas: los títulos de la mesa vieja, en su orden, con una tarjeta por cuenta SOLO para las que tienen ejecuciones (moomoo sin fills no sale)');
-  assert(/<div class="dcard"><div class="lb">TOTAL DEL PERÍODO<\/div><div class="vl" style="color:var\(--rojo\)">-\$222\.60<\/div><div class="sb">Todo el historial · 2026-09-08 → 2026-09-25<\/div><\/div>/.test(hM), 'v55 TOTAL DEL PERÍODO: el total en grande (monoespaciado, rojo) y el pie «Todo el historial · primera ejecución del libro → hoy»');
+  assert(/<div class="dcard"><div class="lb">TOTAL DEL PERÍODO<\/div><div class="vl" style="color:var\(--rojo\)">-\$222\.60<\/div><div class="sb">Todo el historial · 2026-09-08 → 2026-09-25 · neto de comisiones<\/div><\/div>/.test(hM), 'v55 TOTAL DEL PERÍODO: el total en grande (monoespaciado, rojo) y el pie «Todo el historial · primera ejecución del libro → hoy · neto de comisiones» (revisión 2026-09-27: la tarjeta dice que el total va CON comisiones descontadas; la vieja decía «sin comisiones»)');
   assert(new RegExp('<div class="lb">% GANADO POR \\$ OPERADO</div><div class="vl" style="color:var\\(--(rojo|verde|tx2)\\)">' + re(pctD2(M.pct)) + '</div><div class="sb">P&amp;L ÷ costo de 4 operaciones cerradas</div>').test(hM), 'v55 % GANADO POR $ OPERADO: a dos decimales y el pie «P&L ÷ costo de N operaciones cerradas»');
   assert(/<div class="lb">ACIERTOS<\/div><div class="vl" style="color:var\(--tx\)">2 de 4<\/div><div class="sb">50% de las operaciones en verde<\/div>/.test(hM), 'v55 ACIERTOS: «2 de 4» y «50% de las operaciones en verde»');
   assert(/<div class="lb">E\*TRADE<\/div><div class="vl" style="color:var\(--rojo\)">-\$1\.00<\/div><div class="sb">cuenta desde 2026-09-16<\/div>/.test(hM) && /<div class="lb">CHARLES SCHWAB<\/div>[^]*?<div class="sb">cuenta desde 2026-09-08<\/div>/.test(hM) && /<div class="lb">TASTYTRADE<\/div>[^]*?<div class="sb">cuenta desde 2026-09-20<\/div>/.test(hM), 'v55 tarjeta por cuenta: su total del período y «cuenta desde» la primera ejecución del libro');
@@ -404,12 +404,14 @@ function sbGrabador(respuestas) {
   assert(/^<div class="card histcta"><span class="hcl">Historial de cada cuenta:<\/span> /.test(hC), 'v55 historial: empieza por «Historial de cada cuenta:» en una tarjeta .histcta');
   assert(/<span class="hc" title="5 ejecuciones · última 2026-09-24"><b>E\*TRADE<\/b> desde <b>2026-09-16<\/b> · con conexión ahora<\/span>/.test(hC), 'v55 historial: «E*TRADE desde 2026-09-16 · con conexión ahora» (la cuenta y la última ejecución van en el title)');
   assert(/<b>Charles Schwab \(thinkorswim\)<\/b> desde <b>2026-09-08<\/b> · <span style="color:var\(--oro\)">sin conexión ahora \(se muestra lo guardado\)<\/span>/.test(hC), 'v55 historial: «Charles Schwab (thinkorswim) desde 2026-09-08 · sin conexión ahora (se muestra lo guardado)» con la sesión caducada');
-  assert(/<b>tastytrade<\/b> desde <b>2026-09-20<\/b> · <span class="fresco">\(la escribe el worker\)<\/span>/.test(hC), 'v55 historial: «tastytrade desde 2026-09-20 (la escribe el worker)»');
+  assert(/<b>tastytrade<\/b> desde <b>2026-09-20<\/b> <span class="fresco">\(la escribe el worker\)<\/span>/.test(hC), 'v55 historial: «tastytrade desde 2026-09-20 (la escribe el worker)», sin « · » antes del paréntesis');
   assert(/Sin sesión aquí/.test(hC) && !/Sin sesión aquí/.test(V.seccionCoberturaDiario(cob.map(c => ({ ...c, sesion: c.sesion === 'caducada' ? 'ok' : c.sesion })), null)), 'v55 historial: la nota de reconectar solo sale cuando falta un login en este equipo');
   assert(/⚠ boom/.test(V.seccionCoberturaDiario(cob, 'boom')) && !/⚠/.test(hC), 'v55 historial: el error del libro se dice, y sin error no hay ⚠');
   assert(!/<br>/.test(hC) && (hC.match(/class="hc"/g) || []).length === 3, 'v55 historial: tres cuentas como <span class="hc"> (el CSS las pone en línea en el Mac y apiladas en el iPhone), sin saltos a mano');
-  assert(/<span class="hc" title=""><b>moomoo<\/b> sin ejecuciones en el libro todavía · <span class="fresco">\(la escribe el worker\)<\/span><\/span>/.test(V.seccionCoberturaDiario(D.coberturaFills(FILLS, { moomoo: 'worker' }), null)), 'v54/v55 historial: moomoo sin fills dice «sin ejecuciones en el libro todavía (la escribe el worker)»');
-  assert(/<b>moomoo<\/b> desde <b>2026-09-24<\/b> · <span class="fresco">\(la escribe el worker\)<\/span>/.test(V.seccionCoberturaDiario(D.coberturaFills(FILLS_MM, { moomoo: 'worker' }), null)), 'v55 historial: moomoo con fills dice desde cuándo (la fecha la escribe el worker)');
+  assert(/<span class="hc" title=""><b>moomoo<\/b> sin ejecuciones en el libro todavía <span class="fresco">\(la escribe el worker\)<\/span><\/span>/.test(V.seccionCoberturaDiario(D.coberturaFills(FILLS, { moomoo: 'worker' }), null)), 'v54/v55 historial: moomoo sin fills dice «sin ejecuciones en el libro todavía (la escribe el worker)»');
+  assert(/<b>moomoo<\/b> desde <b>2026-09-24<\/b> <span class="fresco">\(la escribe el worker\)<\/span>/.test(V.seccionCoberturaDiario(D.coberturaFills(FILLS_MM, { moomoo: 'worker' }), null)), 'v55 historial: moomoo con fills dice desde cuándo (la fecha la escribe el worker)');
+  igual([...V.seccionCoberturaDiario(D.coberturaFills(FILLS_MM, { etrade: 'ok', schwab: 'caducada', tasty: 'worker', moomoo: 'worker' }), null).matchAll(/<span class="hc"[^>]*><b>([^<]+)<\/b>/g)].map(x => x[1]), ['E*TRADE', 'moomoo', 'Charles Schwab (thinkorswim)', 'tastytrade'], 'v55 historial: el orden de la mesa vieja, E*TRADE · moomoo · Charles Schwab (thinkorswim) · tastytrade (las principales primero), venga como venga la cobertura');
+  igual([...V.seccionCoberturaDiario(D.coberturaFills(FILLS_MM, { etrade: 'ok', schwab: 'caducada', tasty: 'worker', moomoo: 'worker' }).reverse(), null).matchAll(/<span class="hc"[^>]*><b>([^<]+)<\/b>/g)].map(x => x[1]), ['E*TRADE', 'moomoo', 'Charles Schwab (thinkorswim)', 'tastytrade'], 'v55 historial: la cobertura al revés se ordena igual');
   // v55: el selector con las etiquetas y la pista de la mesa vieja
   assert(/<span class="etq">PERÍODO<\/span>/.test(hP) && /<span class="etq">SEMANAS<\/span>/.test(hP) && /<span class="etq">RANGO A MEDIDA<\/span>/.test(hP), 'v55 selector: filas PERÍODO · SEMANAS · RANGO A MEDIDA con su etiqueta');
   assert(hP.indexOf('Todo el historial') < hP.indexOf('>Hoy<') && hP.indexOf('>Hoy<') < hP.indexOf('Este mes') && hP.indexOf('Este mes') < hP.indexOf('Esta semana') && hP.indexOf('Esta semana') < hP.indexOf('>septiembre 2026<small'), 'v55 selector: Todo el historial · Hoy · Este mes · Esta semana · los meses (con su $), en ese orden');
@@ -570,7 +572,7 @@ function sbGrabador(respuestas) {
   const n1 = nb.items[1];
   igual([n1.invertido, n1.origen_invertido, n1.valor_actual, n1.mark_fuente, n1.abierta_estimada], [500, 'calculado', null, 'cierre_previo', true], 'normalizarPosBroker: sin valor/P&L del bróker el invertido sale del costo y queda marcado; el mark de ayer viaja como cierre_previo');
   {
-    const mk = (resp) => construir(['leerCarteraTasty', 'normalizarPosBroker', 'claveCartera', 'claveContrato', 'textoErrorTabla'], { sb: sbGrabador(resp), FOTO_VIEJA_MS: 3 * 3600000 });
+    const mk = (resp) => construir(['leerCarteraTasty', 'leerCarteraWorker', 'normalizarPosBroker', 'claveCartera', 'claveContrato', 'textoErrorTabla'], { sb: sbGrabador(resp), FOTO_VIEJA_MS: 3 * 3600000 });   // v55: leerCarteraTasty = leerCarteraWorker('tasty')
     const ahoraIso = new Date().toISOString();
     const rOk = await mk({ 'posiciones_broker:select': () => ({ data: FOTO.map(f => ({ ...f, actualizado_at: ahoraIso })), error: null }) }).leerCarteraTasty();
     assert(rOk.estado === 'ok' && rOk.items.length === 2 && rOk.vieja === false && rOk.origen === 'worker', 'leerCarteraTasty: lee posiciones_broker (broker=tasty) y entrega la cartera con estado ok');
@@ -584,7 +586,7 @@ function sbGrabador(respuestas) {
     assert(rCierre.cierre_previo === true, 'leerCarteraTasty: si todos los marks son el cierre de ayer, la cartera lo dice');
   }
   // casar, adoptar y la tarjeta con tasty
-  const C = construir(['casarCarteraLibro', 'claveCartera', 'claveContrato', 'brokersLeidos', 'itemsCartera', 'carteraLeidaAt'], { CART_FRESCO_MS: 30 * 60000 });
+  const C = construir(['casarCarteraLibro', 'claveCartera', 'claveContrato', 'brokersLeidos', 'itemsCartera', 'carteraLeidaAt'], { CART_FRESCO_MS: 30 * 60000, CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'] });
   const cartT = { etrade: { estado: 'sin', items: [] }, schwab: { estado: 'sin', items: [] }, tasty: { estado: 'ok', items: nb.items, otros: nb.otros, ts: Date.now(), vieja: false } };
   igual(C.brokersLeidos(cartT), ['tasty'], 'brokersLeidos: tasty entra como tercer bróker cuando su foto es fresca');
   igual(C.brokersLeidos({ ...cartT, tasty: { ...cartT.tasty, vieja: true } }), [], 'brokersLeidos: una foto VIEJA del worker no vale para acusar a nadie');
@@ -622,8 +624,8 @@ function sbGrabador(respuestas) {
     assert(pasos.length === 1 && /foto del worker de tastytrade es de hace 26 h: no se adopta/.test(pasos[0]), 'v53: adoptar() con la foto vieja frena con un toast antes de abrir el cuadro (aunque `ts` sea de ahora)');
     assert(/if \(lec && lec\.vieja\) \{/.test(extraer('adoptarConfirmar')) && /no se adopta hasta que la refresque/.test(extraer('adoptarConfirmar')), 'v53: la misma puerta en adoptarConfirmar (el cuadro pudo quedarse abierto)');
   }
-  const P = construir(['tarjetaPosicion', 'pnlVivo', 'corteTocado', 'corteDe', 'gtcDePosicion', 'gtcLimite', 'fmtPrima', 'preSalida', 'lineasCartera', 'margenHasta', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'planDePct'],
-    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto, PLANES, PLAN_PCT: 35 });
+  const P = construir(['tarjetaPosicion', 'avisoCorteHtml', 'pnlVivo', 'corteTocado', 'corteDe', 'gtcDePosicion', 'gtcLimite', 'fmtPrima', 'preSalida', 'lineasCartera', 'margenHasta', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'planDePct'],
+    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto, PLANES, PLAN_PCT: 35, bloqueGestor: () => '' });   // v55: el bloque del gestor se prueba en test_gestor_app.js
   const posTasty = { id: 7, estado: 'abierta', broker: 'tasty', symbol: 'META', direccion: 'PUT', strike: 700, expiracion: '2026-10-16', contratos: 1, prima_fill: 5, gtc_limite: 5.52, plan_pct: 10, stop_pct: 20, mark: 4.9, mark_at: new Date().toISOString() };
   const hPT = P.tarjetaPosicion(posTasty, nb.items[1], HOY, null);
   assert(/vende en tu bróker/.test(hPT) && !/MZ\.cortarPosicion/.test(hPT) && !/MZ\.abrirOrden/.test(hPT), 'tarjeta de una posición de tasty: dice «vende en tu bróker» donde v50 pone Cortar y NO ofrece órdenes');
@@ -632,9 +634,12 @@ function sbGrabador(respuestas) {
   const hPE = P.tarjetaPosicion({ ...posTasty, broker: 'etrade' }, null, HOY, null);
   assert(/MZ\.cortarPosicion\(7\)/.test(hPE) && /MZ\.abrirOrden/.test(hPE) && !/vende en tu bróker/.test(hPE), 'lo de siempre no cambia: en E*TRADE sigue el Cortar y las órdenes');
   // seccionPosiciones con los tres brókeres
-  const SP = construir(['seccionPosiciones', 'barraTotales', 'totalesCartera', 'itemsCartera', 'brokersLeidos', 'casarCarteraLibro', 'claveCartera', 'claveContrato', 'textoLecturaBroker',
+  const SP = construir(['seccionPosiciones', 'barraTotales', 'totalesGestor', 'brokerCuadraConFicha', 'gestorVigilado', 'alarmaSinVigilancia', 'anchoVista', 'gestorFormato', 'notaGestorHtml', 'itemsCartera', 'brokersLeidos', 'casarCarteraLibro', 'claveCartera', 'claveContrato', 'textoLecturaBroker',
     'lineaDifContratos', 'tarjetaSinRegistrar', 'tarjetaSoloLibro', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'carteraLeidaAt', 'haceCuanto', 'tarjetaFotoConocida'],
-    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000, tarjetaPosicion: (p) => `<div class="card">POS ${p.symbol}</div>`, brokersOperables: () => ['etrade'] });
+    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000, tarjetaPosicion: (p) => `<div class="card">POS ${p.symbol}</div>`, brokersOperables: () => ['etrade'],
+      CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'], BROKERS_WORKER: ['tasty', 'moomoo'], GESTOR_ANCHO_TABLA: 900, _gestor: { filas: [], pend: {} },
+      dineroD: (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      markGestor: (p, br) => (br && Number(br.mark) > 0) ? Number(br.mark) : (p && Number(p.mark) > 0 ? Number(p.mark) : null) });
   const h3 = SP.seccionPosiciones(libroT, { etrade: { estado: 'ok', items: [], otros: {}, ts: Date.now() }, schwab: { estado: 'sin', items: [] }, tasty: { ...cartT.tasty, foto_at: new Date(Date.now() - 120000).toISOString(), cierre_previo: false } }, PLANES.PLAN_10, HOY);
   assert(/CARTERA ABIERTA · TASTYTRADE/.test(h3) && /foto del worker de hace 2 min/.test(h3) && /SIN REGISTRAR/.test(h3) && /YA NO ESTÁ EN EL BRÓKER/.test(h3), 'Copiloto: la cartera de tasty entra como tercer bróker (totales, foto fechada, sin registrar, ya no está)');
   const h3v = SP.seccionPosiciones(libroT, { etrade: { estado: 'sin', items: [] }, schwab: { estado: 'sin', items: [] }, tasty: { ...cartT.tasty, vieja: true, foto_at: new Date(Date.now() - 26 * 3600000).toISOString(), cierre_previo: false } }, PLANES.PLAN_10, HOY);
@@ -872,7 +877,7 @@ function sbGrabador(respuestas) {
     ev('_ordSync.fuera = []');
     assert(/Sin órdenes activas en tu bróker/.test(ev('seccionOrdenes([])')), 'y sin ninguna, el vacío de siempre');
     assert(/ORDENES ACTIVAS EN TU BRÓKER|ÓRDENES ACTIVAS EN TU BRÓKER/.test(hOrd), 'el título de la sección no cambia');
-    assert(/\['etrade', 'schwab', 'tasty'\]/.test(extraer('firmaCartera')) && /uno\('tasty', leerCarteraTasty\)/.test(extraer('cargarCartera')) && /fotoDispositivoSincronizar\(abierto\)/.test(extraer('cargarCartera')), 'cargarCartera lee los tres brókeres y sincroniza la foto del dispositivo');
+    assert(/CART_BROKERS\.map/.test(extraer('firmaCartera')) && /uno\('tasty', leerCarteraTasty\)/.test(extraer('cargarCartera')) && /uno\('moomoo', leerCarteraMoomoo\)/.test(extraer('cargarCartera')) && /fotoDispositivoSincronizar\(abierto\)/.test(extraer('cargarCartera')), 'cargarCartera lee los cuatro brókeres (v55: moomoo por la foto del worker) y sincroniza la foto del dispositivo');
   }
 
   console.log('');

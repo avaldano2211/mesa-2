@@ -224,6 +224,64 @@
     .diario .tbl{font-size:12.5px}
     .diario .tbl td{padding:7px 9px}
   }
+  /* Gestor de posiciones v55 (igual al de la mesa vieja): la TABLA de 10 columnas en Mac (≥ 900 px,
+     dentro de #app.ancho) y el mismo bloque en cada tarjeta en iPhone. */
+  .gtbl{width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap}
+  .gtbl th{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;text-align:left;padding:6px 6px;border-bottom:1px solid var(--line)}
+  .gtbl td{padding:8px 5px 5px;vertical-align:top}
+  .gtbl tr.grow td{border-top:1px solid var(--line)}
+  .gtbl tr.grow td:first-child{white-space:normal;max-width:150px}
+  .gtbl tr.gdet td{padding:0 6px 10px;white-space:normal;font-size:11.5px;color:var(--tx2)}
+  .gtbl tr.gdet .aviso{margin-top:6px}
+  .gtbl tr.hot td{background:rgba(242,109,95,.07)}
+  .gtbl tr.dormida td{background:rgba(242,109,95,.13);opacity:.75}
+  .gtbl td.gparams{white-space:nowrap}
+  .gtbl .gp1,.gtbl .gp2{display:block}
+  .gtbl .gp2{margin-top:5px}
+  .gtbl .gchips{flex-direction:column;align-items:flex-start;gap:4px}
+  .gtbl .gsalta{min-width:128px}
+  .gsub2{display:block;font-size:10px;color:var(--tx3);white-space:nowrap;margin-top:2px;line-height:1.3}
+  .gl{font-size:11px;color:var(--tx2)}
+  .gin{width:52px;padding:4px 5px;font-size:12px;border-radius:8px;background:var(--bg2);border:1px solid var(--line);color:var(--tx);font-family:var(--mono);min-width:0;display:inline-block;-moz-appearance:textfield}
+  .gin::-webkit-inner-spin-button,.gin::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  .gin:focus{outline:none;border-color:var(--oro)}
+  .gchk{font-size:11.5px;color:var(--tx);white-space:nowrap;cursor:pointer;margin-left:6px;display:inline-flex;align-items:center;gap:4px}
+  .gchk input,.gact{width:auto;height:auto;margin:0;accent-color:var(--oro);vertical-align:middle}
+  .gchips{display:inline-flex;gap:4px;flex-wrap:wrap}
+  .gchip{background:var(--card);border:1px solid var(--line);color:var(--tx2);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:700;font-family:var(--sans);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .gchip.on{background:var(--oro);border-color:var(--oro);color:#0B0E14}
+  .gbrk{font-size:9px;border:1px solid var(--tx3);border-radius:4px;padding:0 4px;margin-left:5px;color:var(--tx2);vertical-align:middle;font-weight:600}
+  .gvender{background:var(--rojo);color:#fff;border:none;border-radius:9px;padding:8px 10px;font-size:12px;font-weight:700;font-family:var(--sans);cursor:pointer;white-space:nowrap}
+  .gtbl .gvender{white-space:normal;max-width:96px;line-height:1.25}
+  .gbarra .gnums{display:flex;gap:22px;flex-wrap:wrap;align-items:baseline;margin-top:6px}
+  .gbarra .gnums b{font-family:var(--mono);font-size:19px;margin-left:8px}
+  .gbarra .gnums .gl{font-size:10.5px;letter-spacing:.05em;font-weight:700}
+  .gbarra .gnums .gsub2{margin-left:8px}
+  .gest{margin-top:9px;padding:9px 10px;border-radius:11px;background:var(--bg2);border:1px solid var(--line)}
+  .gest.dormida{background:rgba(242,109,95,.10);border-color:rgba(242,109,95,.4)}
+  .gest .gparams{display:flex;flex-wrap:wrap;align-items:center;gap:4px;row-gap:7px}
+  .gest .gsalta b{font-size:17px}
+  .gest .gsalta .gsub2{white-space:normal}
+  .card.dormida{background:rgba(242,109,95,.08);border-color:rgba(242,109,95,.45)}
+  .gcard .gchipbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .gchart{margin-top:8px;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
+  .gchart:active{cursor:grabbing}
+  .gchart svg{display:block;width:100%;height:auto;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .gchart svg text{font-family:var(--mono);font-size:9px}
+  .gchart .vacio{padding:26px 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .gleg{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;margin-top:8px;align-items:center}
+  .gleg span i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:5px}
+  .gleg span.prima i{border-top-style:dotted}
+  .gin[disabled],.gchip[disabled]{opacity:.45;cursor:not-allowed}
+  /* iPhone (< 900 px): controles del gestor y del gráfico con área de toque (≥ 32 px; la casilla Activo decide si una
+     posición queda sin vigilancia y medía 13 px). En Mac las reglas de arriba siguen tal cual. */
+  @media (max-width:899px){
+    .gchip{padding:9px 12px;font-size:12px;min-height:34px}
+    .gin{padding:8px 6px;font-size:14px;min-height:34px;width:58px}
+    .gvender{padding:10px 13px;font-size:13px;min-height:36px}
+    .gchk{padding:8px 6px;margin:-8px 0 -8px 0;min-height:34px}
+    .gchk input,.gact{width:22px;height:22px}
+  }
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400..600&display=swap">
