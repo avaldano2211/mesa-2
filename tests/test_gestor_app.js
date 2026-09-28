@@ -246,12 +246,12 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
 
   // ════════════════ 6. La BARRA: INVERTIDO · VALOR AHORA · GANANCIA/PÉRDIDA (neto del bróker + comisiones) ════════════════
   {
-    const B = construir(['totalesGestor', 'barraTotales', 'brokerCuadraConFicha', 'carteraLeidaAt'], { textoVivoEstado: () => '',  esc, dineroD, colUtil, BROKER_NOMBRE, haceCuanto, CART_FRESCO_MS: 30 * 60000, CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'] });
+    const B = construir(['totalesGestor', 'barraTotales', 'brokerCuadraConFicha', 'carteraLeidaAt', 'gananciaTotalesHtml', 'comisionesTotalesHtml', 'sublineaTotalesHtml'], { textoVivoEstado: () => '',  esc, dineroD, colUtil, BROKER_NOMBRE, haceCuanto, CART_FRESCO_MS: 30 * 60000, CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'] });
     const brSpy = { broker: 'etrade', contratos: 2, prima_fill: 3.30, mark: 4.20, valor_actual: 840, invertido: 660, pnl_usd: 178.70 };
     const brAapl = { broker: 'etrade', symbol: 'AAPL', contratos: 2, prima_fill: 1.32, mark: 1.55, valor_actual: 310, invertido: 264, pnl_usd: 44.70 };
     const t = B.totalesGestor([{ tipo: 'libro', p: SPY, br: brSpy, grupo: null, mark: 4.20 }, { tipo: 'broker', br: brAapl }]);
-    igual([t.n, t.sinReg, t.invertido, t.valor, t.pnl, t.pnl_pct, t.comisiones, t.neto, t.sinMark], [2, 1, 924, 1150, 223.4, 24.2, 2.6, 2, 0],
-      'invertido = Σ costo × qty × 100 (660 + 264), valor = Σ valor del bróker (840 + 310), P&L = el NETO del bróker (178.70 + 44.70) y la diferencia con el bruto son comisiones (2.60)');
+    igual([t.n, t.sinReg, t.invertido, t.valor, t.pnl, t.pnl_pct, t.comisiones, t.neto, t.sinMark], [2, 1, 924, 1150, 223.4, 24.1, 2.6, 2, 0],
+      'invertido = Σ costo × qty × 100 (660 + 264), valor = Σ valor del bróker (840 + 310), P&L = el NETO del bróker (178.70 + 44.70) y la diferencia con el bruto son comisiones (2.60); el % va sobre 924 + 2.60 (la misma base que la celda: neto / invertido del bróker, v56)');
     const t2 = B.totalesGestor([{ tipo: 'libro', p: { ...SPY, contratos: 1 }, br: { ...brSpy, contratos: 3 }, grupo: { fichas: 2, libroContratos: 3 }, mark: 4.20 }, { tipo: 'libro', p: { ...SPY, id: 2, contratos: 2 }, br: { ...brSpy, contratos: 3 }, grupo: { fichas: 2, libroContratos: 3 }, mark: 4.20 }]);
     igual([t2.invertido, t2.valor, t2.pnl, t2.neto, t2.comisiones], [990, 1260, 270, 0, 0], 'con DOS fichas del mismo contrato el bróker manda una sola línea: se suma ficha a ficha con el mark (no el neto del bróker, que sería doble)');
     const t3 = B.totalesGestor([{ tipo: 'libro', p: { ...SPY, mark: null }, br: null, grupo: null, mark: null }]);
@@ -262,7 +262,7 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
     const h = B.barraTotales(filas, cart);
     assert(/CARTERA ABIERTA · E\*TRADE/.test(h) && /2 posición\(es\) abierta\(s\) · 1 sin registrar/.test(h), 'cabecera: CARTERA ABIERTA · bróker · «2 posición(es) abierta(s) · 1 sin registrar»', h.slice(0, 300));
     assert(/INVERTIDO<\/span><b class="mono" id="g_sum_inv">\$924\.00/.test(h) && /VALOR AHORA<\/span><b class="mono" id="g_sum_val">\$1,150\.00/.test(h), 'INVERTIDO $924.00 · VALOR AHORA $1,150.00');
-    assert(/GANANCIA \/ PÉRDIDA<\/span><b class="mono" id="g_sum_dif" style="color:var\(--verde\)">\+\$223\.40 <span[^>]*>\(\+24\.2%\)/.test(h), 'GANANCIA / PÉRDIDA +$223.40 (+24.2%) en verde', h);
+    assert(/GANANCIA \/ PÉRDIDA<\/span><b class="mono" id="g_sum_dif" style="color:var\(--verde\)">\+\$223\.40 <span[^>]*>\(\+24\.1%\)/.test(h), 'GANANCIA / PÉRDIDA +$223.40 (+24.1%) en verde', h);
     assert(/neto — el bróker se llevó \$2\.60 en comisiones/.test(h), 'la coletilla de comisiones (diferencia ≥ 50 centavos)');
     assert(/P&amp;L neto del bróker en 2 de 2/.test(h) && /leído hace segundos/.test(h), 'y se dice de dónde sale el P&L y cuándo se leyó');
     const hSin = B.barraTotales([{ tipo: 'libro', p: SPY, br: null, grupo: null, mark: 4.18 }], cart);

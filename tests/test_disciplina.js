@@ -19,7 +19,7 @@ const hoyNY = () => HOY;
   const p = { contratos: 2, prima_fill: 3.30, mark: 4.20, mfe: 4.50, mae: 3.00, mark_at: new Date(Date.now() - 2 * 60000).toISOString(), strike: 769, expiracion: '2026-09-26' };
   const h = P.pnlVivo(p);
   assert(/mark <b[^>]*>\$4\.20<\/b>/.test(h), 'muestra el mark', h);
-  assert(/P&amp;L <b style="color:var\(--verde\)">\+\$180 \(\+27%\)<\/b>/.test(h), 'P&L en USD con el fill y los contratos: (4.20 − 3.30) × 2 × 100 = +$180 (+27%)');
+  assert(/P&amp;L bruto <b style="color:var\(--verde\)">\+\$180 \(\+27%\)<\/b>/.test(h), 'P&L en USD con el fill y los contratos: (4.20 − 3.30) × 2 × 100 = +$180 (+27%)');
   assert(/MFE <span[^>]*>\+\$240<\/span> \/ MAE <span[^>]*>-\$60<\/span>/.test(h), 'MFE y MAE son el mejor y peor MARK convertidos a USD');
   assert(/hace 2 min/.test(h), 'y la antigüedad del mark');
   assert(/color:var\(--rojo\)">-\$100 \(-15%\)/.test(P.pnlVivo({ ...p, mark: 2.80 })), 'perdiendo: rojo y con signo');

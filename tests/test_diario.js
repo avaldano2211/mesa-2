@@ -611,7 +611,7 @@ function sbGrabador(respuestas) {
   igual([fa.broker, fa.symbol, fa.direccion, fa.strike, fa.expiracion, fa.contratos, fa.prima_fill, fa.plan_pct, fa.stop_pct, fa.abierta_fecha_ny, fa._estimada, fa.mark], ['tasty', 'META', 'PUT', 700, '2026-10-16', 1, 5, 10, 20, HOY, true, 4.9], 'adoptar una de tasty: la misma ficha que E*TRADE/Schwab, con el plan congelado, HOY como apertura (estimada) y el mark del bróker');
   igual(A.adoptarDecide(nb.items[0], libroT).accion, 'existe', 'adoptar es idempotente también con tasty: si ya hay ficha abierta no se crea otra');
   igual(A.adoptarDecide(nb.items[1], libroT).accion, 'insertar', '…y si no la hay, se inserta');
-  const S = construir(['tarjetaSinRegistrar', 'textoVencimiento', 'diasAlVencimiento', 'durTxt', 'claveSlug', 'lineaValorBroker'], { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto });
+  const S = construir(['tarjetaSinRegistrar', 'textoVencimiento', 'diasAlVencimiento', 'durTxt', 'claveSlug', 'lineaValorBroker', 'esVivo'], { VIVO_FRESCA_MS: 15000,  esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto });
   const hT = S.tarjetaSinRegistrar(nb.items[1], PLANES.PLAN_10, HOY, { viejo: false, txt: '' });
   assert(/vende en tu bróker/.test(hT) && /cierre de ayer/.test(hT) && /foto del worker de hace/.test(hT) && /MZ\.adoptar\(/.test(hT), 'tarjeta SIN REGISTRAR de tasty: Adoptar, «vende en tu bróker», la antigüedad de la foto y «cierre de ayer»');
   const hTv = S.tarjetaSinRegistrar(nb.items[1], PLANES.PLAN_10, HOY, { viejo: true, fotoVieja: true, txt: 'hace 26 h' });
@@ -624,8 +624,7 @@ function sbGrabador(respuestas) {
     assert(pasos.length === 1 && /foto del worker de tastytrade es de hace 26 h: no se adopta/.test(pasos[0]), 'v53: adoptar() con la foto vieja frena con un toast antes de abrir el cuadro (aunque `ts` sea de ahora)');
     assert(/if \(lec && lec\.vieja\) \{/.test(extraer('adoptarConfirmar')) && /no se adopta hasta que la refresque/.test(extraer('adoptarConfirmar')), 'v53: la misma puerta en adoptarConfirmar (el cuadro pudo quedarse abierto)');
   }
-  const P = construir(['tarjetaPosicion', 'avisoCorteHtml', 'pnlVivo', 'corteTocado', 'corteDe', 'gtcDePosicion', 'gtcLimite', 'fmtPrima', 'preSalida', 'lineasCartera', 'margenHasta', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'planDePct'],
-    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto, PLANES, PLAN_PCT: 35, bloqueGestor: () => '' });   // v55: el bloque del gestor se prueba en test_gestor_app.js
+  const P = construir(['tarjetaPosicion', 'avisoCorteHtml', 'pnlVivo', 'corteTocado', 'corteDe', 'gtcDePosicion', 'gtcLimite', 'fmtPrima', 'preSalida', 'lineasCartera', 'margenHasta', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'planDePct', 'esVivo'], { VIVO_FRESCA_MS: 15000,  esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto, PLANES, PLAN_PCT: 35, bloqueGestor: () => '' });   // v55: el bloque del gestor se prueba en test_gestor_app.js
   const posTasty = { id: 7, estado: 'abierta', broker: 'tasty', symbol: 'META', direccion: 'PUT', strike: 700, expiracion: '2026-10-16', contratos: 1, prima_fill: 5, gtc_limite: 5.52, plan_pct: 10, stop_pct: 20, mark: 4.9, mark_at: new Date().toISOString() };
   const hPT = P.tarjetaPosicion(posTasty, nb.items[1], HOY, null);
   assert(/vende en tu bróker/.test(hPT) && !/MZ\.cortarPosicion/.test(hPT) && !/MZ\.abrirOrden/.test(hPT), 'tarjeta de una posición de tasty: dice «vende en tu bróker» donde v50 pone Cortar y NO ofrece órdenes');
@@ -635,7 +634,7 @@ function sbGrabador(respuestas) {
   assert(/MZ\.cortarPosicion\(7\)/.test(hPE) && /MZ\.abrirOrden/.test(hPE) && !/vende en tu bróker/.test(hPE), 'lo de siempre no cambia: en E*TRADE sigue el Cortar y las órdenes');
   // seccionPosiciones con los tres brókeres
   const SP = construir(['seccionPosiciones', 'barraTotales', 'totalesGestor', 'brokerCuadraConFicha', 'gestorVigilado', 'alarmaSinVigilancia', 'anchoVista', 'gestorFormato', 'notaGestorHtml', 'itemsCartera', 'brokersLeidos', 'casarCarteraLibro', 'claveCartera', 'claveContrato', 'textoLecturaBroker',
-    'lineaDifContratos', 'tarjetaSinRegistrar', 'tarjetaSoloLibro', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'carteraLeidaAt', 'haceCuanto', 'tarjetaFotoConocida', 'claveSlug', 'lineaValorBroker'], { textoVivoEstado: () => '',  esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000, tarjetaPosicion: (p) => `<div class="card">POS ${p.symbol}</div>`, brokersOperables: () => ['etrade'],
+    'lineaDifContratos', 'tarjetaSinRegistrar', 'tarjetaSoloLibro', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'carteraLeidaAt', 'haceCuanto', 'tarjetaFotoConocida', 'claveSlug', 'lineaValorBroker', 'armarFilasGestor', 'gananciaTotalesHtml', 'comisionesTotalesHtml', 'sublineaTotalesHtml', 'esVivo'], { aplicarVivoLista: () => 0, VIVO_FRESCA_MS: 15000,  textoVivoEstado: () => '',  esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000, tarjetaPosicion: (p) => `<div class="card">POS ${p.symbol}</div>`, brokersOperables: () => ['etrade'],
       CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'], BROKERS_WORKER: ['tasty', 'moomoo'], GESTOR_ANCHO_TABLA: 900, _gestor: { filas: [], pend: {} },
       dineroD: (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
       markGestor: (p, br) => (br && Number(br.mark) > 0) ? Number(br.mark) : (p && Number(p.mark) > 0 ? Number(p.mark) : null) });
@@ -876,7 +875,7 @@ function sbGrabador(respuestas) {
     ev('_ordSync.fuera = []');
     assert(/Sin órdenes activas en tu bróker/.test(ev('seccionOrdenes([])')), 'y sin ninguna, el vacío de siempre');
     assert(/ORDENES ACTIVAS EN TU BRÓKER|ÓRDENES ACTIVAS EN TU BRÓKER/.test(hOrd), 'el título de la sección no cambia');
-    assert(/CART_BROKERS\.map/.test(extraer('firmaCartera')) && /uno\('tasty', leerCarteraTasty\)/.test(extraer('cargarCartera')) && /uno\('moomoo', leerCarteraMoomoo\)/.test(extraer('cargarCartera')) && /fotoDispositivoSincronizar\(abierto\)/.test(extraer('cargarCartera')), 'cargarCartera lee los cuatro brókeres (v55: moomoo por la foto del worker) y sincroniza la foto del dispositivo');
+    assert(/CART_BROKERS\.map/.test(extraer('firmaCartera')) && /uno\('tasty', leerCarteraTasty\)/.test(extraer('cargarCartera')) && /uno\('moomoo', leerCarteraMoomoo\)/.test(extraer('cargarCartera')) && /fotoDispositivoSincronizar\(abierto === true\)/.test(extraer('cargarCartera')), 'cargarCartera lee los cuatro brókeres (v55: moomoo por la foto del worker) y sincroniza la foto del dispositivo');
   }
 
   console.log('');

@@ -162,8 +162,11 @@ function suscribir() {
     .subscribe();
   // v56: la foto del worker (moomoo/tasty en posiciones_broker, 0019) llega al instante en vez de esperar la
   // relectura de 20 s. En su PROPIO canal, como senales_ocultas: si 0019 no está aplicada, el resto no se cae.
+  // Solo INSERT y UPDATE: los DELETE de Realtime no pasan por RLS y viajarían con (user_id, broker, clave)
+  // a cualquier suscriptor; la app no los necesita (la foto nueva ya llega por el upsert).
   sb.channel('mesa2-broker')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'posiciones_broker' }, fotoBrokerCambio)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posiciones_broker' }, fotoBrokerCambio)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'posiciones_broker' }, fotoBrokerCambio)
     .subscribe();
 }
 
@@ -1589,9 +1592,11 @@ function pnlVivo(p) {
   const conSigno = (n) => (n > 0 ? '+' : '') + usd(n);
   const aUsd = (m) => (m == null || !Number.isFinite(Number(m))) ? null : Math.round((Number(m) - fill) * c * 100 * 100) / 100;
   const exc = (m) => { const u = aUsd(m); return u == null ? '—' : conSigno(u); };
+  // el MFE/MAE del worker es de su último minuto: con un mark vivo más alto (o más bajo) se dice el de ahora (v56)
+  const conMark = (m, f) => (m == null || m === '' || !Number.isFinite(Number(m))) ? null : f(Number(m), mark);
   return `<div class="mut mono" style="margin-top:6px;font-size:11.5px">mark <b style="color:var(--tx)">$${esc(mark.toFixed(2))}</b>
-    · P&amp;L <b style="color:${col}">${conSigno(pnl)}${pct != null ? ` (${pct > 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}</b>
-    · MFE <span style="color:var(--verde)">${exc(p.mfe)}</span> / MAE <span style="color:var(--rojo)">${exc(p.mae)}</span>
+    · P&amp;L bruto <b style="color:${col}">${conSigno(pnl)}${pct != null ? ` (${pct > 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}</b>
+    · MFE <span style="color:var(--verde)">${exc(conMark(p.mfe, Math.max))}</span> / MAE <span style="color:var(--rojo)">${exc(conMark(p.mae, Math.min))}</span>
     · ${esc(haceCuanto(p.mark_at).txt)}</div>`;
 }
 
@@ -1627,7 +1632,7 @@ function tarjetaPosicion(p, br, hoy, grupo) {
       <span class="mut">corte -${esc(Number(p.stop_pct))}% <b class="mono" style="color:var(--rojo)">$${esc(fmtPrima(corte))}</b></span></div>` : ''}
     ${avisoCorteHtml(p, corte, tocado, operable)}
     <div id="g_vivo_${Number(p.id)}">${pnlVivo(p)}</div>
-    ${lineasCartera(p, br, hoy, grupo)}
+    <div id="g_bl_${Number(p.id)}">${lineasCartera(p, br, hoy, grupo)}</div>
     ${bloqueGestor(p, br)}
     ${corte != null && !operable ? `<div class="fresco" style="margin-top:6px;color:var(--rojo)">Corte -${esc(Number(p.stop_pct))}% ($${esc(fmtPrima(corte))}): <b>vende en tu bróker</b> — la Mesa no manda órdenes a ${esc(BROKER_NOMBRE[p.broker] || p.broker)}; aquí solo registras la salida.</div>` : ''}
     <div class="fila" style="margin-top:9px;gap:8px">
@@ -2728,7 +2733,8 @@ function osiDe(sym, exp, strike, lado) {
   return String(sym).toUpperCase().padEnd(6, ' ') + y.slice(2) + m + d + (lado === 'PUT' ? 'P' : 'C') + String(k).padStart(8, '0');
 }
 function desOsi(osi) {
-  const m = /^([A-Z.$]{1,6})\s*(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(String(osi || '').trim().toUpperCase());
+  // relleno con espacios (OCC/Schwab) o con guiones (osiKey de E*TRADE: «NVDA--260928C00235000», v56)
+  const m = /^([A-Z.$]{1,6})[\s-]*(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(String(osi || '').trim().toUpperCase());
   if (!m) return null;
   return { symbol: m[1], expiracion: `20${m[2]}-${m[3]}-${m[4]}`, strike: Number(m[6]) / 1000, direccion: m[5] === 'P' ? 'PUT' : 'CALL' };
 }
@@ -3066,6 +3072,7 @@ const CART_K = 'mz_cartera';
 // v56 (2026-09-28, «los valores no se están actualizando en tiempo real»): con el mercado abierto la cartera se
 // relee cada 20 s (antes 60) y, aparte, el gestor COTIZA cada 5 s (VIVO_MS) y repinta en sitio.
 const CART_TTL_ABIERTO = 20000, CART_TTL_CERRADO = 15 * 60000, CART_TTL_VETADA = 30 * 60000;
+const CART_TTL_EXTENDIDO = 60000;     // pre/post mercado (v56): la cartera apenas se mueve; cada minuto basta
 // Ventana en la que una lectura todavía vale para AFIRMAR algo. Una cartera guardada
 // en este equipo se vuelve a pintar al arrancar (para no salir en blanco), pero con
 // su antigüedad a la vista, y si ya es vieja NO sirve para decir «el bróker ya no la
@@ -3081,10 +3088,23 @@ const CART_MIN_FORZAR_MS = 3000;      // «Volver a preguntar» es un toque suyo
 // CART_BROKERS es el orden de la cartera; BROKERS_WORKER los que se leen de la foto del worker.
 const CART_BROKERS = ['etrade', 'schwab', 'tasty', 'moomoo'];
 const BROKERS_WORKER = ['tasty', 'moomoo'];
-const _cart = { etrade: null, schwab: null, tasty: null, moomoo: null, enVuelo: {}, firma: '' };   // v52: tasty = la foto del worker (posiciones_broker); v55: moomoo igual
+const _cart = { etrade: null, schwab: null, tasty: null, moomoo: null, enVuelo: {}, firma: '', releer: {} };   // releer[b]: Realtime pidió releer esa foto (v56)   // v52: tasty = la foto del worker (posiciones_broker); v55: moomoo igual
 
 // ¿Mercado abierto ahora? Manda el latido FRESCO del worker; sin él, el reloj de
 // NY (9:30–16:00, lunes a viernes; sin calendario de festivos, igual que antesDe1030NY).
+// v56: la sesión de NY según el latido FRESCO del worker (regular · pre/post = extendida · cerrado) o, sin él,
+// el reloj (9:30–16:00 = regular). La cotización EN VIVO solo corre en la REGULAR: en pre/post E*TRADE devuelve
+// el cierre (CLOSING/EH_*), que no es un precio de ahora; y la cartera se relee a 60 s, no a 20.
+function sesionNY(hb) {
+  const fresco = hb && hb.latido_at && haceCuanto(hb.latido_at).min <= 5;
+  if (fresco && hb.sesion) return String(hb.sesion) === 'regular' ? 'regular' : (['pre', 'post'].includes(String(hb.sesion)) ? 'extendida' : 'cerrado');
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  const v = (t) => (f.find(x => x.type === t) || {}).value;
+  if (v('weekday') === 'Sat' || v('weekday') === 'Sun') return 'cerrado';
+  const m = Number(v('hour')) * 60 + Number(v('minute'));
+  return (m >= 570 && m <= 960) ? 'regular' : 'cerrado';
+}
 function mercadoAbiertoNY(hb) {
   const fresco = hb && hb.latido_at && haceCuanto(hb.latido_at).min <= 5;
   if (fresco && hb.sesion) return ['regular', 'pre', 'post'].includes(String(hb.sesion));
@@ -3484,7 +3504,7 @@ function carteraToca(prev, abierto, forzar) {
   const edad = Date.now() - prev.ts;
   if (forzar) return edad >= CART_MIN_FORZAR_MS;
   if (edad < CART_MIN_MS) return false;
-  const base = abierto ? CART_TTL_ABIERTO : CART_TTL_CERRADO;
+  const base = abierto === 'extendido' ? CART_TTL_EXTENDIDO : abierto ? CART_TTL_ABIERTO : CART_TTL_CERRADO;   // v56: pre/post a 60 s
   const fallos = Math.max(1, Number(prev.fallos) || 1);
   const ttl = prev.estado === 'no_permitido' ? CART_TTL_VETADA
     : (prev.estado === 'error' || prev.estado === 'sin_red') ? Math.min(base * fallos, CART_TTL_VETADA)
@@ -3509,11 +3529,15 @@ function firmaCartera(cart) {
 // bloquear el dibujado: quien llama pinta con lo que hay y redibuja si cambió.
 // Devuelve true cuando la firma cambió.
 async function cargarCartera(forzar, hb) {
-  const abierto = mercadoAbiertoNY(hb);
+  const ses = sesionNY(hb);
+  const abierto = ses === 'regular' ? true : (ses === 'extendida' ? 'extendido' : false);   // v56: 20 s · 60 s · 15 min
   const antes = firmaCartera(_cart);
   const uno = async (b, leer) => {
-    if (!carteraToca(_cart[b], abierto, forzar)) return;
+    // v56: la marca `releer` (Realtime: el worker escribió una foto nueva) vale aunque una lectura acabe de
+    // reemplazar _cart[b] con su ts fresco; se consume al ARRANCAR la lectura, no al marcarla
+    if (!_cart.releer[b] && !carteraToca(_cart[b], abierto, forzar)) return;
     if (_cart.enVuelo[b]) return _cart.enVuelo[b];
+    _cart.releer[b] = false;
     _cart.enVuelo[b] = (async () => {
       let res;
       try { res = await leer(); } catch (e) { res = { estado: 'sin_red', detalle: String((e && e.message) || e).slice(0, 90), items: [], otros: null }; }
@@ -3530,8 +3554,8 @@ async function cargarCartera(forzar, hb) {
   // v52: la foto de E*TRADE/Schwab de ESTE equipo sube a posiciones_broker (origen dispositivo) y,
   // sin sesión aquí, baja la última conocida. Nunca bloquea el dibujado más que lo que tarda la base.
   try { aplicarVivo(); } catch (_) {}                                   // v56: una cotización de hace segundos manda sobre el lastTrade recién leído
-  try { await fotoDispositivoSincronizar(abierto); } catch (_) {}
-  try { localStorage.setItem(CART_K, JSON.stringify({ etrade: _cart.etrade, schwab: _cart.schwab, tasty: _cart.tasty, moomoo: _cart.moomoo })); } catch (_) {}
+  try { await fotoDispositivoSincronizar(abierto === true); } catch (_) {}   // la foto sube las cifras DEL BRÓKER (fotoFilaDe) y «vivo» solo en la regular
+  try { localStorage.setItem(CART_K, JSON.stringify(carteraParaCache())); } catch (_) {}   // sin la cotización viva: mañana sería vieja
   const ahora = firmaCartera(_cart);
   if (ahora !== antes) { _cart.firma = ahora; return true; }
   return false;
@@ -3602,7 +3626,7 @@ function lineasCartera(p, br, hoy, grupo) {
       + `${esc(BROKER_NOMBRE[br.broker] || br.broker)} ${cuadra ? 'confirma' : 'dice'} ×${esc(br.contratos)}`
       + (varias ? ` <span class="fresco">(tu libro: ${esc(grupo.fichas)} fichas, ×${esc(nl)} en total)</span>` : '')
       + ` · ${br.valor_actual != null ? `valor <b style="color:var(--tx)">${usd(br.valor_actual)}</b>` : '<span class="fresco">valor: sin dato</span>'}`
-      + (br.pnl_usd != null ? ` · P&amp;L <b style="color:${colUtil(br.pnl_usd)}">${br.pnl_usd > 0 ? '+' : ''}${usd(br.pnl_usd)}</b> <span class="fresco">(del bróker)</span>`
+      + (br.pnl_usd != null ? ` · P&amp;L <b style="color:${colUtil(br.pnl_usd)}">${br.pnl_usd > 0 ? '+' : ''}${usd(br.pnl_usd)}</b> <span class="fresco">(${esVivo(br) ? 'en vivo' : 'del bróker'})</span>`
         : ' · <span class="fresco">P&amp;L: sin dato</span>')
       + `</div>`;
     // v52: una FOTO (posiciones_broker) lleva su fecha, y un mark que es el cierre de ayer se dice
@@ -3743,27 +3767,41 @@ function totalesGestor(filas) {
   // «comisiones» solo si cuadra con lo que el bróker dice haberse llevado (cuando lo dice, ±50 ¢); si no, la
   // diferencia se enseña como lo que es: valor − invertido − neto, sin bautizarla
   const comisionesOk = neto > 0 && (comBrN === 0 || comBrN < neto || Math.abs(comBr - comisiones) <= 0.5);
+  // el % de la barra sobre lo invertido CON las comisiones cuando cuadran: la misma base que la celda (neto /
+  // invertido del bróker), así celda y barra dicen el mismo % (revisión 2026-09-28)
+  const base = inv + (comisionesOk && neto > 0 ? comisiones : 0);
   return { n, sinReg, sinMark, neto, noCuadra, invertido: r2(inv), valor: r2(val), pnl: r2(pnl),
-    pnl_pct: inv > 0 ? Math.round(pnl / inv * 1000) / 10 : null, comisiones, comisiones_ok: comisionesOk, brokers };
+    pnl_pct: base > 0 ? Math.round(pnl / base * 1000) / 10 : null, comisiones, comisiones_ok: comisionesOk, brokers };
+}
+function gananciaTotalesHtml(t) {
+  const signo = (x) => (x > 0 ? '+' : '');
+  return `${signo(t.pnl)}${dineroD(t.pnl)}${t.pnl_pct != null ? ` <span style="font-size:13px">(${signo(t.pnl_pct)}${t.pnl_pct.toFixed(1)}%)</span>` : ''}`;
+}
+function comisionesTotalesHtml(t) {
+  if (!(Math.abs(t.comisiones) >= 0.5 && t.neto)) return '';
+  return t.comisiones_ok ? `<span class="gsub2">neto — el bróker se llevó ${dineroD(Math.abs(t.comisiones))} en comisiones</span>`
+    : `<span class="gsub2" style="color:var(--oro)">neto del bróker: ${dineroD(Math.abs(t.comisiones))} de diferencia con valor − invertido (no cuadra con las comisiones que reporta)</span>`;
+}
+function sublineaTotalesHtml(t, cart) {
+  const parcial = CART_BROKERS.some(b => cart && cart[b] && !['ok', 'sin', 'sin_foto'].includes(cart[b].estado));
+  const leido = carteraLeidaAt(cart);
+  const viejo = leido > 0 && Date.now() - leido >= CART_FRESCO_MS;
+  return `${t.neto ? `P&amp;L neto del bróker en ${t.neto} de ${t.n}` : 'P&amp;L = valor − lo pagado (el bróker no dio su neto)'}${t.noCuadra ? ` · <b style="color:var(--oro)">${t.noCuadra} con otra cantidad o costo en el bróker: va con el libro (mark × contratos), sin su neto</b>` : ''}${t.sinMark ? ` · ${t.sinMark} sin precio de ahora: ${t.sinMark > 1 ? 'valen' : 'vale'} lo pagado` : ''}${leido ? ' · leído ' + esc(haceCuanto(new Date(leido).toISOString()).txt) : ''}${viejo ? ' · <b style="color:var(--oro)">lectura vieja: preguntando de nuevo…</b>' : ''}${parcial ? ' · <b style="color:var(--oro)">suma SOLO lo que se pudo leer</b>' : ''}`;
 }
 function barraTotales(filas, cart) {
   const t = totalesGestor(filas);
   if (!t.n) return '';
   const nom = (b) => BROKER_NOMBRE[b] || b;
-  const parcial = CART_BROKERS.some(b => cart && cart[b] && !['ok', 'sin', 'sin_foto'].includes(cart[b].estado));
-  const leido = carteraLeidaAt(cart);
-  const viejo = leido > 0 && Date.now() - leido >= CART_FRESCO_MS;
-  const signo = (x) => (x > 0 ? '+' : '');
   return `<div class="card gbarra">
     <div class="fila"><span class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">CARTERA ABIERTA · ${esc(t.brokers.map(nom).join(' + ').toUpperCase())}</span>
       <span class="fresco">${t.n} posición(es) abierta(s)${t.sinReg ? ` · ${t.sinReg} sin registrar` : ''}</span></div>
     <div class="gnums">
       <div><span class="gl">INVERTIDO</span><b class="mono" id="g_sum_inv">${dineroD(t.invertido)}</b></div>
       <div><span class="gl">VALOR AHORA</span><b class="mono" id="g_sum_val">${dineroD(t.valor)}</b></div>
-      <div><span class="gl">GANANCIA / PÉRDIDA</span><b class="mono" id="g_sum_dif" style="color:${colUtil(t.pnl)}">${signo(t.pnl)}${dineroD(t.pnl)}${t.pnl_pct != null ? ` <span style="font-size:13px">(${signo(t.pnl_pct)}${t.pnl_pct.toFixed(1)}%)</span>` : ''}</b>
-        ${Math.abs(t.comisiones) >= 0.5 && t.neto ? (t.comisiones_ok ? `<span class="gsub2">neto — el bróker se llevó ${dineroD(Math.abs(t.comisiones))} en comisiones</span>` : `<span class="gsub2" style="color:var(--oro)">neto del bróker: ${dineroD(Math.abs(t.comisiones))} de diferencia con valor − invertido (no cuadra con las comisiones que reporta)</span>`) : ''}</div>
+      <div><span class="gl">GANANCIA / PÉRDIDA</span><b class="mono" id="g_sum_dif" style="color:${colUtil(t.pnl)}">${gananciaTotalesHtml(t)}</b>
+        <span id="g_sum_com">${comisionesTotalesHtml(t)}</span></div>
     </div>
-    <div class="fresco" style="margin-top:6px">${t.neto ? `P&amp;L neto del bróker en ${t.neto} de ${t.n}` : 'P&amp;L = valor − lo pagado (el bróker no dio su neto)'}${t.noCuadra ? ` · <b style="color:var(--oro)">${t.noCuadra} con otra cantidad o costo en el bróker: va con el libro (mark × contratos), sin su neto</b>` : ''}${t.sinMark ? ` · ${t.sinMark} sin precio de ahora: ${t.sinMark > 1 ? 'valen' : 'vale'} lo pagado` : ''}${leido ? ' · leído ' + esc(haceCuanto(new Date(leido).toISOString()).txt) : ''}${viejo ? ' · <b style="color:var(--oro)">lectura vieja: preguntando de nuevo…</b>' : ''}${parcial ? ' · <b style="color:var(--oro)">suma SOLO lo que se pudo leer</b>' : ''}</div>
+    <div class="fresco" id="g_sum_sub" style="margin-top:6px">${sublineaTotalesHtml(t, cart)}</div>
     <div class="fresco" id="g_vivo_estado" style="margin-top:3px">${esc(textoVivoEstado())}</div></div>`;
 }
 // Alarma de DINERO SIN VIGILAR (10-ago en la mesa vieja: un 775C llegó a −40% en silencio):
@@ -3785,16 +3823,34 @@ function gestorFormato(ancho) { return (Number(ancho) || 0) >= GESTOR_ANCHO_TABL
 // v55: encima, en el orden de la mesa vieja — banners por bróker caído, la alarma de
 // dinero sin vigilar y la barra INVERTIDO · VALOR AHORA · GANANCIA/PÉRDIDA; debajo la
 // TABLA de 10 columnas del gestor en Mac o las tarjetas (con los mismos controles) en iPhone.
-function seccionPosiciones(abiertas, cart, plan, hoy) {
+// Las filas del gestor (v56: UNA sola fuente para la sección entera y para el repintado en sitio cada 5 s, así la
+// barra en sitio suma EXACTAMENTE lo que suma la barra del redibujo): cada ficha del libro casada con su lectura
+// del bróker (mark del bróker si lo hay, si no el del worker) y, aparte, lo que el bróker tiene sin registrar.
+// Un grupo (todas las fichas del mismo contrato) comparte bróker, diferencia y lista: basta el primero, y así el
+// aviso de la diferencia se pinta UNA vez por contrato. Escribe p._br y p._grupo en cada ficha (los lee venderGestor).
+function armarFilasGestor(abiertas, cart) {
+  try { aplicarVivoLista(abiertas, 'libro'); } catch (_) {}   // v56: las fichas recién leídas de la base traen el mark del worker; la cotización fresca manda
   const items = itemsCartera(cart);
   const leidos = brokersLeidos(cart);
   const fotos = {};
   BROKERS_WORKER.forEach(b => { fotos[b] = (cart && cart[b] && cart[b].estado === 'ok' && cart[b].foto_at) || null; });
   const { enAmbos, soloBroker, soloLibro, noComprobadas } = casarCarteraLibro(items, abiertas, leidos, fotos);
-  // Un grupo (todas las fichas del mismo contrato) comparte bróker, diferencia y lista:
-  // basta el primero, y así el aviso de la diferencia se pinta UNA vez por contrato.
   const porClave = {};
   enAmbos.forEach(x => { const k = claveCartera({ ...x.pos, broker: x.pos.broker || 'etrade' }); if (!porClave[k]) porClave[k] = x; });
+  const filas = (abiertas || []).map(p => {
+    const k = claveCartera({ ...p, broker: p.broker || 'etrade' });
+    const x = porClave[k] || null;
+    const br = x ? x.br : null;
+    const grupo = x ? { libroContratos: x.libroContratos, fichas: (x.fichas || []).length } : null;
+    p._br = br;
+    p._grupo = grupo;
+    return { tipo: 'libro', p, br, grupo, x, mark: markGestor(p, br), clave: k };
+  });
+  const filasBroker = soloBroker.map(br => ({ tipo: 'broker', br }));
+  return { items, leidos, fotos, enAmbos, soloBroker, soloLibro, noComprobadas, porClave, filas, filasBroker };
+}
+function seccionPosiciones(abiertas, cart, plan, hoy) {
+  const { items, leidos, fotos, enAmbos, soloBroker, soloLibro, noComprobadas, porClave, filas, filasBroker } = armarFilasGestor(abiertas, cart);
   // antigüedad de la lectura de cada bróker: decide si se puede ofrecer «adoptar». Para tasty `ts` es
   // cuándo la app LEYÓ posiciones_broker (siempre reciente): lo que envejece es la FOTO del worker
   // (`vieja`, > 3 h), y una foto vieja tampoco vale para adoptar (podría llevar horas vendida; v53).
@@ -3804,22 +3860,9 @@ function seccionPosiciones(abiertas, cart, plan, hoy) {
     return { viejo: !ts || (Date.now() - ts) >= CART_FRESCO_MS || fotoVieja, fotoVieja,
       txt: fotoVieja && c.foto_at ? haceCuanto(c.foto_at).txt : (ts ? haceCuanto(new Date(ts).toISOString()).txt : '') };
   };
-  // filas del gestor: cada ficha del libro con su lectura del bróker (mark del bróker si lo hay,
-  // si no el del worker) y, aparte, lo que el bróker tiene sin registrar
-  const filas = (abiertas || []).map(p => {
-    const k = claveCartera({ ...p, broker: p.broker || 'etrade' });
-    const x = porClave[k] || null;
-    const br = x ? x.br : null;
-    const grupo = x ? { libroContratos: x.libroContratos, fichas: (x.fichas || []).length } : null;
-    p._br = br;                                   // venderGestor y el recálculo en sitio leen de aquí
-    p._grupo = grupo;                             // v56: el repintado en sitio necesita el grupo (¿cuadra el bróker con la ficha?)
-    return { tipo: 'libro', p, br, grupo, x, mark: markGestor(p, br), clave: k };
-  });
   _gestor.filas = filas.map(f => f.p);
   // 0018 sin aplicar: con select('*') una fila abierta sin la clave modo_salida es que la columna no existe
   if ((abiertas || []).length) _gestor.sinColumnas = abiertas.every(p => p && p.modo_salida === undefined && p.trail_pct === undefined);
-  const filasBroker = soloBroker.map(br => ({ tipo: 'broker', br }));
-  _gestor.sinRegistrar = new Set(soloBroker.map(br => br.clave));   // v56: sus celdas también se repintan en sitio
   const vig = gestorVigilado();
   const quien = vig === true ? 'la Mesa avisa (el worker vigila estos niveles cada minuto en sesión) y pre-arma la venta, tú confirmas con un toque'
     : vig === false ? (_gestor.sinColumnas ? '<b style="color:var(--rojo)">avisos del gestor PENDIENTES: la migración 0018 no está en la base — nadie vigila estos niveles; solo suenan el corte del Plan 10 y el cierre de las 15:30</b>'
@@ -4502,7 +4545,7 @@ function filaGestor(p, br, hoy, grupo) {
     <span class="mono">fill <b style="color:var(--tx)">$${esc(costo > 0 ? costo.toFixed(2) : p.prima_fill)}</b> · límite GTC <b style="color:var(--oro)">$${esc(p.gtc_limite != null ? Number(p.gtc_limite).toFixed(2) : '—')}</b> (+${esc(pct)}%)${corte != null ? ` · corte -${esc(Number(p.stop_pct))}% <b style="color:var(--rojo)">$${esc(fmtPrima(corte))}</b>` : ''}</span>
     ${avisoCorteHtml(p, corte, tocado, operable)}
     <div id="g_vivo_${Number(p.id)}">${pnlVivo(p)}</div>
-    ${lineasCartera(p, br, hoy, grupo)}
+    <div id="g_bl_${Number(p.id)}">${lineasCartera(p, br, hoy, grupo)}</div>
     ${corte != null && !operable ? `<div class="fresco" style="margin-top:6px;color:var(--rojo)">Corte -${esc(Number(p.stop_pct))}% ($${esc(fmtPrima(corte))}): <b>vende en tu bróker</b> — la Mesa no manda órdenes a ${esc(BROKER_NOMBRE[p.broker] || p.broker)}; aquí solo registras la salida.</div>` : ''}
     <div class="fila" style="margin-top:8px;gap:8px;justify-content:flex-start;flex-wrap:wrap">
       <button class="btnsec" style="flex:none;padding:7px 11px" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
@@ -4525,7 +4568,7 @@ function filaSinRegistrar(br, plan, hoy, lect) {
     <td class="mono">${esc(qty)}</td>
     <td class="mono">${costo != null ? esc(costo.toFixed(2)) : '—'}<span class="gsub2">pagaste ${costo != null ? dineroD(costo * qty * 100) : '—'}</span></td>
     <td class="mono" id="g_bmark_${claveSlug(br.clave)}">${celdaMarkHtml(mark, qty, br.valor_actual)}</td>
-    <td class="mono" id="g_bpnl_${claveSlug(br.clave)}" style="color:${col}">${celdaPnlHtml(pnl, pnlPct, col, ETIQUETA_DEL_BROKER)}</td>
+    <td class="mono" id="g_bpnl_${claveSlug(br.clave)}" style="color:${col}">${celdaPnlHtml(pnl, pnlPct, col, esVivo(br) ? ETIQUETA_EN_VIVO : ETIQUETA_DEL_BROKER)}</td>
     <td colspan="3" style="white-space:normal;max-width:380px"><span class="mut" style="font-size:11px">La Mesa no la conoce: sin ficha no hay trailing, ni avisos, ni corte, ni Disciplina. Adoptarla solo crea la ficha: <b>no compra nada ni manda ninguna orden</b>.</span></td>
     <td>—</td>
     <td>${viejo
@@ -4555,8 +4598,8 @@ const VIVO_CARTERA_MS = CART_TTL_ABIERTO; // relectura de la cartera en sesión,
 const VIVO_FRESCA_MS = 15000;            // una cotización más vieja que esto ya no manda sobre el mark del bróker
 const VIVO_MAX_SIMBOLOS = 25;            // tope de E*TRADE por petición (sin overrideSymbolCount)
 const VIVO_FALLOS_PAUSA = 3, VIVO_PAUSA_MS = 5 * 60000;   // 3 fallos seguidos (o una cotización con retraso) → 5 min de descanso, y se dice
-const ETIQUETA_DEL_BROKER = ' <span style="color:var(--tx3)">del bróker</span>';
-const _vivo = { por: {}, ts: 0, fuente: null, estado: '', fallos: 0, pausaHasta: 0, enVuelo: false, error: '', recortados: 0, n: 0, ultimoTickCartera: 0, timerFoto: null };
+const ETIQUETA_DEL_BROKER = ' <span style="color:var(--tx3)">del bróker</span>', ETIQUETA_EN_VIVO = ' <span style="color:var(--tx3)">en vivo</span>';
+const _vivo = { por: {}, ts: 0, fuente: null, estado: '', detalle: '', fallos: 0, pausaHasta: 0, enVuelo: false, error: '', recortados: 0, n: 0, ultimoTickCartera: 0, timerFoto: null, vetoEtrade: false };
 
 // Símbolo de opción para /v1/market/quote de E*TRADE: «underlier:year:month:day:optionType:strikePrice»
 // (SPY:2026:9:28:PUT:660 — mes y día SIN cero a la izquierda, strike sin ceros de más). PURA.
@@ -4581,12 +4624,12 @@ function contratosVivo(abiertas, cart) {
   itemsCartera(cart).forEach(meter);
   return { lista: lista.slice(0, VIVO_MAX_SIMBOLOS), recortados: Math.max(0, lista.length - VIVO_MAX_SIMBOLOS) };
 }
-// Mark de una cotización: punto medio si hay las dos puntas (y no están cruzadas), si no el último
-// cruce, si no el bid (lo que se cobraría). PURA.
+// Mark de una cotización: punto medio bid/ask si hay ask (y no están cruzadas; con bid 0 es ask/2), si no el
+// último cruce, si no el bid (lo que se cobraría). PURA.
 function markDeCotizacion(bid, ask, last) {
   const b = Number(bid), a = Number(ask), l = Number(last);
   const r4 = (v) => Math.round(v * 10000) / 10000;
-  if (b > 0 && a > 0 && a >= b) return r4((b + a) / 2);
+  if (a > 0 && b >= 0 && a >= b) return r4((b + a) / 2);   // bid 0 y ask > 0 → ask/2 (un 0DTE muerto vale eso, no su último cruce de hace horas)
   if (l > 0) return r4(l);
   if (b > 0) return r4(b);
   return null;
@@ -4605,7 +4648,8 @@ function parsearCotizacionesEtrade(resp, pedidos) {
     const a = x.All || x.Intraday || x.Option || x.all || x.intraday || x.option || {};
     const pr = x.Product || x.product || {};
     let clave = null;
-    if (pr.symbol && pr.callPut && pr.strikePrice != null && pr.expiryYear && pr.expiryMonth && pr.expiryDay) {
+    if (a.osiKey) { const c = desOsi(a.osiKey); if (c) clave = claveContrato(c); }   // detailFlag OPTIONS: el OSI es la clave más fiable
+    if (!clave && pr.symbol && pr.callPut && pr.strikePrice != null && pr.expiryYear && pr.expiryMonth && pr.expiryDay) {
       const y0 = Number(pr.expiryYear), y = (y0 > 0 && y0 < 100) ? 2000 + y0 : y0;
       clave = claveContrato({ symbol: pr.symbol, direccion: String(pr.callPut).toUpperCase() === 'PUT' ? 'PUT' : 'CALL', strike: pr.strikePrice,
         expiracion: `${y}-${String(Number(pr.expiryMonth)).padStart(2, '0')}-${String(Number(pr.expiryDay)).padStart(2, '0')}` });
@@ -4615,9 +4659,14 @@ function parsearCotizacionesEtrade(resp, pedidos) {
     estados.push(estado);
     const mark = markDeCotizacion(a.bid, a.ask, a.lastTrade);
     if (mark == null) return;
-    por[clave] = { mark, bid: num2(a.bid), ask: num2(a.ask), last: num2(a.lastTrade), estado };
+    const utc = Number(x.dateTimeUTC);                       // la hora DEL DATO (epoch en segundos): «hace N s» habla de ella
+    por[clave] = { mark, bid: num2(a.bid), ask: num2(a.ask), last: num2(a.lastTrade), estado, at: utc > 0 ? (utc < 1e11 ? utc * 1000 : utc) : null };
   });
-  const estado = estados.some(e => e === 'DELAYED') ? 'DELAYED' : (estados[0] || (q.length ? '' : 'VACIA'));
+  // el estado del lote: con UNA con retraso todo es «con retraso»; solo con TODAS en tiempo real es REALTIME;
+  // si no, el primer estado que no lo es (CLOSING, EH_CLOSED…), que cotizarVivo no aplica
+  const VIVAS = ['REALTIME', 'INDICATIVE_REALTIME'];
+  const estado = !estados.length ? 'VACIA' : estados.some(e => e === 'DELAYED') ? 'DELAYED'
+    : estados.every(e => VIVAS.includes(e)) ? 'REALTIME' : (estados.find(e => !VIVAS.includes(e)) || '');
   return { por, estado, n: Object.keys(por).length };
 }
 // Respuesta de Schwab (/marketdata/v1/quotes): { 'SPY   260928P00660000': { quote: { bidPrice, askPrice, lastPrice, mark }, realtime } }. PURA.
@@ -4638,54 +4687,75 @@ function parsearCotizacionesSchwab(resp) {
   const estado = estados.some(e => e === 'DELAYED') ? 'DELAYED' : (estados[0] || 'VACIA');
   return { por, estado, n: Object.keys(por).length };
 }
-// Aplica una cotización a un ítem de la CARTERA (tipo 'cartera': recalcula valor y P&L con el mark nuevo,
-// conservando la comisión que el bróker ya había descontado —valor − invertido − neto de su lectura— para
-// que el «neto» siga siendo neto) o a una ficha del LIBRO (tipo 'libro': solo el mark). MUTA el objeto, que
-// es el que leen los pintores. Devuelve true si aplicó.
+// Aplica una cotización a un ítem de la CARTERA (tipo 'cartera') o a una ficha del LIBRO (tipo 'libro': solo el
+// mark). MUTA el objeto, que es el que leen los pintores. Devuelve true si aplicó.
+//   Cartera: valor = mark × qty × 100 siempre. El P&L solo se recalcula si el bróker dio su NETO (origen_invertido
+//   'broker': los normalizadores hacen invertido = valor − neto, así que invertido YA lleva la comisión y valor −
+//   invertido sigue siendo neto). Si el bróker no dio neto, pnl_usd se queda null: la celda cae al P&L bruto del
+//   libro y NO se etiqueta «neto» (revisión 2026-09-28: un bruto calculado aquí se colaba como neto del bróker).
 function aplicarCotizacion(it, q, ts, tipo) {
   if (!it || !q || !(Number(q.mark) > 0)) return false;
   const mark = Number(q.mark);
-  const iso = new Date(Number(ts) > 0 ? Number(ts) : Date.now()).toISOString();
+  const recibida = Number(ts) > 0 ? Number(ts) : Date.now();
+  const iso = new Date(Number(q.at) > 0 ? Number(q.at) : recibida).toISOString();   // la hora DEL DATO (dateTimeUTC) si vino
   if (tipo === 'cartera') {
+    // las cifras del bróker se guardan UNA vez: la foto del dispositivo y la caché local llevan esas, no las vivas
+    if (!it._broker) it._broker = { mark: it.mark, mark_fuente: it.mark_fuente, mark_at: it.mark_at, valor_actual: it.valor_actual, pnl_usd: it.pnl_usd,
+      pnl_pct: it.pnl_pct, origen_valor: it.origen_valor, origen_pnl: it.origen_pnl, origen_mark: it.origen_mark };
     const qty = Number(it.contratos) || 0;
-    if (it._comis == null) {
-      const c = (it.valor_actual != null && it.invertido != null && it.pnl_usd != null) ? Number(it.valor_actual) - Number(it.invertido) - Number(it.pnl_usd) : 0;
-      it._comis = (Number.isFinite(c) && c >= -1 && c <= 100) ? Math.round(c * 100) / 100 : 0;
-    }
-    const inv = it.invertido != null ? Number(it.invertido) : (Number(it.prima_fill) > 0 ? Number(it.prima_fill) * qty * 100 : null);
     it.valor_actual = Math.round(mark * qty * 100 * 100) / 100;
-    if (inv != null && Number.isFinite(inv)) {
-      it.pnl_usd = Math.round((it.valor_actual - inv - it._comis) * 100) / 100;
+    const inv = it.invertido != null ? Number(it.invertido) : null;
+    if (it.origen_invertido === 'broker' && inv != null && Number.isFinite(inv)) {
+      it.pnl_usd = Math.round((it.valor_actual - inv) * 100) / 100;
       it.pnl_pct = inv > 0 ? Math.round(it.pnl_usd / inv * 1000) / 10 : null;
-    }
-    it.origen_valor = 'vivo'; it.origen_pnl = 'vivo'; it.origen_mark = 'vivo';
+      it.origen_pnl = 'vivo';
+    } else { it.pnl_usd = null; it.pnl_pct = null; it.origen_pnl = 'sin'; }
+    it.origen_valor = 'vivo'; it.origen_mark = 'vivo';
   }
-  it.mark = mark; it.mark_at = iso; it.mark_fuente = 'vivo'; it.bid = q.bid; it.ask = q.ask;
+  it.mark = mark; it.mark_at = iso; it.mark_fuente = 'vivo'; it.vivo_at = recibida; it.bid = q.bid; it.ask = q.ask;
   return true;
+}
+// ¿Las cifras de este ítem son de una cotización viva FRESCA? (las etiquetas «en vivo» se deciden con esto, no con
+// mark_fuente, que el worker también escribe en sus fotos de hace minutos u horas)
+function esVivo(it) { return !!(it && Number(it.vivo_at) > 0 && Date.now() - Number(it.vivo_at) <= VIVO_FRESCA_MS); }
+// Un ítem con las cifras DEL BRÓKER (sin la cotización viva): para la caché local de este equipo.
+function itemSinVivo(it) {
+  if (!it || !it._broker) return it;
+  const { _broker, vivo_at, bid, ask, ...resto } = it;
+  return { ...resto, ..._broker };
+}
+function carteraParaCache() {
+  const sin = (c) => (c && Array.isArray(c.items)) ? { ...c, items: c.items.map(itemSinVivo) } : c;
+  return { etrade: sin(_cart.etrade), schwab: sin(_cart.schwab), tasty: sin(_cart.tasty), moomoo: sin(_cart.moomoo) };
 }
 // Vuelca las cotizaciones FRESCAS sobre la cartera y el libro en memoria: tras cada cotización y tras cada
 // relectura de la cartera (una lectura del bróker con su lastTrade no pisa un punto medio de hace 3 s).
-function aplicarVivo() {
-  if (!_vivo.ts || Date.now() - _vivo.ts > VIVO_FRESCA_MS) return 0;
-  let n = 0;
-  CART_BROKERS.forEach(b => {
-    const c = _cart[b]; if (!c || c.estado !== 'ok') return;
-    (c.items || []).forEach(it => { const q = _vivo.por[claveContrato(it)]; if (q && aplicarCotizacion(it, q, _vivo.ts, 'cartera')) n++; });
+//   La frescura es POR CONTRATO (q.ts): un contrato que dejó de venir en la respuesta no se re-aplica con su
+//   mark viejo y «hace segundos» (revisión 2026-09-28).
+function aplicarVivoLista(lista, tipo) {
+  const ahora = Date.now(); let n = 0;
+  (lista || []).forEach(it => {
+    const q = _vivo.por[claveContrato(it)];
+    if (q && Number(q.ts) > 0 && ahora - q.ts <= VIVO_FRESCA_MS && aplicarCotizacion(it, q, q.ts, tipo)) n++;
   });
-  (_gestor.filas || []).forEach(p => { const q = _vivo.por[claveContrato(p)]; if (q && aplicarCotizacion(p, q, _vivo.ts, 'libro')) n++; });
   return n;
+}
+function aplicarVivo() {
+  let n = 0;
+  CART_BROKERS.forEach(b => { const c = _cart[b]; if (c && c.estado === 'ok') n += aplicarVivoLista(c.items, 'cartera'); });
+  return n + aplicarVivoLista(_gestor.filas, 'libro');
 }
 const enCopilotoAhora = () => (location.hash.replace('#/', '') || 'informe') === 'copiloto';
 // ¿Toca cotizar ahora? Solo con sesión, el Copiloto a la vista (pestaña y ventana) y el mercado abierto.
 function vivoToca() {
   if (!sesionActiva || !enCopilotoAhora()) return false;
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-  return mercadoAbiertoNY(_hbUltimo);
+  return sesionNY(_hbUltimo) === 'regular';   // solo la sesión regular: en pre/post el bróker devuelve el cierre
 }
 // La fuente: E*TRADE con sesión viva en este equipo; si no, Schwab; si no, nadie (y se dice).
 function vivoFuente() {
   const cr = etCreds();
-  if (cr && !etDiaVencido() && !(_cart.etrade && _cart.etrade.estado === 'sesion')) return { fuente: 'etrade', cr };
+  if (cr && !etDiaVencido() && !_vivo.vetoEtrade && !(_cart.etrade && _cart.etrade.estado === 'sesion')) return { fuente: 'etrade', cr };
   if (swCreds() && !swVencido() && !(_cart.schwab && _cart.schwab.estado === 'sesion')) return { fuente: 'schwab' };
   return { fuente: null };
 }
@@ -4698,32 +4768,46 @@ async function cotizarVivo() {
   const f = vivoFuente();
   if (!f.fuente) { _vivo.fuente = null; _vivo.estado = 'sin_fuente'; pintarVivoEstado(); return null; }
   _vivo.enVuelo = true;
+  let r = null;
   try {
     let res;
     if (f.fuente === 'etrade') {
       const simbolos = lista.map(simboloOpcionEtrade).filter(Boolean);
-      const r = await etRead(f.cr, `/v1/market/quote/${simbolos.join(',')}.json`, { detailFlag: 'INTRADAY' });
+      r = await etRead(f.cr, `/v1/market/quote/${simbolos.join(',')}.json`, { detailFlag: 'OPTIONS' });   // bloque Option: bid/ask/lastTrade + osiKey
       const e = etError(r);
       if (!r || r.status >= 400 || e) throw new Error(e || ('E*TRADE contestó ' + (r && r.status)));
       res = parsearCotizacionesEtrade(r, lista);
     } else {
-      const r = await swRead('/marketdata/v1/quotes', { symbols: lista.map(x => osiDe(x.symbol, x.expiracion, x.strike, x.direccion)).join(',') });
+      r = await swRead('/marketdata/v1/quotes', { symbols: lista.map(x => osiDe(x.symbol, x.expiracion, x.strike, x.direccion)).join(',') });
       const e = swMensajeError(r);
       if (!r || r.status >= 400 || e) throw new Error(e || ('Schwab contestó ' + (r && r.status)));
       res = parsearCotizacionesSchwab(r);
     }
-    _vivo.fuente = f.fuente; _vivo.error = '';
+    _vivo.fuente = f.fuente; _vivo.error = ''; _vivo.detalle = '';
     if (res.estado === 'DELAYED') {          // con retraso: NO se usa y se descansa 5 min
       _vivo.estado = 'DELAYED'; _vivo.n = 0; _vivo.pausaHasta = Date.now() + VIVO_PAUSA_MS;
       pintarVivoEstado(); return res;
     }
+    if (res.n && res.estado !== 'REALTIME') {   // CLOSING / EH_* / sin estado: es el cierre, no un precio de ahora → no se usa, 1 min de pausa
+      _vivo.estado = 'no_vivo'; _vivo.detalle = res.estado || 'sin estado'; _vivo.n = 0; _vivo.pausaHasta = Date.now() + 60000;
+      pintarVivoEstado(); return res;
+    }
     if (!res.n) { _vivo.estado = 'vacia'; _vivo.fallos++; }
-    else { _vivo.por = Object.assign({}, _vivo.por, res.por); _vivo.ts = Date.now(); _vivo.estado = res.estado || 'REALTIME'; _vivo.n = res.n; _vivo.fallos = 0; }
+    else {
+      const ahora = Date.now();
+      Object.keys(res.por).forEach(k => { res.por[k].ts = ahora; });   // frescura por contrato
+      _vivo.por = Object.assign({}, _vivo.por, res.por); _vivo.ts = ahora; _vivo.estado = res.estado || 'REALTIME'; _vivo.n = res.n; _vivo.fallos = 0;
+    }
     if (_vivo.fallos >= VIVO_FALLOS_PAUSA) _vivo.pausaHasta = Date.now() + VIVO_PAUSA_MS;
     if (res.n) { aplicarVivo(); pintarVivoEnSitio(); } else pintarVivoEstado();
     return res;
   } catch (e) {
     _vivo.fallos++; _vivo.error = String((e && e.message) || e).slice(0, 120); _vivo.estado = 'error';
+    // el PROXY (no el bróker) no permite la ruta (403/404 sin {Error} de E*TRADE): se veta E*TRADE para esta
+    // sesión y el siguiente tic cae a Schwab si lo hay, en vez de fallar 3 veces y dormir 5 min para siempre
+    if (f.fuente === 'etrade' && r && (r.status === 403 || r.status === 404) && !(r.data && r.data.Error)) {
+      _vivo.vetoEtrade = true; _vivo.error = 'el proxy no permite la ruta de cotizaciones de E*TRADE' + (swCreds() ? '; se usa Schwab' : ''); _vivo.fallos = 0;
+    }
     if (_vivo.fallos >= VIVO_FALLOS_PAUSA) _vivo.pausaHasta = Date.now() + VIVO_PAUSA_MS;
     pintarVivoEstado();
     return null;
@@ -4732,10 +4816,12 @@ async function cotizarVivo() {
 // El tic de 5 s: cotiza y, cada 20 s, relee la cartera (sin esperar al ruta() de 60 s). Con un cuadro
 // abierto (una orden a medias) no se relee ni se redibuja: solo se cotiza.
 function tickVivo() {
-  if (!vivoToca()) return;
+  if (!vivoToca()) { pintarVivoEstado(); return; }   // la barra no se queda en «EN VIVO» al cerrar o al cambiar de sesión
   cotizarVivo().catch(() => {});
+  pintarVivoEstado();                                 // con el proxy lento (hasta 25 s) el «hace N s» sigue diciendo la verdad
   const ahora = Date.now();
-  if (ahora - _vivo.ultimoTickCartera < VIVO_CARTERA_MS || document.querySelector('.modal')) return;
+  const releer = CART_BROKERS.some(b => _cart.releer[b]);
+  if ((ahora - _vivo.ultimoTickCartera < VIVO_CARTERA_MS && !releer) || document.querySelector('.modal')) return;
   _vivo.ultimoTickCartera = ahora;
   cargarCartera(false, _hbUltimo).then(cambio => {
     if (!vivoToca() || document.querySelector('.modal')) return;
@@ -4747,7 +4833,7 @@ function tickVivo() {
 function fotoBrokerCambio(payload) {
   const fila = (payload && (payload.new || payload.old)) || null;
   if (!fila || fila.origen !== 'worker' || !BROKERS_WORKER.includes(fila.broker)) return;
-  if (_cart[fila.broker]) _cart[fila.broker].ts = 0;   // carteraToca: sin ts → toca
+  _cart.releer[fila.broker] = true;   // la consume la próxima lectura (aunque una en vuelo reemplace _cart[b] con ts fresco)
   clearTimeout(_vivo.timerFoto);
   _vivo.timerFoto = setTimeout(() => {
     if (!sesionActiva || !enCopilotoAhora()) return;
@@ -4769,7 +4855,7 @@ function celdaPnlHtml(pnlUsd, pnlPct, col, etiqueta) {
 // La línea «valor · P&L · cifras del bróker» de la tarjeta SIN REGISTRAR (iPhone).
 function lineaValorBroker(br) {
   const pnl = br && br.pnl_usd != null ? Number(br.pnl_usd) : null;
-  return `${br && br.valor_actual != null ? `valor ${usd(br.valor_actual)}` : 'valor: sin dato'}${pnl != null ? ` · P&amp;L <b style="color:${colUtil(pnl)}">${pnl > 0 ? '+' : ''}${usd(pnl)}</b>${br.pnl_pct != null ? ` (${br.pnl_pct > 0 ? '+' : ''}${Number(br.pnl_pct).toFixed(0)}%)` : ''}` : ''} · <span class="fresco">${br && br.mark_fuente === 'vivo' ? 'en vivo' : 'cifras del bróker'}</span>`;
+  return `${br && br.valor_actual != null ? `valor ${usd(br.valor_actual)}` : 'valor: sin dato'}${pnl != null ? ` · P&amp;L <b style="color:${colUtil(pnl)}">${pnl > 0 ? '+' : ''}${usd(pnl)}</b>${br.pnl_pct != null ? ` (${br.pnl_pct > 0 ? '+' : ''}${Number(br.pnl_pct).toFixed(0)}%)` : ''}` : ''} · <span class="fresco">${esVivo(br) ? 'en vivo' : 'cifras del bróker'}</span>`;
 }
 // Las cifras de una ficha del libro con su lectura del bróker: las MISMAS para la tabla y el repintado. PURA.
 //   El $ del bróker solo vale tal cual si es UNA ficha y su cantidad y su costo son los de la ficha: si el bróker
@@ -4780,48 +4866,49 @@ function cifrasFila(p, br, grupo) {
   const qty = Number(p.contratos) || 0, costo = Number(p.prima_fill) || 0;
   const brCuadra = brokerCuadraConFicha(br, p, grupo);
   const pnlUsd = brCuadra ? Number(br.pnl_usd) : (mark != null ? Math.round((mark - costo) * qty * 100 * 100) / 100 : null);
+  // el % del bróker se calcula aquí (neto / invertido con comisiones), nunca su totalGainPct: así no salta entre
+  // dos bases cada vez que una cotización viva llega o envejece (revisión 2026-09-28)
   const pnlPct = brCuadra
-    ? (br.pnl_pct != null ? Number(br.pnl_pct) : (Number(br.invertido) > 0 ? Number(br.pnl_usd) / Number(br.invertido) * 100 : ((mark != null && costo > 0) ? (mark - costo) / costo * 100 : null)))
+    ? (Number(br.invertido) > 0 ? Number(br.pnl_usd) / Number(br.invertido) * 100 : ((mark != null && costo > 0) ? (mark - costo) / costo * 100 : null))
     : ((mark != null && costo > 0) ? (mark - costo) / costo * 100 : null);
   const col = pnlUsd == null ? 'var(--tx2)' : colUtil(pnlUsd);
-  const etiqueta = brCuadra ? ' <span style="color:var(--tx3)" title="P&amp;L neto del bróker (comisiones descontadas)">neto</span>'
+  const etiqueta = brCuadra ? (esVivo(br)
+      ? ' <span style="color:var(--tx3)" title="valor con el mark en vivo menos lo invertido según el bróker (comisiones de entrada descontadas)">neto · en vivo</span>'
+      : ' <span style="color:var(--tx3)" title="P&amp;L neto del bróker (comisiones descontadas)">neto</span>')
     : (br && br.pnl_usd != null ? ' <span style="color:var(--oro)" title="el bróker tiene otra cantidad o costo: su P&amp;L no es el de esta ficha">del libro</span>' : '');
   return { mark, qty, costo, brCuadra, pnlUsd, pnlPct, col, etiqueta };
-}
-// El ítem de cartera de una ficha AHORA (tras una relectura p._br apunta a la lectura anterior).
-function brDe(p) {
-  const k = claveCartera({ ...p, broker: p.broker || 'etrade' });
-  return itemsCartera(_cart).find(it => it && it.clave === k) || p._br || null;
 }
 function pintarVivoEnSitio() {
   if (!enCopilotoAhora()) return 0;
   let pintados = 0;
-  const filasTot = [];
-  (_gestor.filas || []).forEach(p => {
-    const br = brDe(p); p._br = br;
-    const c = cifrasFila(p, br, p._grupo || null);
-    filasTot.push({ tipo: 'libro', p, br, grupo: p._grupo || null, mark: c.mark });
+  // las MISMAS filas que pinta seccionPosiciones (casadas contra la cartera de AHORA): la barra suma lo mismo
+  const { filas, filasBroker } = armarFilasGestor(_gestor.filas, _cart);
+  const hoy = hoyNY();
+  filas.forEach(f => {
+    const p = f.p, br = f.br;
+    const c = cifrasFila(p, br, f.grupo);
     const id = Number(p.id);
     const em = $('#g_mark_' + id); if (em) { em.innerHTML = celdaMarkHtml(c.mark, c.qty); pintados++; }
     const ep = $('#g_pnl_' + id); if (ep) { ep.style.color = c.col; ep.innerHTML = celdaPnlHtml(c.pnlUsd, c.pnlPct, c.col, c.etiqueta); }
     const ev = $('#g_vivo_' + id); if (ev) { ev.innerHTML = pnlVivo(p); pintados++; }
+    const eb = $('#g_bl_' + id); if (eb) eb.innerHTML = lineasCartera(p, br, hoy, f.grupo);   // «E*TRADE confirma ×2 · valor · P&L (en vivo)»
     pintarSaltaEnSitio(id);
   });
-  itemsCartera(_cart).forEach(br => {
-    if (!br || !br.clave || !_gestor.sinRegistrar || !_gestor.sinRegistrar.has(br.clave)) return;
-    filasTot.push({ tipo: 'broker', br });
+  filasBroker.forEach(f => {
+    const br = f.br; if (!br || !br.clave) return;
     const s = claveSlug(br.clave), qty = Number(br.contratos) || 0;
     const mark = br.mark != null ? Number(br.mark) : null, pnl = br.pnl_usd != null ? Number(br.pnl_usd) : null, pct = br.pnl_pct != null ? Number(br.pnl_pct) : null;
     const col = pnl == null ? 'var(--tx2)' : colUtil(pnl);
     const em = $('#g_bmark_' + s); if (em) { em.innerHTML = celdaMarkHtml(mark, qty, br.valor_actual); pintados++; }
-    const ep = $('#g_bpnl_' + s); if (ep) { ep.style.color = col; ep.innerHTML = celdaPnlHtml(pnl, pct, col, ETIQUETA_DEL_BROKER); }
+    const ep = $('#g_bpnl_' + s); if (ep) { ep.style.color = col; ep.innerHTML = celdaPnlHtml(pnl, pct, col, esVivo(br) ? ETIQUETA_EN_VIVO : ETIQUETA_DEL_BROKER); }
     const ev = $('#g_bvivo_' + s); if (ev) { ev.innerHTML = lineaValorBroker(br); pintados++; }
   });
-  const t = totalesGestor(filasTot);
+  const t = totalesGestor(filas.concat(filasBroker));
   if (t.n) {
     const ev = $('#g_sum_val'); if (ev) ev.textContent = dineroD(t.valor);
-    const ed = $('#g_sum_dif');
-    if (ed) { ed.style.color = colUtil(t.pnl); ed.innerHTML = `${t.pnl > 0 ? '+' : ''}${dineroD(t.pnl)}${t.pnl_pct != null ? ` <span style="font-size:13px">(${t.pnl_pct > 0 ? '+' : ''}${t.pnl_pct.toFixed(1)}%)</span>` : ''}`; }
+    const ed = $('#g_sum_dif'); if (ed) { ed.style.color = colUtil(t.pnl); ed.innerHTML = gananciaTotalesHtml(t); }
+    const ec = $('#g_sum_com'); if (ec) ec.innerHTML = comisionesTotalesHtml(t);
+    const es = $('#g_sum_sub'); if (es) es.innerHTML = sublineaTotalesHtml(t, _cart);
   }
   pintarVivoEstado();
   return pintados;
@@ -4829,12 +4916,14 @@ function pintarVivoEnSitio() {
 function haceCuantoSeg(ts) { const s = Math.max(0, Math.round((Date.now() - ts) / 1000)); return s < 60 ? `hace ${s} s` : haceCuanto(new Date(ts).toISOString()).txt; }
 function textoVivoEstado() {
   const nom = _vivo.fuente ? (BROKER_NOMBRE[_vivo.fuente] || _vivo.fuente) : '';
-  if (!mercadoAbiertoNY(_hbUltimo)) return 'mercado cerrado: marks del cierre (la cotización en vivo arranca con la sesión)';
+  if (sesionNY(_hbUltimo) !== 'regular') return 'fuera de la sesión regular: marks del cierre (la cotización en vivo corre de 9:30 a 16:00 ET)';
+  if (_vivo.estado === 'no_vivo') return `${nom} devuelve «${_vivo.detalle || 'sin estado'}», que no es un precio de ahora: no se usa · marks del bróker (20 s) y del worker (1 min)`;
   if (_vivo.estado === 'sin_fuente') return 'sin cotización en vivo: conecta E*TRADE o Schwab en este equipo (los marks siguen llegando por la cartera cada 20 s y por el worker cada minuto)';
   if (_vivo.estado === 'DELAYED') return `${nom} da la cotización CON RETRASO: no se usa (marks del bróker cada 20 s y del worker cada minuto) · se vuelve a probar en 5 min`;
   if (_vivo.estado === 'error') return `cotización en vivo por ${nom}: ${_vivo.error || 'error'}${_vivo.pausaHasta > Date.now() ? ' · en pausa 5 min' : ''} · marks del bróker (20 s) y del worker (1 min)`;
   if (_vivo.estado === 'vacia') return `${nom} no devolvió cotizaciones para estos contratos · marks del bróker (20 s) y del worker (1 min)`;
   if (_vivo.estado === 'nada') return '';
+  if (_vivo.ts && Date.now() - _vivo.ts > VIVO_FRESCA_MS) return `última cotización ${haceCuantoSeg(_vivo.ts)}: ya no manda${_vivo.enVuelo ? ' · esperando al proxy…' : ''} · marks del bróker (20 s) y del worker (1 min)`;
   if (_vivo.ts) return `EN VIVO · ${nom} cada ${VIVO_MS / 1000} s · ${_vivo.n} contrato(s) · ${haceCuantoSeg(_vivo.ts)}${_vivo.recortados ? ` · ${_vivo.recortados} sin cotizar (tope de ${VIVO_MAX_SIMBOLOS} por petición)` : ''}`;
   return 'cotización en vivo: preguntando…';
 }
@@ -4846,7 +4935,10 @@ function pintarSaltaEnSitio(id) {
   const p = gestorFila(id); if (!p) return;
   const el = $('#g_salta_' + Number(id)); if (!el) return;
   const r = reglaGestor(p, _gestor.pend[String(p.id)]);
-  el.innerHTML = saltaHtml(nivelGestor(p, r, markGestor(p, p._br)), r, gestorVigilado());
+  const n = nivelGestor(p, r, markGestor(p, p._br));
+  el.innerHTML = saltaHtml(n, r, gestorVigilado());
+  const fila = $('#g_fila_' + Number(id));   // v56: la fila se enciende (hot) con la celda, también en sitio
+  if (fila && fila.classList && typeof fila.classList.toggle === 'function') fila.classList.toggle('hot', !!n.hot);
 }
 function pintarGuardadoGestor(txt, error) {
   const el = $('#g_guardado'); if (!el) return;
@@ -8438,11 +8530,12 @@ function fotoFilaDe(it, sello, uid, abierto) {
   if (!clave || clave.length > 64) return null;
   const r4 = (v) => (v == null || !Number.isFinite(Number(v))) ? null : Math.round(Number(v) * 10000) / 10000;
   const r2 = (v) => (v == null || !Number.isFinite(Number(v))) ? null : Math.round(Number(v) * 100) / 100;
-  const costo = r4(it.prima_fill), mark = r4(it.mark);
+  const b = it._broker || it;                      // v56: lo que dijo ESE bróker, no la cotización viva aplicada encima (0014)
+  const costo = r4(it.prima_fill), mark = r4(b.mark);
   return { user_id: uid, broker: it.broker, clave, symbol: String(it.symbol).toUpperCase(), direccion: it.direccion === 'PUT' ? 'PUT' : 'CALL',
     strike: Number(it.strike), expiracion: String(it.expiracion).slice(0, 10), contratos: Number(it.contratos),
     costo_promedio: costo > 0 ? costo : null, mark: mark > 0 ? mark : null, mark_fuente: mark > 0 ? (abierto ? 'vivo' : 'cierre_previo') : null,
-    valor_usd: r2(it.valor_actual), pl_usd: r2(it.pnl_usd), pl_pct: r2(it.pnl_pct), origen: 'dispositivo', actualizado_at: sello };
+    valor_usd: r2(b.valor_actual), pl_usd: r2(b.pnl_usd), pl_pct: r2(b.pnl_pct), origen: 'dispositivo', actualizado_at: sello };
 }
 // Escribe la foto de un bróker leído desde ESTE dispositivo con el patrón del worker: upsert con
 // sello común y, SOLO si fue bien, delete de las filas de ese bróker y origen 'dispositivo' con
