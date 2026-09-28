@@ -611,7 +611,7 @@ function sbGrabador(respuestas) {
   igual([fa.broker, fa.symbol, fa.direccion, fa.strike, fa.expiracion, fa.contratos, fa.prima_fill, fa.plan_pct, fa.stop_pct, fa.abierta_fecha_ny, fa._estimada, fa.mark], ['tasty', 'META', 'PUT', 700, '2026-10-16', 1, 5, 10, 20, HOY, true, 4.9], 'adoptar una de tasty: la misma ficha que E*TRADE/Schwab, con el plan congelado, HOY como apertura (estimada) y el mark del bróker');
   igual(A.adoptarDecide(nb.items[0], libroT).accion, 'existe', 'adoptar es idempotente también con tasty: si ya hay ficha abierta no se crea otra');
   igual(A.adoptarDecide(nb.items[1], libroT).accion, 'insertar', '…y si no la hay, se inserta');
-  const S = construir(['tarjetaSinRegistrar', 'textoVencimiento', 'diasAlVencimiento', 'durTxt'], { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto });
+  const S = construir(['tarjetaSinRegistrar', 'textoVencimiento', 'diasAlVencimiento', 'durTxt', 'claveSlug', 'lineaValorBroker'], { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto });
   const hT = S.tarjetaSinRegistrar(nb.items[1], PLANES.PLAN_10, HOY, { viejo: false, txt: '' });
   assert(/vende en tu bróker/.test(hT) && /cierre de ayer/.test(hT) && /foto del worker de hace/.test(hT) && /MZ\.adoptar\(/.test(hT), 'tarjeta SIN REGISTRAR de tasty: Adoptar, «vende en tu bróker», la antigüedad de la foto y «cierre de ayer»');
   const hTv = S.tarjetaSinRegistrar(nb.items[1], PLANES.PLAN_10, HOY, { viejo: true, fotoVieja: true, txt: 'hace 26 h' });
@@ -635,8 +635,7 @@ function sbGrabador(respuestas) {
   assert(/MZ\.cortarPosicion\(7\)/.test(hPE) && /MZ\.abrirOrden/.test(hPE) && !/vende en tu bróker/.test(hPE), 'lo de siempre no cambia: en E*TRADE sigue el Cortar y las órdenes');
   // seccionPosiciones con los tres brókeres
   const SP = construir(['seccionPosiciones', 'barraTotales', 'totalesGestor', 'brokerCuadraConFicha', 'gestorVigilado', 'alarmaSinVigilancia', 'anchoVista', 'gestorFormato', 'notaGestorHtml', 'itemsCartera', 'brokersLeidos', 'casarCarteraLibro', 'claveCartera', 'claveContrato', 'textoLecturaBroker',
-    'lineaDifContratos', 'tarjetaSinRegistrar', 'tarjetaSoloLibro', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'carteraLeidaAt', 'haceCuanto', 'tarjetaFotoConocida'],
-    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000, tarjetaPosicion: (p) => `<div class="card">POS ${p.symbol}</div>`, brokersOperables: () => ['etrade'],
+    'lineaDifContratos', 'tarjetaSinRegistrar', 'tarjetaSoloLibro', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'carteraLeidaAt', 'haceCuanto', 'tarjetaFotoConocida', 'claveSlug', 'lineaValorBroker'], { textoVivoEstado: () => '',  esc, usd, colUtil, BROKER_NOMBRE, hoyNY, CART_FRESCO_MS: 30 * 60000, tarjetaPosicion: (p) => `<div class="card">POS ${p.symbol}</div>`, brokersOperables: () => ['etrade'],
       CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'], BROKERS_WORKER: ['tasty', 'moomoo'], GESTOR_ANCHO_TABLA: 900, _gestor: { filas: [], pend: {} },
       dineroD: (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
       markGestor: (p, br) => (br && Number(br.mark) > 0) ? Number(br.mark) : (p && Number(p.mark) > 0 ? Number(p.mark) : null) });
@@ -782,8 +781,8 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════
   // v54: 31184c9 (v53) ya está publicado; sin subir el número la Mesa instalada no se actualiza sola
-  assert(/config\.js\?v=55/.test(INDEX) && /app\/main\.js\?v=55/.test(INDEX), 'index.html carga config.js?v=55 y app/main.js?v=55 (v55: el Diario igual a la mesa vieja)');
-  assert(/const VER = 'mesa2-v44';/.test(SW), 'sw.js VER mesa2-v44');
+  assert(/config\.js\?v=56/.test(INDEX) && /app\/main\.js\?v=56/.test(INDEX), 'index.html carga config.js?v=56 y app/main.js?v=56 (v56: cotización en vivo en Posiciones)');
+  assert(/const VER = 'mesa2-v45';/.test(SW), 'sw.js VER mesa2-v45');
   // v55: el CSS del Diario (envoltorio ancho solo con el Diario, rejilla de tarjetas, historial en línea/apilado por @container)
   assert(/@media \(min-width:900px\)\{#app\.ancho\{max-width:1180px\}/.test(INDEX) && /\.diario\{[^}]*container-type:inline-size/.test(INDEX) && /@container \(min-width:860px\)\{/.test(INDEX), 'v55 CSS: #app.ancho a 1180 px desde 900 px y .diario como contenedor de @container (min-width:860px)');
   assert(/\.dcards\{display:grid;grid-template-columns:1fr 1fr/.test(INDEX) && /\.dcards\{grid-template-columns:repeat\(auto-fill,minmax\(168px,1fr\)\)\}/.test(INDEX) && /\.dcard \.vl\{font-family:var\(--mono\)/.test(INDEX), 'v55 CSS: tarjetas a dos columnas en el iPhone, en filas en el Mac, número monoespaciado');
@@ -831,7 +830,7 @@ function sbGrabador(respuestas) {
     addEventListener() {}, location: { hash: '#/copiloto', reload() {} }, Intl, Date, Math, JSON, Promise,
     setTimeout, setInterval: () => 0, clearInterval() {}, console, fetch: () => Promise.reject(new Error('sin red')),
     navigator: { serviceWorker: { register: () => Promise.resolve(), addEventListener() {} } },
-    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=55' } } };
+    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=56' } } };
   win.window = win;
   vm.createContext(win);
   let cargo = true;

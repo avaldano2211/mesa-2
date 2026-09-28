@@ -246,7 +246,7 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
 
   // ════════════════ 6. La BARRA: INVERTIDO · VALOR AHORA · GANANCIA/PÉRDIDA (neto del bróker + comisiones) ════════════════
   {
-    const B = construir(['totalesGestor', 'barraTotales', 'brokerCuadraConFicha', 'carteraLeidaAt'], { esc, dineroD, colUtil, BROKER_NOMBRE, haceCuanto, CART_FRESCO_MS: 30 * 60000, CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'] });
+    const B = construir(['totalesGestor', 'barraTotales', 'brokerCuadraConFicha', 'carteraLeidaAt'], { textoVivoEstado: () => '',  esc, dineroD, colUtil, BROKER_NOMBRE, haceCuanto, CART_FRESCO_MS: 30 * 60000, CART_BROKERS: ['etrade', 'schwab', 'tasty', 'moomoo'] });
     const brSpy = { broker: 'etrade', contratos: 2, prima_fill: 3.30, mark: 4.20, valor_actual: 840, invertido: 660, pnl_usd: 178.70 };
     const brAapl = { broker: 'etrade', symbol: 'AAPL', contratos: 2, prima_fill: 1.32, mark: 1.55, valor_actual: 310, invertido: 264, pnl_usd: 44.70 };
     const t = B.totalesGestor([{ tipo: 'libro', p: SPY, br: brSpy, grupo: null, mark: 4.20 }, { tipo: 'broker', br: brAapl }]);
