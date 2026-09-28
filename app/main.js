@@ -204,6 +204,7 @@ async function ruta() {
   if (!sesionActiva) return;
   const tab = (location.hash.replace('#/', '') || 'informe');
   if (tab !== 'cuentas' && typeof _diario === 'object' && _diario) _diario.notaPre = null;   // v53: «Nota» del Copiloto solo vale para la visita que abre
+  if (tab !== 'cuentas' && typeof diarioAncho === 'function') diarioAncho(false);              // v55: el envoltorio ancho es solo del Diario
   document.querySelectorAll('#nav a').forEach(a =>
     a.classList.toggle('on', a.dataset.tab === tab));
   $('#fecha').textContent = fechaNY() + ' · NY';
@@ -6642,6 +6643,7 @@ function compararAbiertos(abiertosFills, itemsCartera, posiciones, leidos) {
 const dineroD = (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const dineroS = (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : (Number(n) > 0 ? '+' : Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const pctD = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : (Number(v) > 0 ? '+' : Number(v) < 0 ? '-' : '') + Math.abs(Number(v)).toFixed(1) + '%';
+const pctD2 = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : (Number(v) > 0 ? '+' : Number(v) < 0 ? '-' : '') + Math.abs(Number(v)).toFixed(2) + '%';   // v55: las tarjetas y las tablas van a dos decimales, como la mesa vieja
 const colD = (n) => (n == null ? 'var(--tx2)' : Number(n) > 0 ? 'var(--verde)' : Number(n) < 0 ? 'var(--rojo)' : 'var(--tx2)');
 // «1 operación cerrada» / «N operaciones cerradas»: el plural a mano, que «1 operaciones» se ve.
 const nOps = (n, sufijo) => `${n} operaci${Number(n) === 1 ? 'ón' : 'ones'}${sufijo ? ' ' + (Number(n) === 1 ? sufijo.replace(/s$/, '') : sufijo) : ''}`;
@@ -6650,9 +6652,10 @@ function selectorCuentas(v) {
     <button class="perbtn${v === 'diario' ? ' on' : ''}" onclick="MZ.cuentasVista('diario')">Diario</button>
     <button class="perbtn${v === 'cuentas' ? ' on' : ''}" onclick="MZ.cuentasVista('cuentas')">Cuentas</button></div>`;
 }
-// Selector de período: Todo · este mes · esta semana · meses (chips, se suman) · semanas de esos
-// meses (o las 8 últimas) · rango a medida con dos fechas. `tmp` = las fechas del rango que Andrés
-// ya eligió y aún no aplicó (en el iPhone elegir dos fechas tarda más que un redibujo de 60 s).
+// Selector de período, como en la mesa vieja: fila PERÍODO (Todo el historial · Hoy · Este mes · Esta
+// semana · un chip por mes con su $, que se SUMAN) · fila SEMANAS (las 8 más recientes, o todas las
+// de lo elegido) · RANGO A MEDIDA con dos fechas. `tmp` = las fechas del rango que Andrés ya eligió y
+// aún no aplicó (en el iPhone elegir dos fechas tarda más que un redibujo de 60 s).
 function seccionPeriodoDiario(sel, meses, semanas, hoy, tmp) {
   const s = periodoDiarioNormalizar(sel);
   const t = tmp || {};
@@ -6666,66 +6669,89 @@ function seccionPeriodoDiario(sel, meses, semanas, hoy, tmp) {
   else if (s.modo === 'dias') ctx = new Set(s.vals.map(d => d.slice(0, 7)));
   const semVis = (ctx ? (semanas || []).filter(w => ctx.has(w.desde.slice(0, 7)) || ctx.has(w.hasta.slice(0, 7))) : (semanas || []).slice(0, 8));
   const chip = (tipo, val, txt, pnl, esOn, titulo) => `<button class="chip2${esOn ? ' on' : ''}" onclick="MZ.diarioPeriodo('${tipo}','${esc(val)}')" title="${esc(titulo || '')}">${esc(txt)}${pnl != null ? `<small style="color:${esOn ? 'inherit' : colD(pnl)}">${dineroS(pnl)}</small>` : ''}</button>`;
+  const etq = (txt) => `<span class="etq">${txt}</span>`;
   return `<div class="card">
     <div class="fila"><h3>Período</h3><span class="fresco">${esc(tituloPeriodoDiario(s))}</span></div>
-    <div class="chips">
+    <div class="chips">${etq('PERÍODO')}
       <button class="chip2${s.modo === 'todo' ? ' on' : ''}" onclick="MZ.diarioPeriodo('todo')">Todo el historial</button>
+      ${chip('dia', String(hoy).slice(0, 10), 'Hoy', null, on('dias', String(hoy).slice(0, 10)) && s.vals.length === 1)}
       ${chip('mes', esteMes, 'Este mes', null, on('meses', esteMes) && s.vals.length === 1)}
       ${chip('sem', estaSem, 'Esta semana', null, on('semanas', estaSem) && s.vals.length === 1)}
-      ${chip('dia', String(hoy).slice(0, 10), 'Hoy', null, on('dias', String(hoy).slice(0, 10)) && s.vals.length === 1)}</div>
-    ${ms.length ? `<div class="fresco" style="margin-top:8px">MESES · toca varios para sumarlos</div>
-    <div class="chips">${ms.map(m => chip('mes', m.clave, nombreMesYm(m.clave), m.pnl, on('meses', m.clave), `${m.ops} operaciones`)).join('')}</div>` : ''}
-    ${semVis.length ? `<div class="fresco" style="margin-top:8px">SEMANAS${ctx ? ' de lo elegido' : ' · las 8 más recientes; elige un mes para ver todas las suyas'}</div>
-    <div class="chips">${semVis.map(w => chip('sem', w.desde, textoSemana(w.desde), w.pnl, on('semanas', w.desde), `del ${w.desde} al ${w.hasta} · ${w.ops} operaciones`)).join('')}</div>` : ''}
-    <div class="fresco" style="margin-top:8px">RANGO A MEDIDA</div>
-    <div class="fila" style="margin-top:4px;gap:6px">
-      <input type="date" id="dDesde" value="${esc(vDesde)}" style="flex:1" onchange="MZ.diarioRangoTmp('desde', this.value)">
+      ${ms.map(m => chip('mes', m.clave, nombreMesYm(m.clave), m.pnl, on('meses', m.clave), `${m.ops} operaciones · toca varios meses para sumarlos`)).join('')}</div>
+    ${semVis.length ? `<div class="chips">${etq('SEMANAS')}${semVis.map(w => chip('sem', w.desde, textoSemana(w.desde), w.pnl, on('semanas', w.desde), `del ${w.desde} al ${w.hasta} · ${w.ops} operaciones · toca varias para sumarlas`)).join('')}
+      ${!ctx && (semanas || []).length > 8 ? `<span class="fresco" style="align-self:center">las 8 más recientes · elige un mes para ver todas sus semanas</span>` : ''}</div>` : ''}
+    <div class="chips" style="align-items:center">${etq('RANGO A MEDIDA')}
+      <input type="date" id="dDesde" value="${esc(vDesde)}" style="flex:1;min-width:128px" onchange="MZ.diarioRangoTmp('desde', this.value)">
       <span class="mut">→</span>
-      <input type="date" id="dHasta" value="${esc(vHasta)}" style="flex:1" onchange="MZ.diarioRangoTmp('hasta', this.value)">
+      <input type="date" id="dHasta" value="${esc(vHasta)}" style="flex:1;min-width:128px" onchange="MZ.diarioRangoTmp('hasta', this.value)">
       <button class="btnsec" style="flex:none;padding:9px 12px" onclick="MZ.diarioRango()">Ver</button></div>
   </div>`;
 }
-function tarjetasResumenDiario(M, sel, cob) {
-  const t = tituloPeriodoDiario(sel);
-  const tarjeta = (lbl, val, sub, col) => `<div class="card" style="padding:11px 13px">
-    <div class="mut" style="font-size:10px;font-weight:700;letter-spacing:.1em">${esc(lbl)}</div>
-    <div class="mono" style="font-size:19px;font-weight:700;margin:2px 0;color:${col || 'var(--tx)'}">${val}</div>
-    ${sub ? `<div class="fresco">${sub}</div>` : ''}</div>`;
-  const porBroker = (cob || []).filter(c => c.n > 0);
-  return `<div class="card">
-      <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">TOTAL DEL PERÍODO · ${esc(t.toUpperCase())}</div>
-      <div class="mono" style="font-size:30px;font-weight:700;margin:3px 0;color:${colD(M.total)}">${dineroD(M.total)}</div>
-      <div class="fila" style="margin-top:4px"><span class="mut">${nOps(M.ops, 'cerradas')} · ${M.ops ? M.aciertos + ' en verde (' + Math.round(M.aciertos / M.ops * 100) + '%)' : 'ninguna'}</span>
-        <span class="mut">mejor ${dineroS(M.mejor)} · peor ${dineroS(M.peor)}</span></div>
-      ${M.comisiones ? `<div class="fresco" style="margin-top:3px">comisiones ya descontadas: ${dineroD(M.comisiones)} (E*TRADE las reporta; Schwab no las manda en sus órdenes ni moomoo en sus ejecuciones)</div>` : ''}
-      ${M.vencidas ? `<div class="fresco" style="margin-top:3px;color:var(--oro)">${nOps(M.vencidas)} ${M.vencidas > 1 ? 'vencieron' : 'venció'} sin venderse (toda o en parte): pérdida total el día del vencimiento</div>` : ''}</div>
-    <div class="dos" style="display:grid;grid-template-columns:1fr 1fr;gap:9px">
-      ${tarjeta('% GANADO POR $ OPERADO', pctD(M.pct), `P&amp;L ÷ ${M.ops === 1 ? 'lo que costó la operación' : 'lo que costaron las ' + M.ops + ' operaciones'} (ponderado)`, colD(M.pct))}
-      ${tarjeta('PROMEDIO POR DÍA', dineroD(M.prom_dia), `${M.dias_operados} día${M.dias_operados === 1 ? '' : 's'} operado${M.dias_operados === 1 ? '' : 's'}`, colD(M.prom_dia))}
-      ${tarjeta('PROYECCIÓN MENSUAL', dineroD(M.proy_mes), 'estimación: 21 días hábiles a este ritmo', colD(M.proy_mes))}
-      ${tarjeta('PROYECCIÓN ANUAL', dineroD(M.proy_anio), 'estimación: 252 días hábiles a este ritmo', colD(M.proy_anio))}
-    </div>
-    ${M.dias_operados ? `<div class="fresco" style="padding:0 4px">⚠ Las proyecciones extrapolan el promedio de ${M.dias_operados} día${M.dias_operados === 1 ? '' : 's'} operado${M.dias_operados === 1 ? '' : 's'}: son una referencia del ritmo, no una promesa. Un solo día malo las cambia por completo.</div>` : ''}
-    ${porBroker.length ? `<div class="card" style="padding:11px 13px"><div class="mut" style="font-size:10px;font-weight:700;letter-spacing:.1em">POR CUENTA · EN EL PERÍODO</div>
-      ${porBroker.map(c => `<div class="fila" style="margin-top:4px"><span class="mut">${esc(BROKER_NOMBRE[c.broker] || c.broker)}</span><b class="mono" style="color:${colD(c.pnl_periodo)}">${dineroD(c.pnl_periodo)}</b></div>`).join('')}</div>` : ''}`;
+// Fechas (YYYY-MM-DD) que abarca el período elegido: «todo» va desde la primera ejecución del libro
+// (`primera`) hasta hoy; un mes, del 1 a su último día; una semana, de lunes a viernes. PURA.
+function rangoPeriodoDiario(sel, hoy, primera) {
+  const s = periodoDiarioNormalizar(sel), H = String(hoy || '').slice(0, 10);
+  if (s.modo === 'meses') {
+    const u = s.vals[s.vals.length - 1], y = Number(u.slice(0, 4)), m = Number(u.slice(5, 7));
+    return { desde: s.vals[0] + '-01', hasta: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) };
+  }
+  if (s.modo === 'semanas') return { desde: s.vals[0], hasta: viernesDe(s.vals[s.vals.length - 1]) };
+  if (s.modo === 'dias') return { desde: s.vals[0], hasta: s.vals[s.vals.length - 1] };
+  if (s.modo === 'rango') return { desde: s.desde, hasta: s.hasta };
+  return { desde: primera || H, hasta: H };
 }
-// Línea de cobertura: desde cuándo hay historia por cuenta y si falta un login en este equipo.
+// El pie de la tarjeta TOTAL DEL PERÍODO, como en la mesa vieja: «Rango a medida · 2026-01-21 → 2026-09-25». PURA.
+function subtituloPeriodoDiario(sel, hoy, primera) {
+  const s = periodoDiarioNormalizar(sel), r = rangoPeriodoDiario(s, hoy, primera);
+  const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+  const titulo = s.modo === 'meses' ? s.vals.map(v => cap(nombreMesYm(v))).join(' + ')
+    : s.modo === 'semanas' ? (s.vals.length === 1 ? 'Semana del ' + textoSemana(s.vals[0]) : `${s.vals.length} semanas`)
+    : s.modo === 'dias' ? (s.vals.length === 1 ? (s.vals[0] === String(hoy || '').slice(0, 10) ? 'Hoy' : fechaCorta(s.vals[0])) : `${s.vals.length} días`)
+    : s.modo === 'rango' ? 'Rango a medida' : 'Todo el historial';
+  return r.desde === r.hasta ? `${titulo} · ${r.desde}` : `${titulo} · ${r.desde} → ${r.hasta}`;
+}
+// LA FILA DE TARJETAS de la mesa vieja, con sus mismos títulos y pies: TOTAL DEL PERÍODO · % GANADO
+// POR $ OPERADO · ACIERTOS · una por cuenta con «cuenta desde» (solo las que tienen ejecuciones:
+// E*TRADE, moomoo, Charles Schwab, tastytrade) · PROMEDIO POR DÍA · PROYECCIÓN MENSUAL · PROYECCIÓN
+// ANUAL. En el iPhone a dos columnas, en el Mac en una o dos filas (.dcards). Debajo, en pequeño, lo
+// que la vieja decía al pie: mejor/peor, comisiones, vencidas y el descargo de las proyecciones.
+function tarjetasResumenDiario(M, sel, cob, hoy) {
+  const H = String(hoy || hoyNY()).slice(0, 10);
+  const conFills = (cob || []).filter(c => c.n > 0);
+  const primera = conFills.map(c => c.primera).filter(Boolean).sort()[0] || null;
+  const tarjeta = (lbl, val, sub, col) => `<div class="dcard"><div class="lb">${esc(lbl)}</div><div class="vl" style="color:${col || 'var(--tx)'}">${val}</div><div class="sb">${sub || ''}</div></div>`;
+  const porBroker = ['etrade', 'moomoo', 'schwab', 'tasty'].map(b => conFills.find(c => c.broker === b)).filter(Boolean);
+  const pie = [];
+  if (M.ops) pie.push(`mejor ${dineroS(M.mejor)} · peor ${dineroS(M.peor)}`);
+  if (M.comisiones) pie.push(`comisiones ya descontadas: ${dineroD(M.comisiones)} (E*TRADE las reporta; Schwab no las manda en sus órdenes ni moomoo en sus ejecuciones)`);
+  if (M.vencidas) pie.push(`<span style="color:var(--oro)">${nOps(M.vencidas)} ${M.vencidas > 1 ? 'vencieron' : 'venció'} sin venderse (toda o en parte): pérdida total el día del vencimiento</span>`);
+  if (M.dias_operados) pie.push(`⚠ Las proyecciones extrapolan el promedio de ${M.dias_operados} día(s) operado(s): son una estimación del ritmo, no una promesa; un solo día malo las cambia por completo.`);
+  return `<div class="dcards">
+    ${tarjeta('TOTAL DEL PERÍODO', dineroD(M.total), esc(subtituloPeriodoDiario(sel, H, primera)), colD(M.total))}
+    ${tarjeta('% GANADO POR $ OPERADO', pctD2(M.pct), `P&amp;L ÷ costo de ${nOps(M.ops, 'cerradas')}`, colD(M.pct))}
+    ${tarjeta('ACIERTOS', M.ops ? `${M.aciertos} de ${M.ops}` : '—', M.ops ? `${Math.round(M.aciertos / M.ops * 100)}% de las operaciones en verde` : 'sin operaciones cerradas en el período')}
+    ${porBroker.map(c => tarjeta(String(BROKER_NOMBRE[c.broker] || c.broker).toUpperCase(), dineroD(c.pnl_periodo), c.primera ? `cuenta desde ${esc(c.primera)}` : 'sin operaciones', colD(c.pnl_periodo))).join('')}
+    ${tarjeta('PROMEDIO POR DÍA', dineroD(M.prom_dia), `${M.dias_operados} día(s) operado(s)`, colD(M.prom_dia))}
+    ${tarjeta('PROYECCIÓN MENSUAL', dineroD(M.proy_mes), '21 días hábiles a este ritmo', colD(M.proy_mes))}
+    ${tarjeta('PROYECCIÓN ANUAL', dineroD(M.proy_anio), '252 días hábiles a este ritmo', colD(M.proy_anio))}
+  </div>${pie.length ? `<div class="fresco" style="padding:0 4px">${pie.join(' · ')}</div>` : ''}`;
+}
+// «Historial de cada cuenta», la línea de la mesa vieja: por cuenta, desde cuándo hay ejecuciones en
+// el libro y si ahora hay conexión (E*TRADE y Schwab desde este equipo; tastytrade y moomoo las
+// escribe el worker). Una sola línea en el Mac y apilada en el iPhone (.histcta). Solo se DICE.
 function seccionCoberturaDiario(cob, errLibro) {
-  const txt = (c) => {
-    const n = BROKER_NOMBRE[c.broker] || c.broker;
-    const hist = c.n ? `desde <b>${esc(fechaCorta(c.primera))} ${esc(String(c.primera).slice(0, 4))}</b> (${c.n} ejecuciones, última ${esc(fechaCorta(c.ultima))})` : 'sin ejecuciones en el libro todavía';
-    const ses = c.sesion === 'worker' ? 'la escribe el worker (24/5)'
-      : c.sesion === 'ok' ? 'con sesión en este equipo'
-      : c.sesion === 'caducada' ? `<span style="color:var(--oro)">sin sesión aquí (caducó): lo nuevo no baja hasta reconectar</span>`
-      : `<span style="color:var(--oro)">sin login en este equipo: no baja nada nuevo</span>`;
-    return `<div class="fila" style="margin-top:4px;align-items:flex-start"><span class="mut" style="flex:none;width:86px"><b>${esc(n)}</b></span><span class="mut" style="text-align:right">${hist} · ${ses}</span></div>`;
+  const nombre = (b) => (b === 'schwab' ? 'Charles Schwab (thinkorswim)' : (BROKER_NOMBRE[b] || b));
+  const uno = (c) => {
+    const hist = c.n ? `desde <b>${esc(c.primera)}</b>` : 'sin ejecuciones en el libro todavía';
+    const ses = c.sesion === 'worker' ? '<span class="fresco">(la escribe el worker)</span>'
+      : c.sesion === 'ok' ? 'con conexión ahora'
+      : `<span style="color:var(--oro)">sin conexión ahora (se muestra lo guardado)</span>`;
+    return `<span class="hc" title="${c.n ? esc(c.n) + ' ejecuciones · última ' + esc(c.ultima || '') : ''}"><b>${esc(nombre(c.broker))}</b> ${hist} · ${ses}</span>`;
   };
-  return `<div class="card" style="padding:11px 13px">
-    <div class="mut" style="font-size:10px;font-weight:700;letter-spacing:.1em">HISTORIAL DE CADA CUENTA (libro de fills)</div>
-    ${(cob || []).map(txt).join('')}
+  const faltaLogin = (cob || []).some(c => c.sesion === 'sin' || c.sesion === 'caducada');
+  return `<div class="card histcta"><span class="hcl">Historial de cada cuenta:</span> ${(cob || []).map(uno).join(' ')}
     ${errLibro ? `<div class="fresco" style="margin-top:6px;color:var(--oro)">⚠ ${esc(errLibro)}</div>` : ''}
-    <div class="fresco" style="margin-top:6px">E*TRADE muere a medianoche ET y Schwab cada semana: sin sesión, sus ejecuciones nuevas no entran al libro hasta reconectar en Cuentas. Nada de lo ya guardado se borra jamás.</div>
-    <div class="fresco" style="margin-top:4px">E*TRADE da la fecha de cada ejecución, no la hora: si compraste y vendiste el mismo contrato el mismo día, la compra se toma primero. Solo engaña si esa venta cerraba un lote anterior a la historia bajada (180 días).</div></div>`;
+    ${faltaLogin ? `<div class="fresco" style="margin-top:6px">Sin sesión aquí, las ejecuciones nuevas de esa cuenta no entran al libro hasta reconectar en Cuentas (E*TRADE caduca a medianoche ET, Schwab cada semana). Nada de lo ya guardado se borra jamás.</div>` : ''}</div>`;
 }
 // `diasSel`: fechas ya elegidas (modo 'dias') para resaltar su fila; tocar una fila acota a ese día.
 function seccionDiaADia(dias, brokers, diasSel) {
@@ -6744,21 +6770,28 @@ function seccionDiaADia(dias, brokers, diasSel) {
       <td style="color:${colD(d.acumulado)}">${dineroS(d.acumulado)}</td></tr>`).join('')}
     </table></div><div class="fresco" style="padding:6px 4px 0">bajo el día: operaciones cerradas y en verde · bajo el total: % por $ operado (P&amp;L ÷ lo que costaron) · ⚠ = contratos vencidos sin venderse.</div></div>`;
 }
+// RESUMEN MENSUAL y RESUMEN SEMANAL, las dos tablas de la mesa vieja: Mes/Semana | Utilidad / pérdida |
+// % por $ operado | Operaciones (N en verde) | Días operados | Acumulado. Cada fila es clicable y deja
+// ese período solo. En el Mac caben enteras; en el iPhone se desplazan de lado dentro de su tarjeta (.tw).
 function seccionResumenesDiario(meses, semanas, sel) {
   const s = periodoDiarioNormalizar(sel);
   const on = (modo, v) => s.modo === modo && s.vals.includes(v);
-  const tabla = (titulo, filas, tipo) => {
+  const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+  const tabla = (titulo, pista, filas, tipo) => {
     if (!(filas || []).length) return '';
-    return `<div class="sec">${esc(titulo)} <span class="fresco" style="letter-spacing:0;font-weight:500">toca una fila para verla sola</span></div>
-      <div class="card" style="padding:6px 8px"><div class="tw"><table class="tbl">
-      <tr><th>${tipo === 'mes' ? 'Mes' : 'Semana'}</th><th>Utilidad</th><th>Acum.</th></tr>
+    return `<div class="sec">${esc(titulo)} <span class="fresco" style="letter-spacing:0;font-weight:500">${esc(pista)}</span></div>
+      <div class="card" style="padding:6px 8px"><div class="tw"><table class="tbl tbl-res">
+      <tr><th>${tipo === 'mes' ? 'Mes' : 'Semana'}</th><th>Utilidad / pérdida</th><th>% por $ operado</th><th>Operaciones</th><th>Días operados</th><th>Acumulado</th></tr>
       ${filas.map(x => `<tr class="pick${on(tipo === 'mes' ? 'meses' : 'semanas', x.clave) ? ' sel' : ''}" onclick="MZ.diarioPeriodo('${tipo === 'mes' ? 'mes' : 'sem'}','${esc(x.clave)}',true)">
-        <td><b>${esc(tipo === 'mes' ? nombreMesYm(x.clave) : textoSemana(x.clave))}</b><br><small class="fresco">${x.dias} día${x.dias === 1 ? '' : 's'} operado${x.dias === 1 ? '' : 's'}</small></td>
-        <td style="color:${colD(x.pnl)};font-weight:700">${dineroD(x.pnl)}<br><small class="fresco" style="font-weight:500">${pctD(x.pct)} · ${x.ops} op${x.ops === 1 ? '' : 's'} · ${x.aciertos} ✓</small></td>
-        <td style="color:${colD(x.acumulado)}">${dineroS(x.acumulado)}</td></tr>`).join('')}
+        <td><b>${esc(tipo === 'mes' ? cap(nombreMesYm(x.clave)) : `del ${x.desde} al ${x.hasta}`)}</b></td>
+        <td class="util" style="color:${colD(x.pnl)}"><b>${dineroD(x.pnl)}</b></td>
+        <td style="color:${colD(x.pct)}">${pctD2(x.pct)}</td>
+        <td>${x.ops} <span class="fresco">(${x.aciertos} en verde)</span></td>
+        <td>${x.dias}</td>
+        <td style="color:${colD(x.acumulado)}">${dineroD(x.acumulado)}</td></tr>`).join('')}
       </table></div></div>`;
   };
-  return tabla('RESUMEN MENSUAL', meses, 'mes') + tabla('RESUMEN SEMANAL', semanas, 'sem');
+  return tabla('RESUMEN MENSUAL', 'toca un mes para verlo solo', meses, 'mes') + tabla('RESUMEN SEMANAL', 'toca una semana para verla sola', semanas, 'sem');
 }
 function textoDuracionOp(c) {
   if (c.sin_hora) { const d = diasEntre(String(c.entrada_at).slice(0, 10), String(c.salida_at).slice(0, 10)); return d == null ? '—' : d === 0 ? 'mismo día' : `${d} d`; }
@@ -7036,8 +7069,15 @@ function periodoDiarioSel() {
   try { return periodoDiarioNormalizar(JSON.parse(localStorage.getItem(DIARIO_SEL_K) || 'null')); } catch (_) { return { modo: 'todo' }; }
 }
 function periodoDiarioGuardar(sel) { try { localStorage.setItem(DIARIO_SEL_K, JSON.stringify(periodoDiarioNormalizar(sel))); } catch (_) {} }
+// v55: con el Diario a la vista, el envoltorio (#app) se ensancha en pantallas anchas (#app.ancho,
+// ≥ 900 px en el CSS): las tablas de la mesa vieja necesitan sitio. Las demás pestañas siguen a 440 px.
+function diarioAncho(on) {
+  const app = $('#app');
+  if (app && app.classList) app.classList.toggle('ancho', !!on);
+}
 // Cuentas = dos vistas con un selector arriba: Diario (por defecto) y Cuentas (la de siempre).
 async function vistaCuentas() {
+  diarioAncho(_cuentasVista === 'diario');
   if (_cuentasVista === 'cuentas') return vistaCuentasSaldos();
   return vistaDiario();
 }
@@ -7100,19 +7140,21 @@ async function vistaDiario(forzar) {
     const dMes = Math.round(F.cerradas.filter(c => c.fecha_ny >= inicioMes).reduce((s, c) => s + c.pnl, 0) * 100) / 100;
     if (Math.abs((R.util || 0) - dMes) > 0.5) notaCuentas = `Este mes el Diario suma ${dineroD(dMes)} y la pestaña Cuentas ${dineroD(R.util)}. No es un error: Cuentas suma las operaciones cerradas que bajó cada bróker (sin comisiones de Schwab y con las fichas que registraste a mano); el Diario suma cada compra y venta guardada, con comisiones. Manda el Diario; Cuentas se alinea en la siguiente entrega.`;
   } catch (_) {}
+  // v55: el orden de la mesa vieja — período, historial de cada cuenta, la fila de tarjetas, resumen
+  // mensual, resumen semanal, y debajo lo demás (día a día, operaciones, abiertos, ejecuciones, notas).
   let h = selectorCuentas('diario');
   h += seccionPeriodoDiario(sel, meses, semanas, hoy, _diario.rangoTmp);
-  h += tarjetasResumenDiario(M, sel, cob);
-  if (notaCuentas) h += `<div class="fresco" style="padding:0 4px">${esc(notaCuentas)}</div>`;
   h += seccionCoberturaDiario(cob, fillsR.error);
-  h += seccionDiaADia(dias, brokersDias, (sel && sel.modo === 'dias') ? sel.vals : [])   // sel ya viene normalizado (periodoDiarioSel);
+  h += tarjetasResumenDiario(M, sel, cob, hoy);
+  if (notaCuentas) h += `<div class="fresco" style="padding:0 4px">${esc(notaCuentas)}</div>`;
   h += seccionResumenesDiario(meses, semanas, sel);
+  h += seccionDiaADia(dias, brokersDias, (sel && sel.modo === 'dias') ? sel.vals : [])   // sel ya viene normalizado (periodoDiarioSel);
   h += seccionOperacionesDiario(viajesSel);
   h += seccionAbiertosDiario(F.abiertos, cmp, F.huerfanas);
   h += seccionEjecucionesDiario(fillsSel, _diario.brokerFiltro, _diario.masEjec);
   h += `<div id="diarioNotas">${seccionNotasDiario(_notas.lista || [], notaBorradorLeer(), _diario.syms, posic, _notas.editando, _notas.err, _notas.edTexto)}</div>`;
   h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">El Diario se calcula en este equipo sobre el libro de fills (compras y ventas guardadas para siempre). E*TRADE y Schwab lo alimentan desde aquí al sincronizar; tastytrade y moomoo los alimenta el worker (24/5). <a href="#" class="lnk" onclick="MZ.diarioSincronizar();return false">Sincronizar ahora</a></div>`;
-  pintarConservandoFoco($('#vista'), h);
+  pintarConservandoFoco($('#vista'), `<div class="diario">${h}</div>`);   // .diario: contenedor de las @container del CSS (v55)
   if (_diario.enfocarNota) { _diario.enfocarNota = false; const t = $('#nTexto'); if (t) { try { t.scrollIntoView({ block: 'center' }); t.focus(); } catch (_) {} } }
 }
 
@@ -7428,7 +7470,7 @@ function tickerAgregar() {
 }
 
 window.MZ = Object.assign(window.MZ || {}, {
-  cuentasVista: (v) => { _cuentasVista = v === 'cuentas' ? 'cuentas' : 'diario'; try { localStorage.setItem(CUENTAS_VISTA_K, _cuentasVista); } catch (_) {} if (_cuentasVista === 'diario') vistaDiario(true); else vistaCuentas(); },
+  cuentasVista: (v) => { _cuentasVista = v === 'cuentas' ? 'cuentas' : 'diario'; try { localStorage.setItem(CUENTAS_VISTA_K, _cuentasVista); } catch (_) {} diarioAncho(_cuentasVista === 'diario'); if (_cuentasVista === 'diario') vistaDiario(true); else vistaCuentas(); },
   diarioPeriodo: (tipo, val, solo) => {
     const sel = tipo === 'todo' ? { modo: 'todo' } : periodoDiarioToggle(periodoDiarioSel(), tipo, val, !!solo);
     periodoDiarioGuardar(sel); _diario.masEjec = false; _diario.rangoTmp = null; vistaDiario(true);

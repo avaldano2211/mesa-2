@@ -201,6 +201,29 @@
   /* enlaces pequeños con área de toque de 32 px sin cambiar el texto */
   a.lnk{display:inline-block;padding:10px 8px;margin:-10px -2px;font-size:12px}
   #tkSym::placeholder{text-transform:none}
+  /* Diario v55: igual a la mesa vieja. En pantallas anchas el envoltorio se ensancha solo con el Diario
+     (#app.ancho); dentro, .diario es un contenedor (@container) y su CSS reacciona al ancho REAL que tiene:
+     en el iPhone tarjetas a dos columnas e historial apilado; en el Mac fila de tarjetas y una sola línea. */
+  @media (min-width:900px){#app.ancho{max-width:1180px} #app.ancho main.vista{padding:8px 24px 96px}}
+  .diario{display:flex;flex-direction:column;gap:11px;container-type:inline-size}
+  .diario .etq{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--tx3);align-self:center;min-width:52px}
+  .dcards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .dcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-width:0}
+  .dcard .lb{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--tx2);text-transform:uppercase}
+  .dcard .vl{font-family:var(--mono);font-size:19px;font-weight:800;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dcard .sb{font-size:11px;color:var(--tx2);margin-top:2px;line-height:1.35}
+  .histcta{font-size:12px;color:var(--tx2);line-height:1.55;padding:10px 13px}
+  .histcta .hcl{display:block;font-weight:700;color:var(--tx2)}
+  .histcta .hc{display:block}
+  .histcta .hc b{color:var(--tx)}
+  .tbl-res td.util{font-size:14.5px}
+  @container (min-width:860px){
+    .dcards{grid-template-columns:repeat(auto-fill,minmax(168px,1fr))}
+    .histcta .hcl,.histcta .hc{display:inline}
+    .histcta .hc+.hc::before{content:' · ';color:var(--tx3)}
+    .diario .tbl{font-size:12.5px}
+    .diario .tbl td{padding:7px 9px}
+  }
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400..600&display=swap">
@@ -235,7 +258,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=54"></script>
-  <script src="./app/main.js?v=54"></script>
+  <script src="./config.js?v=55"></script>
+  <script src="./app/main.js?v=55"></script>
 </body>
 </html>

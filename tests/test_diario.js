@@ -334,10 +334,13 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 3. RENDER del Diario (HTML puro sobre los datos) ════════════════
   const V = construir(['seccionPeriodoDiario', 'tarjetasResumenDiario', 'seccionCoberturaDiario', 'seccionDiaADia', 'seccionResumenesDiario', 'seccionOperacionesDiario', 'seccionAbiertosDiario',
-    'seccionEjecucionesDiario', 'seccionNotasDiario', 'selectorCuentas', 'textoDuracionOp', 'fechaHoraD', 'periodoDiarioNormalizar', 'lunesDe', 'viernesDe', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'tituloPeriodoDiario', 'diasEntre', 'claveFill'],
+    'seccionEjecucionesDiario', 'seccionNotasDiario', 'selectorCuentas', 'textoDuracionOp', 'fechaHoraD', 'periodoDiarioNormalizar', 'lunesDe', 'viernesDe', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'tituloPeriodoDiario', 'diasEntre', 'claveFill',
+    'rangoPeriodoDiario', 'subtituloPeriodoDiario'],
     { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, ymdNY, fmtFechaNY, durTxt, claveContrato,
       MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C'), BROKER_CORTO: constante('BROKER_CORTO'),
-      dineroD: constante('dineroD'), dineroS: constante('dineroS'), pctD: constante('pctD'), colD: constante('colD'), nOps: constante('nOps') });
+      dineroD: constante('dineroD'), dineroS: constante('dineroS'), pctD: constante('pctD'), pctD2: constante('pctD2'), colD: constante('colD'), nOps: constante('nOps') });
+  const dineroD = constante('dineroD'), pctD2 = constante('pctD2');
+  const re = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const hEj = V.seccionEjecucionesDiario(FILLS, 'todos', false);
   assert((hEj.match(/class="ej"/g) || []).length === FILLS.length && !/<table/.test(hEj) && /EJECUCIONES DEL PERÍODO · 11/.test(hEj), 'la lista de EJECUCIONES sale A LA VISTA con todas las filas, una ficha por ejecución (v53: sin tabla, se lee entera a 390 px sin desplazar de lado); lo primero que Andrés va a buscar');
   assert(/MZ\.diarioBroker\('etrade'\)/.test(hEj) && /COMPRA/.test(hEj) && /VENTA/.test(hEj) && /VENCIMIENTO/.test(hEj), 'ejecuciones: filtro por bróker y el lado de cada una');
@@ -358,6 +361,15 @@ function sbGrabador(respuestas) {
   assert(/<th>moomoo<\/th>/.test(V.seccionDiaADia(dias, [])) && !/<th>moomoo<\/th>/.test(hD), 'v54 día a día: sin lista de brókeres salen las cuatro columnas (moomoo incluida); con la lista, solo las que operaron en el período');
   const hR = V.seccionResumenesDiario(meses, sem, { modo: 'semanas', vals: ['2026-09-21'] });
   assert(/RESUMEN MENSUAL/.test(hR) && /RESUMEN SEMANAL/.test(hR) && /MZ\.diarioPeriodo\('sem','2026-09-21',true\)/.test(hR) && /class="pick sel"/.test(hR), 'resúmenes mensual y semanal, clicables (una fila = ese período solo) y con la elegida marcada');
+  // v55: las dos tablas de la mesa vieja, con sus seis columnas y sus pistas
+  assert(/<tr><th>Mes<\/th><th>Utilidad \/ pérdida<\/th><th>% por \$ operado<\/th><th>Operaciones<\/th><th>Días operados<\/th><th>Acumulado<\/th><\/tr>/.test(hR) && /<tr><th>Semana<\/th><th>Utilidad \/ pérdida<\/th><th>% por \$ operado<\/th><th>Operaciones<\/th><th>Días operados<\/th><th>Acumulado<\/th><\/tr>/.test(hR), 'v55 resúmenes: TABLAS con Mes/Semana | Utilidad / pérdida | % por $ operado | Operaciones | Días operados | Acumulado');
+  assert(/RESUMEN MENSUAL <span class="fresco"[^>]*>toca un mes para verlo solo<\/span>/.test(hR) && /RESUMEN SEMANAL <span class="fresco"[^>]*>toca una semana para verla sola<\/span>/.test(hR), 'v55 resúmenes: «toca un mes para verlo solo» y «toca una semana para verla sola»');
+  const m9 = meses.find(x => x.clave === '2026-09'), w21 = sem.find(x => x.clave === '2026-09-21');
+  assert(new RegExp('<td><b>Septiembre 2026</b></td>\\s*<td class="util" style="color:var\\(--(rojo|verde|tx2)\\)"><b>' + re(dineroD(m9.pnl)) + '</b></td>\\s*<td style="color:var\\(--(rojo|verde|tx2)\\)">' + re(pctD2(m9.pct)) + '</td>\\s*<td>' + m9.ops + ' <span class="fresco">\\(' + m9.aciertos + ' en verde\\)</span></td>\\s*<td>' + m9.dias + '</td>\\s*<td style="color:var\\(--(rojo|verde|tx2)\\)">' + re(dineroD(m9.acumulado)) + '</td>').test(hR),
+    'v55 resumen mensual: la fila de Septiembre 2026 lleva su $ (dos decimales, en grande), su % por $ operado a dos decimales, «N (K en verde)», sus días y el acumulado');
+  assert(new RegExp('<td><b>del 2026-09-21 al 2026-09-25</b></td>\\s*<td class="util" style="color:var\\(--(rojo|verde|tx2)\\)"><b>' + re(dineroD(w21.pnl)) + '</b></td>').test(hR), 'v55 resumen semanal: la fila dice «del 2026-09-21 al 2026-09-25» con su $');
+  assert(/<table class="tbl tbl-res">/.test(hR) && /<div class="tw"><table/.test(hR) && !/<br>/.test(hR.split('RESUMEN SEMANAL')[0].split('<table')[1] || ''), 'v55 resúmenes: una tabla de verdad (tbl-res dentro de .tw: en el iPhone se desplaza de lado dentro de su tarjeta), sin apilar columnas con <br>');
+  igual(V.seccionResumenesDiario([], [], { modo: 'todo' }), '', 'sin meses ni semanas no se pinta ninguna tabla');
   const hP = V.seccionPeriodoDiario({ modo: 'meses', vals: ['2026-09'] }, meses, sem, HOY);
   assert(/Todo el historial/.test(hP) && /Este mes/.test(hP) && /Esta semana/.test(hP) && /id="dDesde"/.test(hP) && /MZ\.diarioRango\(\)/.test(hP) && /septiembre 2026/.test(hP), 'selector: Todo · este mes · esta semana · meses · semanas · rango a medida');
   const hPt = V.seccionPeriodoDiario({ modo: 'todo' }, meses, sem, HOY, { desde: '2026-09-01' });
@@ -367,14 +379,45 @@ function sbGrabador(respuestas) {
   assert(/<button class="chip2 on" onclick="MZ\.diarioPeriodo\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(hPh) && /<span class="fresco">25 sep<\/span>/.test(hPh), 'selector: el chip «Hoy» (MZ.diarioPeriodo(dia, hoy)) sale encendido con hoy elegido y el título del período dice «25 sep»');
   assert(/<button class="chip2" onclick="MZ\.diarioPeriodo\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(hP) && /<button class="chip2 on" onclick="MZ\.diarioPeriodo\('mes','2026-09'\)"/.test(hP), 'selector: con un mes elegido el chip «Hoy» va apagado (y el del mes encendido)');
   assert(/<button class="chip2" onclick="MZ\.diarioPeriodo\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(V.seccionPeriodoDiario({ modo: 'dias', vals: ['2026-09-23', HOY] }, meses, sem, HOY)), 'selector: con hoy Y otro día elegidos, «Hoy» no se enciende (solo cuando hoy es el único)');
+  // v55: la fila de TARJETAS de la mesa vieja
   const hM = V.tarjetasResumenDiario(M, { modo: 'todo' }, cob.map(c => ({ ...c, pnl_periodo: -1 })));
-  assert(/TOTAL DEL PERÍODO · TODO EL HISTORIAL/.test(hM) && /-\$222\.60/.test(hM) && /PROYECCIÓN MENSUAL/.test(hM) && /estimación/.test(hM) && /no una promesa/.test(hM), 'tarjetas: total, % por $, promedio por día y proyecciones dichas como ESTIMACIÓN');
-  assert(/4 operaciones cerradas · 2 en verde \(50%\)/.test(hM) && /2 operaciones vencieron/.test(hM) && !/tramo/.test(hM), 'tarjetas: cuenta VIAJES («4 operaciones cerradas · 2 en verde»), sin hablar de tramos');
+  const etiquetas = (h) => [...h.matchAll(/<div class="lb">([^<]+)<\/div>/g)].map(x => x[1]);
+  igual(etiquetas(hM), ['TOTAL DEL PERÍODO', '% GANADO POR $ OPERADO', 'ACIERTOS', 'E*TRADE', 'CHARLES SCHWAB', 'TASTYTRADE', 'PROMEDIO POR DÍA', 'PROYECCIÓN MENSUAL', 'PROYECCIÓN ANUAL'], 'v55 tarjetas: los títulos de la mesa vieja, en su orden, con una tarjeta por cuenta SOLO para las que tienen ejecuciones (moomoo sin fills no sale)');
+  assert(/<div class="dcard"><div class="lb">TOTAL DEL PERÍODO<\/div><div class="vl" style="color:var\(--rojo\)">-\$222\.60<\/div><div class="sb">Todo el historial · 2026-09-08 → 2026-09-25<\/div><\/div>/.test(hM), 'v55 TOTAL DEL PERÍODO: el total en grande (monoespaciado, rojo) y el pie «Todo el historial · primera ejecución del libro → hoy»');
+  assert(new RegExp('<div class="lb">% GANADO POR \\$ OPERADO</div><div class="vl" style="color:var\\(--(rojo|verde|tx2)\\)">' + re(pctD2(M.pct)) + '</div><div class="sb">P&amp;L ÷ costo de 4 operaciones cerradas</div>').test(hM), 'v55 % GANADO POR $ OPERADO: a dos decimales y el pie «P&L ÷ costo de N operaciones cerradas»');
+  assert(/<div class="lb">ACIERTOS<\/div><div class="vl" style="color:var\(--tx\)">2 de 4<\/div><div class="sb">50% de las operaciones en verde<\/div>/.test(hM), 'v55 ACIERTOS: «2 de 4» y «50% de las operaciones en verde»');
+  assert(/<div class="lb">E\*TRADE<\/div><div class="vl" style="color:var\(--rojo\)">-\$1\.00<\/div><div class="sb">cuenta desde 2026-09-16<\/div>/.test(hM) && /<div class="lb">CHARLES SCHWAB<\/div>[^]*?<div class="sb">cuenta desde 2026-09-08<\/div>/.test(hM) && /<div class="lb">TASTYTRADE<\/div>[^]*?<div class="sb">cuenta desde 2026-09-20<\/div>/.test(hM), 'v55 tarjeta por cuenta: su total del período y «cuenta desde» la primera ejecución del libro');
+  assert(new RegExp('<div class="lb">PROMEDIO POR DÍA</div><div class="vl" style="color:var\\(--(rojo|verde|tx2)\\)">' + re(dineroD(M.prom_dia)) + '</div><div class="sb">' + M.dias_operados + ' día\\(s\\) operado\\(s\\)</div>').test(hM) && M.dias_operados === 4, 'v55 PROMEDIO POR DÍA con «4 día(s) operado(s)»');
+  assert(new RegExp('<div class="lb">PROYECCIÓN MENSUAL</div><div class="vl" style="color:var\\(--(rojo|verde|tx2)\\)">' + re(dineroD(M.proy_mes)) + '</div><div class="sb">21 días hábiles a este ritmo</div>').test(hM) && new RegExp('<div class="lb">PROYECCIÓN ANUAL</div><div class="vl" style="color:var\\(--(rojo|verde|tx2)\\)">' + re(dineroD(M.proy_anio)) + '</div><div class="sb">252 días hábiles a este ritmo</div>').test(hM), 'v55 PROYECCIÓN MENSUAL «21 días hábiles a este ritmo» y ANUAL «252 días hábiles a este ritmo»');
+  assert(/^<div class="dcards">/.test(hM) && (hM.match(/<div class="dcard">/g) || []).length === 9, 'v55 tarjetas: una rejilla .dcards (dos columnas en el iPhone, filas en el Mac) con nueve tarjetas');
+  assert(/estimación/.test(hM) && /no una promesa/.test(hM) && /2 operaciones vencieron/.test(hM) && /mejor /.test(hM) && !/tramo/.test(hM), 'v55 pie de las tarjetas: mejor/peor, vencidas y el descargo de las proyecciones (estimación, no una promesa), sin hablar de tramos');
   const hM1 = V.tarjetasResumenDiario({ ...M, ops: 1, aciertos: 1, vencidas: 1 }, { modo: 'todo' }, []);
-  assert(/1 operación cerrada · 1 en verde/.test(hM1) && /1 operación venció/.test(hM1) && /lo que costó la operación/.test(hM1), 'plural en claro: «1 operación cerrada», no «1 operaciones»');
+  assert(/P&amp;L ÷ costo de 1 operación cerrada/.test(hM1) && /1 operación venció/.test(hM1) && /1 de 1/.test(hM1) && /100% de las operaciones en verde/.test(hM1), 'plural en claro: «1 operación cerrada», no «1 operaciones»');
+  assert(/<div class="lb">ACIERTOS<\/div><div class="vl" style="color:var\(--tx\)">—<\/div><div class="sb">sin operaciones cerradas en el período<\/div>/.test(V.tarjetasResumenDiario({ total: 0, ops: 0, aciertos: 0, pct: null, prom_dia: null, proy_mes: null, proy_anio: null, dias_operados: 0, comisiones: 0, vencidas: 0 }, { modo: 'todo' }, [])), 'sin operaciones: ACIERTOS «—» y el pie lo dice');
+  igual(etiquetas(V.tarjetasResumenDiario(M, { modo: 'todo' }, D.coberturaFills(FILLS_MM, { etrade: 'ok', schwab: 'caducada', tasty: 'worker', moomoo: 'worker' }).map(c => ({ ...c, pnl_periodo: 0 })))).slice(3, 7), ['E*TRADE', 'MOOMOO', 'CHARLES SCHWAB', 'TASTYTRADE'], 'v55 con ejecuciones de moomoo sale su tarjeta, entre E*TRADE y Charles Schwab');
+  assert(/Rango a medida · 2026-01-21 → 2026-09-25/.test(V.tarjetasResumenDiario(M, { modo: 'rango', desde: '2026-01-21', hasta: '2026-09-25' }, cob)) && /Septiembre 2026 · 2026-09-01 → 2026-09-30/.test(V.tarjetasResumenDiario(M, { modo: 'meses', vals: ['2026-09'] }, cob)), 'v55 el pie del total sigue al período: «Rango a medida · 2026-01-21 → 2026-09-25», «Septiembre 2026 · 2026-09-01 → 2026-09-30»');
+  igual([V.subtituloPeriodoDiario({ modo: 'todo' }, HOY, '2026-07-31'), V.subtituloPeriodoDiario({ modo: 'todo' }, HOY, null), V.subtituloPeriodoDiario({ modo: 'meses', vals: ['2026-08', '2026-09'] }, HOY), V.subtituloPeriodoDiario({ modo: 'semanas', vals: ['2026-09-21'] }, HOY), V.subtituloPeriodoDiario({ modo: 'semanas', vals: ['2026-09-14', '2026-09-21'] }, HOY), V.subtituloPeriodoDiario({ modo: 'dias', vals: [HOY] }, HOY), V.subtituloPeriodoDiario({ modo: 'dias', vals: ['2026-09-23', HOY] }, HOY)],
+    ['Todo el historial · 2026-07-31 → 2026-09-25', 'Todo el historial · 2026-09-25', 'Agosto 2026 + Septiembre 2026 · 2026-08-01 → 2026-09-30', 'Semana del 21–25 sep · 2026-09-21 → 2026-09-25', '2 semanas · 2026-09-14 → 2026-09-25', 'Hoy · 2026-09-25', '2 días · 2026-09-23 → 2026-09-25'], 'subtituloPeriodoDiario: título y fechas de cada modo');
+  igual([V.rangoPeriodoDiario({ modo: 'meses', vals: ['2026-02'] }, HOY), V.rangoPeriodoDiario({ modo: 'meses', vals: ['2026-12'] }, HOY), V.rangoPeriodoDiario({ modo: 'rango', desde: '2026-09-25', hasta: '2026-09-01' }, HOY)], [{ desde: '2026-02-01', hasta: '2026-02-28' }, { desde: '2026-12-01', hasta: '2026-12-31' }, { desde: '2026-09-01', hasta: '2026-09-25' }], 'rangoPeriodoDiario: febrero acaba el 28, diciembre el 31 y un rango al revés se endereza');
+  // v55: la línea «Historial de cada cuenta» (una línea en el Mac, apilada en el iPhone)
   const hC = V.seccionCoberturaDiario(cob, null);
-  assert(/E\*TRADE/.test(hC) && /caducó/.test(hC) && /worker/.test(hC) && /desde <b>16 sep 2026/.test(hC), 'cobertura: desde cuándo hay historia por cuenta y si falta un login');
-  assert(/<b>moomoo<\/b><\/span><span class="mut" style="text-align:right">sin ejecuciones en el libro todavía · la escribe el worker \(24\/5\)/.test(V.seccionCoberturaDiario(D.coberturaFills(FILLS, { moomoo: 'worker' }), null)), 'v54 cobertura pintada: moomoo con «sin ejecuciones en el libro todavía · la escribe el worker (24/5)»');
+  assert(/^<div class="card histcta"><span class="hcl">Historial de cada cuenta:<\/span> /.test(hC), 'v55 historial: empieza por «Historial de cada cuenta:» en una tarjeta .histcta');
+  assert(/<span class="hc" title="5 ejecuciones · última 2026-09-24"><b>E\*TRADE<\/b> desde <b>2026-09-16<\/b> · con conexión ahora<\/span>/.test(hC), 'v55 historial: «E*TRADE desde 2026-09-16 · con conexión ahora» (la cuenta y la última ejecución van en el title)');
+  assert(/<b>Charles Schwab \(thinkorswim\)<\/b> desde <b>2026-09-08<\/b> · <span style="color:var\(--oro\)">sin conexión ahora \(se muestra lo guardado\)<\/span>/.test(hC), 'v55 historial: «Charles Schwab (thinkorswim) desde 2026-09-08 · sin conexión ahora (se muestra lo guardado)» con la sesión caducada');
+  assert(/<b>tastytrade<\/b> desde <b>2026-09-20<\/b> · <span class="fresco">\(la escribe el worker\)<\/span>/.test(hC), 'v55 historial: «tastytrade desde 2026-09-20 (la escribe el worker)»');
+  assert(/Sin sesión aquí/.test(hC) && !/Sin sesión aquí/.test(V.seccionCoberturaDiario(cob.map(c => ({ ...c, sesion: c.sesion === 'caducada' ? 'ok' : c.sesion })), null)), 'v55 historial: la nota de reconectar solo sale cuando falta un login en este equipo');
+  assert(/⚠ boom/.test(V.seccionCoberturaDiario(cob, 'boom')) && !/⚠/.test(hC), 'v55 historial: el error del libro se dice, y sin error no hay ⚠');
+  assert(!/<br>/.test(hC) && (hC.match(/class="hc"/g) || []).length === 3, 'v55 historial: tres cuentas como <span class="hc"> (el CSS las pone en línea en el Mac y apiladas en el iPhone), sin saltos a mano');
+  assert(/<span class="hc" title=""><b>moomoo<\/b> sin ejecuciones en el libro todavía · <span class="fresco">\(la escribe el worker\)<\/span><\/span>/.test(V.seccionCoberturaDiario(D.coberturaFills(FILLS, { moomoo: 'worker' }), null)), 'v54/v55 historial: moomoo sin fills dice «sin ejecuciones en el libro todavía (la escribe el worker)»');
+  assert(/<b>moomoo<\/b> desde <b>2026-09-24<\/b> · <span class="fresco">\(la escribe el worker\)<\/span>/.test(V.seccionCoberturaDiario(D.coberturaFills(FILLS_MM, { moomoo: 'worker' }), null)), 'v55 historial: moomoo con fills dice desde cuándo (la fecha la escribe el worker)');
+  // v55: el selector con las etiquetas y la pista de la mesa vieja
+  assert(/<span class="etq">PERÍODO<\/span>/.test(hP) && /<span class="etq">SEMANAS<\/span>/.test(hP) && /<span class="etq">RANGO A MEDIDA<\/span>/.test(hP), 'v55 selector: filas PERÍODO · SEMANAS · RANGO A MEDIDA con su etiqueta');
+  assert(hP.indexOf('Todo el historial') < hP.indexOf('>Hoy<') && hP.indexOf('>Hoy<') < hP.indexOf('Este mes') && hP.indexOf('Este mes') < hP.indexOf('Esta semana') && hP.indexOf('Esta semana') < hP.indexOf('>septiembre 2026<small'), 'v55 selector: Todo el historial · Hoy · Este mes · Esta semana · los meses (con su $), en ese orden');
+  assert(/title="\d+ operaciones · toca varios meses para sumarlos"/.test(hP), 'v55 selector: cada mes dice «N operaciones · toca varios meses para sumarlos»');
+  const semMuchas = Array.from({ length: 10 }, (_, i) => { const l = new Date(Date.UTC(2026, 8, 21) - i * 7 * 86400000).toISOString().slice(0, 10); return { clave: l, desde: l, hasta: V.viernesDe(l), pnl: 1, ops: 1 }; });
+  const hPm = V.seccionPeriodoDiario({ modo: 'todo' }, meses, semMuchas, HOY);
+  assert(/las 8 más recientes · elige un mes para ver todas sus semanas/.test(hPm) && !/las 8 más recientes/.test(hP) && !/las 8 más recientes/.test(V.seccionPeriodoDiario({ modo: 'meses', vals: ['2026-09'] }, meses, semMuchas, HOY)), 'v55 selector: con más de 8 semanas y nada elegido dice «las 8 más recientes · elige un mes para ver todas sus semanas»; con un mes elegido salen las suyas y calla');
+  igual((hPm.match(/MZ\.diarioPeriodo\('sem','2026-\d\d-\d\d'\)/g) || []).length, 9, 'v55 selector: 8 semanas + «Esta semana»');
   const hO = V.seccionOperacionesDiario(R.viajes);
   assert(/OPERACIONES CERRADAS · 4/.test(hO) && /venció \(deducido\)/.test(hO) && /mismo día|1 d|2 d/.test(hO) && /\+13\.2%/.test(hO) && /1 compra y 2 salidas/.test(hO) && /×1 \$3\.30→\$4\.00 · ×1 \$3\.30→\$3\.50/.test(hO), 'operaciones cerradas: una tarjeta por VIAJE con su % sobre lo que costó, sus tramos debajo y las vencidas marcadas (deducida vs reportada)');
   assert(/-\$10\.00 · -3\.1%/.test(V.seccionOperacionesDiario(RA.viajes)), 'CASO A en pantalla: «-$10.00 · -3.1%» (el segundo decimal del redondeo no se ve)');
@@ -734,8 +777,28 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════
   // v54: 31184c9 (v53) ya está publicado; sin subir el número la Mesa instalada no se actualiza sola
-  assert(/config\.js\?v=54/.test(INDEX) && /app\/main\.js\?v=54/.test(INDEX), 'index.html carga config.js?v=54 y app/main.js?v=54');
-  assert(/const VER = 'mesa2-v43';/.test(SW), 'sw.js VER mesa2-v43');
+  assert(/config\.js\?v=55/.test(INDEX) && /app\/main\.js\?v=55/.test(INDEX), 'index.html carga config.js?v=55 y app/main.js?v=55 (v55: el Diario igual a la mesa vieja)');
+  assert(/const VER = 'mesa2-v44';/.test(SW), 'sw.js VER mesa2-v44');
+  // v55: el CSS del Diario (envoltorio ancho solo con el Diario, rejilla de tarjetas, historial en línea/apilado por @container)
+  assert(/@media \(min-width:900px\)\{#app\.ancho\{max-width:1180px\}/.test(INDEX) && /\.diario\{[^}]*container-type:inline-size/.test(INDEX) && /@container \(min-width:860px\)\{/.test(INDEX), 'v55 CSS: #app.ancho a 1180 px desde 900 px y .diario como contenedor de @container (min-width:860px)');
+  assert(/\.dcards\{display:grid;grid-template-columns:1fr 1fr/.test(INDEX) && /\.dcards\{grid-template-columns:repeat\(auto-fill,minmax\(168px,1fr\)\)\}/.test(INDEX) && /\.dcard \.vl\{font-family:var\(--mono\)/.test(INDEX), 'v55 CSS: tarjetas a dos columnas en el iPhone, en filas en el Mac, número monoespaciado');
+  assert(/\.histcta \.hc\{display:block\}/.test(INDEX) && /\.histcta \.hcl,\.histcta \.hc\{display:inline\}/.test(INDEX) && /\.histcta \.hc\+\.hc::before\{content:' · '/.test(INDEX), 'v55 CSS: historial de cada cuenta apilado en el iPhone y en una sola línea con « · » en el Mac');
+  assert(/\.tbl-res td\.util\{font-size:14\.5px\}/.test(INDEX) && /\.tw\{overflow-x:auto/.test(INDEX), 'v55 CSS: el $ de los resúmenes en grande y las tablas se desplazan de lado dentro de su tarjeta');
+  // v55: el cableado del envoltorio ancho y el orden de la vista
+  const vd = extraer('vistaDiario');
+  assert(vd.indexOf('seccionPeriodoDiario(sel') < vd.indexOf('seccionCoberturaDiario(cob') && vd.indexOf('seccionCoberturaDiario(cob') < vd.indexOf('tarjetasResumenDiario(M, sel, cob, hoy)') && vd.indexOf('tarjetasResumenDiario(M, sel, cob, hoy)') < vd.indexOf('seccionResumenesDiario(meses') && vd.indexOf('seccionResumenesDiario(meses') < vd.indexOf('seccionDiaADia(dias') && vd.indexOf('seccionDiaADia(dias') < vd.indexOf('seccionOperacionesDiario(viajesSel)'),
+    'v55 vistaDiario pinta en el orden de la mesa vieja: período → historial de cada cuenta → tarjetas → resúmenes mensual y semanal → día a día → operaciones → …');
+  assert(/pintarConservandoFoco\(\$\('#vista'\), `<div class="diario">\$\{h\}<\/div>`\)/.test(vd), 'v55 vistaDiario envuelve todo en <div class="diario"> (el contenedor del CSS)');
+  assert(/diarioAncho\(_cuentasVista === 'diario'\)/.test(extraer('vistaCuentas')) && /diarioAncho\(_cuentasVista === 'diario'\); if \(_cuentasVista === 'diario'\) vistaDiario\(true\)/.test(FUENTE) && /if \(tab !== 'cuentas' && typeof diarioAncho === 'function'\) diarioAncho\(false\);/.test(extraer('ruta')), 'v55 el envoltorio ancho se enciende al entrar al Diario (ruta → vistaCuentas y MZ.cuentasVista) y se apaga en cualquier otra pestaña');
+  {
+    const toggles = [];
+    const DA = construir(['diarioAncho'], { $: (s) => (s === '#app' ? { classList: { toggle: (c, on) => toggles.push([c, on]) } } : null) });
+    DA.diarioAncho(true); DA.diarioAncho(false); DA.diarioAncho(undefined);
+    igual(toggles, [['ancho', true], ['ancho', false], ['ancho', false]], 'diarioAncho pone o quita la clase ancho de #app (y sin argumento la quita)');
+    const DA2 = construir(['diarioAncho'], { $: () => null });
+    let ok2 = true; try { DA2.diarioAncho(true); } catch (_) { ok2 = false; }
+    assert(ok2, 'diarioAncho sin #app (DOM de juguete) no revienta');
+  }
   assert(/font-size:16px;line-height:1\.45/.test(INDEX) && /\.card select,\.card input\[type=date\]\{[^}]*font-size:16px/.test(INDEX) && /\.chip2\{[^}]*padding:9px 12px/.test(INDEX) && /#tkSym::placeholder\{text-transform:none\}/.test(INDEX), 'CSS: campos nuevos a 16 px (iOS no hace zoom), chips de 33 px de alto, placeholder sin mayúsculas forzadas');
   assert(/\.tbl\{/.test(INDEX) && /\.chip2\{/.test(INDEX) && /\.card textarea\{/.test(INDEX), 'index.html trae el CSS del Diario (tablas, chips, notas)');
   // la doctrina de v50 sigue: el camino de la cartera solo LEE (insert de la adopción y update del ajuste)
@@ -763,7 +826,7 @@ function sbGrabador(respuestas) {
     addEventListener() {}, location: { hash: '#/copiloto', reload() {} }, Intl, Date, Math, JSON, Promise,
     setTimeout, setInterval: () => 0, clearInterval() {}, console, fetch: () => Promise.reject(new Error('sin red')),
     navigator: { serviceWorker: { register: () => Promise.resolve(), addEventListener() {} } },
-    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=54' } } };
+    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=55' } } };
   win.window = win;
   vm.createContext(win);
   let cargo = true;

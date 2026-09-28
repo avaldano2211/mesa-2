@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="es" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mesa 2.0 · v55 · DIARIO · 1200 px</title>
+<style>
+  :root{
+    --bg:#0B0E14; --bg2:#0D1119; --card:#141A26; --line:rgba(255,255,255,.07);
+    --tx:#E9EDF5; --tx2:#8C96AB; --tx3:#5C6678; --oro:#E7B54D;
+    --verde:#45D08C; --rojo:#F26D5F; --azul:#6FA8F5; --morado:#B48CF2; --itm:rgba(111,168,245,.16);
+    --mono:ui-monospace,'SF Mono',Menlo,monospace;
+    --sans:'Instrument Sans',system-ui,-apple-system,sans-serif;
+  }
+  @media(prefers-color-scheme:light){:root:not([data-theme="dark"]){
+    --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
+    --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --morado:#6E44C4; --itm:rgba(46,107,199,.11);
+  }}
+  :root[data-theme="light"]{
+    --bg:#F7F5F1; --bg2:#FFFFFF; --card:#FFFFFF; --line:rgba(24,32,48,.12);
+    --tx:#1B2333; --tx2:#5F6B7E; --tx3:#8A93A5; --oro:#A97A18;
+    --verde:#178A54; --rojo:#D5453B; --azul:#2E6BC7; --morado:#6E44C4; --itm:rgba(46,107,199,.11);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;overscroll-behavior-y:none}
+  a{color:var(--oro)}
+  .oculto{display:none!important}
+  /* ---- login ---- */
+  #login{min-height:100dvh;display:flex;flex-direction:column;justify-content:center;
+    align-items:center;padding:32px;gap:18px}
+  #login .marca{font-family:'Newsreader',Georgia,serif;font-size:30px;font-weight:600;letter-spacing:.01em}
+  #login .sub{color:var(--tx2);font-size:13px;margin-top:-10px}
+  #login form{width:100%;max-width:340px;display:flex;flex-direction:column;gap:11px;margin-top:8px}
+  input{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:13px 14px;color:var(--tx);font-size:15px;font-family:var(--sans);width:100%}
+  input:focus{outline:none;border-color:var(--oro)}
+  button.pri{background:var(--oro);color:#0B0E14;border:none;border-radius:12px;
+    padding:13px;font-size:15px;font-weight:700;font-family:var(--sans);cursor:pointer}
+  .err{color:var(--rojo);font-size:12.5px;min-height:16px;text-align:center}
+  /* ---- app ---- */
+  #app{max-width:440px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column}
+  header.top{padding:calc(env(safe-area-inset-top) + 16px) 20px 10px;display:flex;
+    align-items:center;justify-content:space-between}
+  header.top .t{font-family:'Newsreader',Georgia,serif;font-size:23px;font-weight:500}
+  header.top .fecha{font-size:10.5px;font-weight:700;letter-spacing:.13em;color:var(--tx2)}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
+    font-size:11px;font-weight:700;letter-spacing:.02em}
+  .dot{width:7px;height:7px;border-radius:99px;flex:none}
+  .b-vivo{background:rgba(69,208,140,.13);color:var(--verde)}
+  .b-cerrado{background:rgba(140,150,171,.14);color:var(--tx2)}
+  .b-caido{background:rgba(242,109,95,.13);color:var(--rojo)}
+  main.vista{flex:1;padding:8px 16px 96px;display:flex;flex-direction:column;gap:11px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px}
+  .card h3{margin:0 0 3px;font-size:15px;font-weight:700}
+  .fila{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .chip{display:inline-flex;padding:3px 9px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em}
+  .c-op{background:rgba(69,208,140,.13);color:var(--verde)}
+  .c-vig{background:rgba(231,181,77,.16);color:var(--oro)}
+  .c-esp{background:rgba(140,150,171,.14);color:var(--tx2)}
+  .c-vet{background:rgba(242,109,95,.13);color:var(--rojo)}
+  .sec{font-size:10.5px;font-weight:700;letter-spacing:.12em;color:var(--tx2);margin:6px 2px 2px}
+  .mut{color:var(--tx2);font-size:12.5px;line-height:1.45}
+  .mono{font-family:var(--mono)}
+  .tend{display:flex;gap:5px;flex-wrap:wrap}
+  .tg{font-size:10.5px;color:var(--tx2)}
+  .tg b{color:var(--tx)}
+  .vacio{text-align:center;color:var(--tx3);font-size:12.5px;padding:14px}
+  /* nav */
+  nav.tabs{position:fixed;bottom:0;left:0;right:0;max-width:440px;margin:0 auto;
+    display:flex;justify-content:space-between;padding:9px 16px calc(env(safe-area-inset-bottom) + 12px);
+    border-top:1px solid var(--line);background:var(--bg2)}
+  nav.tabs a{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+    color:var(--tx2);text-decoration:none;font-size:9.5px;font-weight:600}
+  nav.tabs a.on{color:var(--oro)}
+  nav.tabs svg{width:22px;height:22px}
+  .prox{text-align:center;color:var(--tx3);padding:60px 24px;font-size:13.5px;line-height:1.6}
+  .fresco{font-size:10px;color:var(--tx3)}
+  button.pri{cursor:pointer}
+  .btnsec{flex:1;background:transparent;border:1px solid var(--line);color:var(--tx);
+    border-radius:11px;padding:10px;font-size:13px;font-weight:600;font-family:var(--sans);cursor:pointer}
+  .btnsec:active{background:var(--card)}
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;
+    justify-content:center;z-index:50;animation:fade .15s ease}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .hoja{background:var(--bg2);border:1px solid var(--line);border-radius:20px 20px 0 0;
+    width:100%;max-width:440px;padding:20px 18px calc(env(safe-area-inset-bottom) + 20px);
+    display:flex;flex-direction:column;gap:6px;max-height:92dvh;overflow:auto}
+  .hoja h3{font-size:16px;font-weight:700}
+  .hoja label{font-size:10.5px;font-weight:700;letter-spacing:.06em;color:var(--tx2);margin:8px 2px 1px}
+  .hoja input,.hoja select{background:var(--card);border:1px solid var(--line);border-radius:11px;
+    padding:12px;color:var(--tx);font-size:15px;font-family:var(--sans);width:100%}
+  .hoja input:focus,.hoja select:focus{outline:none;border-color:var(--oro)}
+  .hoja .dos{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .gtcprev{margin-top:10px;padding:11px 12px;border-radius:11px;background:rgba(231,181,77,.12);
+    border:1px solid rgba(231,181,77,.3);color:var(--oro);font-family:var(--mono);font-size:13px;font-weight:700;text-align:center}
+  .rango{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;
+    font-size:11px;color:var(--tx2)}
+  .rango b{color:var(--oro);font-size:13px}
+  .rangohint{margin-top:9px;padding:9px 11px;border-radius:10px;font-size:12px;text-align:center;
+    background:var(--card);border:1px solid var(--line);color:var(--tx2)}
+  .rangohint[data-n="ok"]{background:rgba(69,208,140,.12);border-color:rgba(69,208,140,.3);color:var(--verde)}
+  .rangohint[data-n="aviso"]{background:rgba(231,181,77,.12);border-color:rgba(231,181,77,.3);color:var(--oro)}
+  .rangohint[data-n="alto"]{background:rgba(242,109,95,.12);border-color:rgba(242,109,95,.3);color:var(--rojo)}
+  .rangohint b{font-weight:700}
+  .periodos{display:flex;gap:7px;margin:2px 0 2px}
+  .perbtn{flex:1;background:var(--card);border:1px solid var(--line);color:var(--tx2);
+    border-radius:11px;padding:9px;font-size:13px;font-weight:700;font-family:var(--sans);cursor:pointer}
+  .perbtn.on{background:var(--oro);border-color:var(--oro);color:#0B0E14}
+  .hist{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:9px}
+  .hist>div{display:flex;flex-direction:column;gap:1px}
+  .hist span{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase}
+  .hist b{font-size:12.5px;font-weight:600}
+  .cfg{background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:999px;
+    width:32px;height:32px;font-size:15px;line-height:1;cursor:pointer;flex:none;padding:0}
+  .cfg:active{background:var(--card)}
+  /* órdenes E*TRADE */
+  .aviso{margin-top:10px;padding:10px 12px;border-radius:11px;background:rgba(231,181,77,.12);
+    border:1px solid rgba(231,181,77,.35);color:var(--oro);font-size:12.5px;line-height:1.45}
+  .aviso .check{display:flex;gap:8px;align-items:center;margin:8px 0 0;font-size:13px;font-weight:700;
+    letter-spacing:0;color:var(--tx);cursor:pointer}
+  .aviso .check input{width:auto;height:auto;margin:0;accent-color:var(--oro)}
+  .cadena{margin-top:10px;padding:9px 10px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:12px}
+  .cadena table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+  .cadena th{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;padding:2px 4px;text-align:center}
+  .cadena th:first-child,.cadena td:first-child{text-align:left}
+  .cadena th:last-child,.cadena td:last-child{text-align:right}
+  .cadena td{padding:6px 4px;border-top:1px solid var(--line);white-space:nowrap}
+  .cadena td.k{text-align:center;font-weight:700;color:var(--tx)}
+  .cadena td.cel{cursor:pointer}
+  .cadena td.cel small{color:var(--tx3);font-size:9.5px}
+  .cadena td.cel small.sp{color:var(--rojo);font-weight:700}
+  .cadena td.itm{background:var(--itm)}
+  .cadena td.en-rango{color:var(--oro);font-weight:700}
+  .cadena td.en-rango:not(.itm){background:rgba(231,181,77,.16)}
+  .cadena td.borde:not(.itm){background:rgba(231,181,77,.07)}
+  .cadena td.itm.en-rango{box-shadow:inset 0 0 0 1.5px var(--oro)}
+  .cadena tr.atm td.k{color:var(--oro)}
+  .cadena tr.atm-linea td{padding:0;height:0;border-top:2px solid var(--oro);text-align:center;line-height:0}
+  .cadena tr.atm-linea span{display:inline-block;background:var(--card);color:var(--oro);font-size:9.5px;font-weight:700;letter-spacing:.08em;padding:0 7px;line-height:13px;transform:translateY(-7px);border:1px solid var(--oro);border-radius:8px}
+  .cadena .leyenda .sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;border:1px solid var(--line)}
+  .cadena .leyenda .sw.itm{background:var(--itm)}
+  .cadena .leyenda .sw.otm{background:transparent}
+  .cadena .leyenda .sw.rango{background:rgba(231,181,77,.16);border-color:var(--oro)}
+  .prevbox{margin-top:10px;padding:11px 12px;border-radius:11px;background:var(--card);border:1px solid var(--line);font-size:13px}
+  .prevbox .fila{padding:2px 0}
+  .hoja input.pin{text-align:center;letter-spacing:.3em;font-size:18px}
+  .hoja input:disabled,.hoja select:disabled{opacity:.55}
+  .sec a{color:var(--oro);text-decoration:none;font-size:11px;letter-spacing:0}
+  /* señales de hoy: Quitar / Restaurar (v49) */
+  .sec .acc{display:inline-flex;align-items:center;gap:24px;flex:none}
+  .sec .acc a{display:inline-block;padding:10px 0;margin:-10px 0}
+  @media (max-width:380px){.sec .acc{gap:18px}}   /* a 375 px el encabezado del Informe cabe en 1 línea */
+  .btnquitar{flex:none;background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:999px;
+    min-height:32px;padding:0 12px;font-size:12px;font-weight:600;font-family:var(--sans);cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .btnquitar:active{background:var(--line)}
+  .btnquitar:disabled{opacity:.6;cursor:default}
+  .card.quitada{background:transparent;border-style:dashed}
+  .card.quitada .tenue{opacity:.55}
+  .card.quitada .btnquitar,.vacio .btnquitar{color:var(--oro);border-color:rgba(231,181,77,.45)}
+  .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
+    background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
+    box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
+  /* charts de Tickers (velas + Bollinger + H-lines) */
+  .chart{margin-top:9px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chart .fila{margin-bottom:4px}
+  .chart svg{display:block;width:100%;height:auto;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .chart svg text{font-family:var(--mono);font-size:9px}
+  .chart .vacio{padding:26px 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+  .hl{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
+  .hl:first-child{border-top:none}
+  .hl i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:7px}
+  .hl .fresco{text-align:right;white-space:nowrap}
+  /* Diario (v52): tablas compactas con scroll horizontal, chips de período y notas */
+  .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:4px}
+  .tbl{width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap}
+  .tbl th{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;text-align:right;padding:5px 6px;border-bottom:1px solid var(--line)}
+  .tbl td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono)}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl th:first-child,.tbl td:first-child{text-align:left;font-family:var(--sans)}
+  .tbl tr.pick{cursor:pointer}
+  .tbl tr.sel td{background:rgba(231,181,77,.10)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chip2{background:var(--card);border:1px solid var(--line);color:var(--tx2);border-radius:999px;padding:9px 12px;font-size:11.5px;font-weight:600;font-family:var(--sans);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chip2.on{background:var(--oro);border-color:var(--oro);color:#0B0E14}
+  .chip2 small{font-weight:600;margin-left:5px;font-size:10.5px}
+  /* 16 px: por debajo, Safari en el iPhone amplía la página al enfocar el campo y no vuelve solo */
+  .card textarea{background:var(--bg2);border:1px solid var(--line);border-radius:11px;padding:11px;color:var(--tx);font-size:16px;line-height:1.45;font-family:var(--sans);width:100%;min-height:76px;resize:vertical}
+  .card textarea:focus{outline:none;border-color:var(--oro)}
+  .card select,.card input[type=date]{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:9px 10px;color:var(--tx);font-size:16px;font-family:var(--sans);width:100%;min-width:0}
+  .tbl-dias td{padding:7px 4px}
+  /* enlaces pequeños con área de toque de 32 px sin cambiar el texto */
+  a.lnk{display:inline-block;padding:10px 8px;margin:-10px -2px;font-size:12px}
+  #tkSym::placeholder{text-transform:none}
+  /* Diario v55: igual a la mesa vieja. En pantallas anchas el envoltorio se ensancha solo con el Diario
+     (#app.ancho); dentro, .diario es un contenedor (@container) y su CSS reacciona al ancho REAL que tiene:
+     en el iPhone tarjetas a dos columnas e historial apilado; en el Mac fila de tarjetas y una sola línea. */
+  @media (min-width:900px){#app.ancho{max-width:1180px} #app.ancho main.vista{padding:8px 24px 96px}}
+  .diario{display:flex;flex-direction:column;gap:11px;container-type:inline-size}
+  .diario .etq{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--tx3);align-self:center;min-width:52px}
+  .dcards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .dcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-width:0}
+  .dcard .lb{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--tx2);text-transform:uppercase}
+  .dcard .vl{font-family:var(--mono);font-size:19px;font-weight:800;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dcard .sb{font-size:11px;color:var(--tx2);margin-top:2px;line-height:1.35}
+  .histcta{font-size:12px;color:var(--tx2);line-height:1.55;padding:10px 13px}
+  .histcta .hcl{display:block;font-weight:700;color:var(--tx2)}
+  .histcta .hc{display:block}
+  .histcta .hc b{color:var(--tx)}
+  .tbl-res td.util{font-size:14.5px}
+  @container (min-width:860px){
+    .dcards{grid-template-columns:repeat(auto-fill,minmax(168px,1fr))}
+    .histcta .hcl,.histcta .hc{display:inline}
+    .histcta .hc+.hc::before{content:' · ';color:var(--tx3)}
+    .diario .tbl{font-size:12.5px}
+    .diario .tbl td{padding:7px 9px}
+  }
+</style>
+<style>
+  body{padding:22px 18px 60px}
+  .tablero{display:flex;flex-direction:column;gap:30px;align-items:flex-start;max-width:none}
+  .caso{flex:none}
+  .caso > h2{font-family:'Newsreader',Georgia,serif;font-size:17px;font-weight:600;margin:0 0 3px;color:var(--tx)}
+  .caso > p{margin:0 0 9px;color:var(--tx2);font-size:11.5px;line-height:1.5;max-width:900px}
+  .marco{background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:10px 16px 18px;display:flex;flex-direction:column;gap:11px}
+  .marco.ancho{padding:10px 24px 18px}
+  .cab{font-family:'Newsreader',Georgia,serif;font-size:21px;color:var(--tx);margin:2px 0 0}
+  .nota{max-width:1240px;margin:0 0 20px;color:var(--tx2);font-size:12.5px;line-height:1.55}
+  .nota b{color:var(--tx)}
+</style></head><body>
+<h1 style="font-family:'Newsreader',Georgia,serif;font-weight:600;font-size:26px;margin:0 0 6px">Mesa de Mercado 2.0 · v55 · EL DIARIO igual a la mesa vieja</h1>
+<p class="nota">Dibujado evaluando <b>app/main.js entero</b> en un DOM de juguete con un Supabase falso (libro de fills inventado, julio → septiembre 2026, cuatro cuentas) y el CSS real de <code>index.html</code>. Tema oscuro (data-theme=dark, el de Andrés y el de la mesa vieja); sin fuentes externas ni ninguna llamada de red. Ninguna orden se arma ni se envía en este camino.</p>
+<div class="tablero">
+  <section class="caso" style="width:1200px"><h2>Mac · 1200 px · Cuentas → Diario · todo el historial</h2><p>La misma vista con el envoltorio ancho (#app.ancho): «Historial de cada cuenta» en una sola línea, la fila de tarjetas de la mesa vieja (TOTAL DEL PERÍODO · % GANADO POR $ OPERADO · ACIERTOS · una por cuenta · PROMEDIO POR DÍA · PROYECCIÓN MENSUAL · PROYECCIÓN ANUAL) y las tablas con las seis columnas a la vista.</p>
+    <div class="marco ancho" style="width:1200px"><div class="cab">Cuentas y diario</div><div class="diario"><div class="periodos" id="selCuentas">
+    <button class="perbtn on" onclick="MZ.cuentasVista('diario')">Diario</button>
+    <button class="perbtn" onclick="MZ.cuentasVista('cuentas')">Cuentas</button></div><div class="card">
+    <div class="fila"><h3>Período</h3><span class="fresco">todo el historial</span></div>
+    <div class="chips"><span class="etq">PERÍODO</span>
+      <button class="chip2 on" onclick="MZ.diarioPeriodo('todo')">Todo el historial</button>
+      <button class="chip2" onclick="MZ.diarioPeriodo('dia','2026-09-27')" title="">Hoy</button>
+      <button class="chip2" onclick="MZ.diarioPeriodo('mes','2026-09')" title="">Este mes</button>
+      <button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-09-21')" title="">Esta semana</button>
+      <button class="chip2" onclick="MZ.diarioPeriodo('mes','2026-09')" title="8 operaciones · toca varios meses para sumarlos">septiembre 2026<small style="color:var(--rojo)">-$408</small></button><button class="chip2" onclick="MZ.diarioPeriodo('mes','2026-08')" title="4 operaciones · toca varios meses para sumarlos">agosto 2026<small style="color:var(--verde)">+$143</small></button><button class="chip2" onclick="MZ.diarioPeriodo('mes','2026-07')" title="1 operaciones · toca varios meses para sumarlos">julio 2026<small style="color:var(--verde)">+$87</small></button></div>
+    <div class="chips"><span class="etq">SEMANAS</span><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-09-21')" title="del 2026-09-21 al 2026-09-25 · 1 operaciones · toca varias para sumarlas">21–25 sep<small style="color:var(--rojo)">-$262</small></button><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-09-14')" title="del 2026-09-14 al 2026-09-18 · 2 operaciones · toca varias para sumarlas">14–18 sep<small style="color:var(--rojo)">-$405</small></button><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-09-07')" title="del 2026-09-07 al 2026-09-11 · 3 operaciones · toca varias para sumarlas">7–11 sep<small style="color:var(--verde)">+$40</small></button><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-08-31')" title="del 2026-08-31 al 2026-09-04 · 2 operaciones · toca varias para sumarlas">31 ago – 4 sep<small style="color:var(--verde)">+$219</small></button><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-08-24')" title="del 2026-08-24 al 2026-08-28 · 1 operaciones · toca varias para sumarlas">24–28 ago<small style="color:var(--verde)">+$279</small></button><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-08-17')" title="del 2026-08-17 al 2026-08-21 · 1 operaciones · toca varias para sumarlas">17–21 ago<small style="color:var(--rojo)">-$114</small></button><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-08-10')" title="del 2026-08-10 al 2026-08-14 · 1 operaciones · toca varias para sumarlas">10–14 ago<small style="color:var(--rojo)">-$111</small></button><button class="chip2" onclick="MZ.diarioPeriodo('sem','2026-08-03')" title="del 2026-08-03 al 2026-08-07 · 1 operaciones · toca varias para sumarlas">3–7 ago<small style="color:var(--verde)">+$90</small></button>
+      <span class="fresco" style="align-self:center">las 8 más recientes · elige un mes para ver todas sus semanas</span></div>
+    <div class="chips" style="align-items:center"><span class="etq">RANGO A MEDIDA</span>
+      <input type="date" id="dDesde" value="" style="flex:1;min-width:128px" onchange="MZ.diarioRangoTmp('desde', this.value)">
+      <span class="mut">→</span>
+      <input type="date" id="dHasta" value="" style="flex:1;min-width:128px" onchange="MZ.diarioRangoTmp('hasta', this.value)">
+      <button class="btnsec" style="flex:none;padding:9px 12px" onclick="MZ.diarioRango()">Ver</button></div>
+  </div><div class="card histcta"><span class="hcl">Historial de cada cuenta:</span> <span class="hc" title="15 ejecuciones · última 2026-09-23"><b>E*TRADE</b> desde <b>2026-07-31</b> · con conexión ahora</span> <span class="hc" title="5 ejecuciones · última 2026-09-24"><b>Charles Schwab (thinkorswim)</b> desde <b>2026-09-08</b> · <span style="color:var(--oro)">sin conexión ahora (se muestra lo guardado)</span></span> <span class="hc" title="3 ejecuciones · última 2026-09-24"><b>tastytrade</b> desde <b>2026-09-15</b> · <span class="fresco">(la escribe el worker)</span></span> <span class="hc" title="6 ejecuciones · última 2026-09-11"><b>moomoo</b> desde <b>2026-08-04</b> · <span class="fresco">(la escribe el worker)</span></span>
+    
+    <div class="fresco" style="margin-top:6px">Sin sesión aquí, las ejecuciones nuevas de esa cuenta no entran al libro hasta reconectar en Cuentas (E*TRADE caduca a medianoche ET, Schwab cada semana). Nada de lo ya guardado se borra jamás.</div></div><div class="dcards">
+    <div class="dcard"><div class="lb">TOTAL DEL PERÍODO</div><div class="vl" style="color:var(--rojo)">-$177.30</div><div class="sb">Todo el historial · 2026-07-31 → 2026-09-27</div></div>
+    <div class="dcard"><div class="lb">% GANADO POR $ OPERADO</div><div class="vl" style="color:var(--rojo)">-3.04%</div><div class="sb">P&amp;L ÷ costo de 13 operaciones cerradas</div></div>
+    <div class="dcard"><div class="lb">ACIERTOS</div><div class="vl" style="color:var(--tx)">8 de 13</div><div class="sb">62% de las operaciones en verde</div></div>
+    <div class="dcard"><div class="lb">E*TRADE</div><div class="vl" style="color:var(--rojo)">-$289.30</div><div class="sb">cuenta desde 2026-07-31</div></div><div class="dcard"><div class="lb">MOOMOO</div><div class="vl" style="color:var(--verde)">$86.00</div><div class="sb">cuenta desde 2026-08-04</div></div><div class="dcard"><div class="lb">CHARLES SCHWAB</div><div class="vl" style="color:var(--rojo)">-$70.00</div><div class="sb">cuenta desde 2026-09-08</div></div><div class="dcard"><div class="lb">TASTYTRADE</div><div class="vl" style="color:var(--verde)">$96.00</div><div class="sb">cuenta desde 2026-09-15</div></div>
+    <div class="dcard"><div class="lb">PROMEDIO POR DÍA</div><div class="vl" style="color:var(--rojo)">-$12.66</div><div class="sb">14 día(s) operado(s)</div></div>
+    <div class="dcard"><div class="lb">PROYECCIÓN MENSUAL</div><div class="vl" style="color:var(--rojo)">-$265.86</div><div class="sb">21 días hábiles a este ritmo</div></div>
+    <div class="dcard"><div class="lb">PROYECCIÓN ANUAL</div><div class="vl" style="color:var(--rojo)">-$3,190.32</div><div class="sb">252 días hábiles a este ritmo</div></div>
+  </div><div class="fresco" style="padding:0 4px">mejor +$279 · peor -$501 · comisiones ya descontadas: $14.30 (E*TRADE las reporta; Schwab no las manda en sus órdenes ni moomoo en sus ejecuciones) · <span style="color:var(--oro)">3 operaciones vencieron sin venderse (toda o en parte): pérdida total el día del vencimiento</span> · ⚠ Las proyecciones extrapolan el promedio de 14 día(s) operado(s): son una estimación del ritmo, no una promesa; un solo día malo las cambia por completo.</div><div class="fresco" style="padding:0 4px">Este mes el Diario suma -$408.10 y la pestaña Cuentas $0.00. No es un error: Cuentas suma las operaciones cerradas que bajó cada bróker (sin comisiones de Schwab y con las fichas que registraste a mano); el Diario suma cada compra y venta guardada, con comisiones. Manda el Diario; Cuentas se alinea en la siguiente entrega.</div><div class="sec">RESUMEN MENSUAL <span class="fresco" style="letter-spacing:0;font-weight:500">toca un mes para verlo solo</span></div>
+      <div class="card" style="padding:6px 8px"><div class="tw"><table class="tbl tbl-res">
+      <tr><th>Mes</th><th>Utilidad / pérdida</th><th>% por $ operado</th><th>Operaciones</th><th>Días operados</th><th>Acumulado</th></tr>
+      <tr class="pick" onclick="MZ.diarioPeriodo('mes','2026-09',true)">
+        <td><b>Septiembre 2026</b></td>
+        <td class="util" style="color:var(--rojo)"><b>-$408.10</b></td>
+        <td style="color:var(--rojo)">-11.11%</td>
+        <td>8 <span class="fresco">(5 en verde)</span></td>
+        <td>9</td>
+        <td style="color:var(--rojo)">-$177.30</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('mes','2026-08',true)">
+        <td><b>Agosto 2026</b></td>
+        <td class="util" style="color:var(--verde)"><b>$143.40</b></td>
+        <td style="color:var(--verde)">+8.24%</td>
+        <td>4 <span class="fresco">(2 en verde)</span></td>
+        <td>4</td>
+        <td style="color:var(--verde)">$230.80</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('mes','2026-07',true)">
+        <td><b>Julio 2026</b></td>
+        <td class="util" style="color:var(--verde)"><b>$87.40</b></td>
+        <td style="color:var(--verde)">+20.81%</td>
+        <td>1 <span class="fresco">(1 en verde)</span></td>
+        <td>1</td>
+        <td style="color:var(--verde)">$87.40</td></tr>
+      </table></div></div><div class="sec">RESUMEN SEMANAL <span class="fresco" style="letter-spacing:0;font-weight:500">toca una semana para verla sola</span></div>
+      <div class="card" style="padding:6px 8px"><div class="tw"><table class="tbl tbl-res">
+      <tr><th>Semana</th><th>Utilidad / pérdida</th><th>% por $ operado</th><th>Operaciones</th><th>Días operados</th><th>Acumulado</th></tr>
+      <tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-09-21',true)">
+        <td><b>del 2026-09-21 al 2026-09-25</b></td>
+        <td class="util" style="color:var(--rojo)"><b>-$261.95</b></td>
+        <td style="color:var(--rojo)">-39.69%</td>
+        <td>1 <span class="fresco">(0 en verde)</span></td>
+        <td>2</td>
+        <td style="color:var(--rojo)">-$177.30</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-09-14',true)">
+        <td><b>del 2026-09-14 al 2026-09-18</b></td>
+        <td class="util" style="color:var(--rojo)"><b>-$404.65</b></td>
+        <td style="color:var(--rojo)">-52.96%</td>
+        <td>2 <span class="fresco">(1 en verde)</span></td>
+        <td>2</td>
+        <td style="color:var(--verde)">$84.65</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-09-07',true)">
+        <td><b>del 2026-09-07 al 2026-09-11</b></td>
+        <td class="util" style="color:var(--verde)"><b>$40.00</b></td>
+        <td style="color:var(--verde)">+3.15%</td>
+        <td>3 <span class="fresco">(2 en verde)</span></td>
+        <td>2</td>
+        <td style="color:var(--verde)">$489.30</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-08-31',true)">
+        <td><b>del 2026-08-31 al 2026-09-04</b></td>
+        <td class="util" style="color:var(--verde)"><b>$218.50</b></td>
+        <td style="color:var(--verde)">+22.30%</td>
+        <td>2 <span class="fresco">(2 en verde)</span></td>
+        <td>3</td>
+        <td style="color:var(--verde)">$449.30</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-08-24',true)">
+        <td><b>del 2026-08-24 al 2026-08-28</b></td>
+        <td class="util" style="color:var(--verde)"><b>$278.70</b></td>
+        <td style="color:var(--verde)">+45.69%</td>
+        <td>1 <span class="fresco">(1 en verde)</span></td>
+        <td>1</td>
+        <td style="color:var(--verde)">$230.80</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-08-17',true)">
+        <td><b>del 2026-08-17 al 2026-08-21</b></td>
+        <td class="util" style="color:var(--rojo)"><b>-$114.00</b></td>
+        <td style="color:var(--rojo)">-34.55%</td>
+        <td>1 <span class="fresco">(0 en verde)</span></td>
+        <td>1</td>
+        <td style="color:var(--rojo)">-$47.90</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-08-10',true)">
+        <td><b>del 2026-08-10 al 2026-08-14</b></td>
+        <td class="util" style="color:var(--rojo)"><b>-$111.30</b></td>
+        <td style="color:var(--rojo)">-26.50%</td>
+        <td>1 <span class="fresco">(0 en verde)</span></td>
+        <td>1</td>
+        <td style="color:var(--verde)">$66.10</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-08-03',true)">
+        <td><b>del 2026-08-03 al 2026-08-07</b></td>
+        <td class="util" style="color:var(--verde)"><b>$90.00</b></td>
+        <td style="color:var(--verde)">+23.68%</td>
+        <td>1 <span class="fresco">(1 en verde)</span></td>
+        <td>1</td>
+        <td style="color:var(--verde)">$177.40</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('sem','2026-07-27',true)">
+        <td><b>del 2026-07-27 al 2026-07-31</b></td>
+        <td class="util" style="color:var(--verde)"><b>$87.40</b></td>
+        <td style="color:var(--verde)">+20.81%</td>
+        <td>1 <span class="fresco">(1 en verde)</span></td>
+        <td>1</td>
+        <td style="color:var(--verde)">$87.40</td></tr>
+      </table></div></div><div class="sec">DÍA A DÍA · 14 días <span class="fresco" style="letter-spacing:0;font-weight:500">toca un día para verlo solo</span></div><div class="card" style="padding:6px 6px"><div class="tw">
+    <table class="tbl tbl-dias"><tr><th>Día</th><th>E*TRADE</th><th>Schwab</th><th>tasty</th><th>moomoo</th><th>Total</th><th>Acum.</th></tr>
+    <tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-25',true)"><td><b>25 sep</b><br><small class="fresco">1 op · 0 ✓</small></td>
+      <td style="color:var(--rojo)">-$331 <span style="color:var(--oro)" title="contratos que vencieron sin venderse">⚠1</span></td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--rojo);font-weight:700">-$331<br><small class="fresco" style="font-weight:500">-100.2%</small></td>
+      <td style="color:var(--rojo)">-$177</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-23',true)"><td><b>23 sep</b><br><small class="fresco">0 ops · 0 ✓</small></td>
+      <td style="color:var(--verde)">+$69</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--verde);font-weight:700">+$69<br><small class="fresco" style="font-weight:500">+20.8%</small></td>
+      <td style="color:var(--verde)">+$153</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-18',true)"><td><b>18 sep</b><br><small class="fresco">1 op · 0 ✓</small></td>
+      <td style="color:var(--rojo)">-$501 <span style="color:var(--oro)" title="contratos que vencieron sin venderse">⚠1</span></td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--rojo);font-weight:700">-$501<br><small class="fresco" style="font-weight:500">-100.1%</small></td>
+      <td style="color:var(--verde)">+$85</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-16',true)"><td><b>16 sep</b><br><small class="fresco">1 op · 1 ✓</small></td>
+      <td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--verde)">+$96</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--verde);font-weight:700">+$96<br><small class="fresco" style="font-weight:500">+36.4%</small></td>
+      <td style="color:var(--verde)">+$585</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-11',true)"><td><b>11 sep</b><br><small class="fresco">2 ops · 1 ✓</small></td>
+      <td style="color:var(--tx3)">—</td><td style="color:var(--rojo)">-$240 <span style="color:var(--oro)" title="contratos que vencieron sin venderse">⚠1</span></td><td style="color:var(--tx3)">—</td><td style="color:var(--verde)">+$110</td>
+      <td style="color:var(--rojo);font-weight:700">-$130<br><small class="fresco" style="font-weight:500">-15.3%</small></td>
+      <td style="color:var(--verde)">+$489</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-09',true)"><td><b>9 sep</b><br><small class="fresco">1 op · 1 ✓</small></td>
+      <td style="color:var(--tx3)">—</td><td style="color:var(--verde)">+$170</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--verde);font-weight:700">+$170<br><small class="fresco" style="font-weight:500">+40.5%</small></td>
+      <td style="color:var(--verde)">+$619</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-04',true)"><td><b>4 sep</b><br><small class="fresco">1 op · 1 ✓</small></td>
+      <td style="color:var(--rojo)">-$101</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--rojo);font-weight:700">-$101<br><small class="fresco" style="font-weight:500">-32.7%</small></td>
+      <td style="color:var(--verde)">+$449</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-03',true)"><td><b>3 sep</b><br><small class="fresco">0 ops · 0 ✓</small></td>
+      <td style="color:var(--verde)">+$129</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--verde);font-weight:700">+$129<br><small class="fresco" style="font-weight:500">+41.5%</small></td>
+      <td style="color:var(--verde)">+$551</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-09-01',true)"><td><b>1 sep</b><br><small class="fresco">1 op · 1 ✓</small></td>
+      <td style="color:var(--verde)">+$191</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--verde);font-weight:700">+$191<br><small class="fresco" style="font-weight:500">+53.1%</small></td>
+      <td style="color:var(--verde)">+$422</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-08-27',true)"><td><b>27 ago</b><br><small class="fresco">1 op · 1 ✓</small></td>
+      <td style="color:var(--verde)">+$279</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--verde);font-weight:700">+$279<br><small class="fresco" style="font-weight:500">+45.7%</small></td>
+      <td style="color:var(--verde)">+$231</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-08-20',true)"><td><b>20 ago</b><br><small class="fresco">1 op · 0 ✓</small></td>
+      <td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--rojo)">-$114</td>
+      <td style="color:var(--rojo);font-weight:700">-$114<br><small class="fresco" style="font-weight:500">-34.5%</small></td>
+      <td style="color:var(--rojo)">-$48</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-08-13',true)"><td><b>13 ago</b><br><small class="fresco">1 op · 0 ✓</small></td>
+      <td style="color:var(--rojo)">-$111</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--rojo);font-weight:700">-$111<br><small class="fresco" style="font-weight:500">-26.5%</small></td>
+      <td style="color:var(--verde)">+$66</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-08-05',true)"><td><b>5 ago</b><br><small class="fresco">1 op · 1 ✓</small></td>
+      <td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--verde)">+$90</td>
+      <td style="color:var(--verde);font-weight:700">+$90<br><small class="fresco" style="font-weight:500">+23.7%</small></td>
+      <td style="color:var(--verde)">+$177</td></tr><tr class="pick" onclick="MZ.diarioPeriodo('dia','2026-07-31',true)"><td><b>31 jul</b><br><small class="fresco">1 op · 1 ✓</small></td>
+      <td style="color:var(--verde)">+$87</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td><td style="color:var(--tx3)">—</td>
+      <td style="color:var(--verde);font-weight:700">+$87<br><small class="fresco" style="font-weight:500">+20.8%</small></td>
+      <td style="color:var(--verde)">+$87</td></tr>
+    </table></div><div class="fresco" style="padding:6px 4px 0">bajo el día: operaciones cerradas y en verde · bajo el total: % por $ operado (P&amp;L ÷ lo que costaron) · ⚠ = contratos vencidos sin venderse.</div></div><div class="sec">OPERACIONES CERRADAS · 13 <span class="fresco" style="letter-spacing:0;font-weight:500">cada una entera, con su % sobre lo que costó</span></div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">SPY CALL 769 <span class="fresco">25 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--rojo)">-$261.95 · -39.7%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>22 sep</b></div>
+        <div><span>salida</span><b><span style="color:var(--oro)">venció en parte (deducido)</span></b></div>
+        <div><span>duró</span><b>3 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$660.00</b></div>
+        <div><span>vendido</span><b class="mono">$400.00</b></div>
+        <div><span>×2 · E*TRADE</span><b class="mono">$3.30 → $2.00 <span class="fresco">com $1.95</span></b></div></div>
+      <div class="fresco" style="margin-top:5px">1 compra y 2 salidas · ×1 $3.30→$4.00 · ×1 $3.30→$0.00</div>
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">META PUT 700 <span class="fresco">18 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--rojo)">-$500.65 · -100.1%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>14 sep</b></div>
+        <div><span>salida</span><b><span style="color:var(--oro)">venció</span></b></div>
+        <div><span>duró</span><b>4 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$500.00</b></div>
+        <div><span>vendido</span><b class="mono">$0.00</b></div>
+        <div><span>×1 · E*TRADE</span><b class="mono">$5.00 → $0.00 <span class="fresco">com $0.65</span></b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">AAPL CALL 235 <span class="fresco">18 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$96.00 · +36.4%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>15 sept, 10:40</b></div>
+        <div><span>salida</span><b>16 sept, 13:10</b></div>
+        <div><span>duró</span><b>1 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$264.00</b></div>
+        <div><span>vendido</span><b class="mono">$360.00</b></div>
+        <div><span>×2 · tasty</span><b class="mono">$1.32 → $1.80</b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">SPY CALL 660 <span class="fresco">11 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--rojo)">-$240.00 · -100.0%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>10 sept, 10:05</b></div>
+        <div><span>salida</span><b><span style="color:var(--oro)">venció (deducido)</span></b></div>
+        <div><span>duró</span><b>1 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$240.00</b></div>
+        <div><span>vendido</span><b class="mono">$0.00</b></div>
+        <div><span>×1 · Schwab</span><b class="mono">$2.40 → $0.00</b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">SPY CALL 655 <span class="fresco">18 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$110.00 · +18.0%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>11 sept, 10:20</b></div>
+        <div><span>salida</span><b>11 sept, 14:55</b></div>
+        <div><span>duró</span><b>4.6 h</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$610.00</b></div>
+        <div><span>vendido</span><b class="mono">$720.00</b></div>
+        <div><span>×2 · moomoo</span><b class="mono">$3.05 → $3.60</b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">NVDA CALL 180 <span class="fresco">11 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$170.00 · +40.5%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>08 sept, 10:02</b></div>
+        <div><span>salida</span><b>09 sept, 11:31</b></div>
+        <div><span>duró</span><b>1 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$420.00</b></div>
+        <div><span>vendido</span><b class="mono">$590.00</b></div>
+        <div><span>×2 · Schwab</span><b class="mono">$2.10 → $2.95</b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">TSLA PUT 400 <span class="fresco">11 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$27.40 · +4.4%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>2 sep</b></div>
+        <div><span>salida</span><b>4 sep</b></div>
+        <div><span>duró</span><b>2 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$620.00</b></div>
+        <div><span>vendido</span><b class="mono">$650.00</b></div>
+        <div><span>×2 · E*TRADE</span><b class="mono">$3.10 → $3.25 <span class="fresco">com $2.60</span></b></div></div>
+      <div class="fresco" style="margin-top:5px">1 compra y 2 salidas · ×1 $3.10→$4.40 · ×1 $3.10→$2.10</div>
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">AAPL CALL 230 <span class="fresco">4 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$191.10 · +53.1%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>31 ago</b></div>
+        <div><span>salida</span><b>1 sep</b></div>
+        <div><span>duró</span><b>1 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$360.00</b></div>
+        <div><span>vendido</span><b class="mono">$555.00</b></div>
+        <div><span>×3 · E*TRADE</span><b class="mono">$1.20 → $1.85 <span class="fresco">com $3.90</span></b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">META CALL 760 <span class="fresco">4 sep</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$278.70 · +45.7%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>26 ago</b></div>
+        <div><span>salida</span><b>27 ago</b></div>
+        <div><span>duró</span><b>1 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$610.00</b></div>
+        <div><span>vendido</span><b class="mono">$890.00</b></div>
+        <div><span>×1 · E*TRADE</span><b class="mono">$6.10 → $8.90 <span class="fresco">com $1.30</span></b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">AAPL PUT 225 <span class="fresco">28 ago</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--rojo)">-$114.00 · -34.5%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>18 ago, 09:45</b></div>
+        <div><span>salida</span><b>20 ago, 13:10</b></div>
+        <div><span>duró</span><b>2 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$330.00</b></div>
+        <div><span>vendido</span><b class="mono">$216.00</b></div>
+        <div><span>×3 · moomoo</span><b class="mono">$1.10 → $0.72</b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">TSLA CALL 340 <span class="fresco">21 ago</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--rojo)">-$111.30 · -26.5%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>11 ago</b></div>
+        <div><span>salida</span><b>13 ago</b></div>
+        <div><span>duró</span><b>2 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$420.00</b></div>
+        <div><span>vendido</span><b class="mono">$310.00</b></div>
+        <div><span>×1 · E*TRADE</span><b class="mono">$4.20 → $3.10 <span class="fresco">com $1.30</span></b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">NVDA CALL 175 <span class="fresco">14 ago</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$90.00 · +23.7%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>04 ago, 10:05</b></div>
+        <div><span>salida</span><b>05 ago, 11:40</b></div>
+        <div><span>duró</span><b>1 d</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$380.00</b></div>
+        <div><span>vendido</span><b class="mono">$470.00</b></div>
+        <div><span>×2 · moomoo</span><b class="mono">$1.90 → $2.35</b></div></div>
+      
+    </div><div class="card" style="padding:11px 13px">
+      <div class="fila"><h3 style="font-size:14px">SPY CALL 630 <span class="fresco">7 ago</span></h3>
+        <span class="mono" style="font-weight:700;color:var(--verde)">$87.40 · +20.8%</span></div>
+      <div class="hist">
+        <div><span>entrada</span><b>31 jul</b></div>
+        <div><span>salida</span><b>31 jul</b></div>
+        <div><span>duró</span><b>mismo día</b></div></div>
+      <div class="hist">
+        <div><span>costó</span><b class="mono">$420.00</b></div>
+        <div><span>vendido</span><b class="mono">$510.00</b></div>
+        <div><span>×2 · E*TRADE</span><b class="mono">$2.10 → $2.55 <span class="fresco">com $2.60</span></b></div></div>
+      
+    </div><div class="sec">ABIERTOS SEGÚN EL LIBRO DE FILLS</div><div class="card" style="padding:4px 13px 8px"><div class="fila" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start">
+      <div><b style="font-size:13.5px">NVDA CALL 185</b> <span class="fresco">2 oct</span>
+        <div class="fresco">Schwab · entró 22 sep · 5 d abierto</div></div>
+      <div class="mono" style="text-align:right;flex:none"><b>×3 @ $2.10</b>
+        <div class="fresco">costó $630.00 · <span style="">vence en 5 d</span></div></div></div><div class="fila" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start">
+      <div><b style="font-size:13.5px">META PUT 700</b> <span class="fresco">16 oct</span>
+        <div class="fresco">tasty · entró 24 sep · 3 d abierto</div></div>
+      <div class="mono" style="text-align:right;flex:none"><b>×1 @ $5.00</b>
+        <div class="fresco">costó $500.00 · <span style="">vence en 19 d</span></div></div></div>
+    <div class="fresco" style="padding:6px 0 0">No suman al realizado. Un contrato con expiración pasada y sin venta ya cuenta como pérdida total en su día.</div></div><div class="card" style="border-color:rgba(231,181,77,.45)"><div class="mut" style="font-weight:700;color:var(--oro)">No cuadra con el libro en 1 contrato (solo se dice; nada se cambia solo):</div>
+      <div class="mut mono" style="margin-top:4px;font-size:11.5px">E*TRADE SPY CALL 769 2026-09-25: fills ×0 · Mesa ×1 · bróker sin leer ahora</div>
+      <div class="fresco" style="margin-top:6px">Suele ser una compra anterior a la ventana bajada (E*TRADE 180 d), una ficha registrada a mano sin su fill, o una venta que aún no bajó. Sincroniza en Cuentas y, si persiste, ajusta la ficha en el Copiloto.</div></div><div class="fresco" style="padding:0 4px;color:var(--oro)">⚠ 1 venta sin su compra en el libro (Schwab ×1): falta historia de esa cuenta; no cuentan en la utilidad.</div><div class="sec">EJECUCIONES DEL PERÍODO · 29</div>
+    <div class="chips" style="margin-top:0"><button class="chip2 on" onclick="MZ.diarioBroker('todos')">Todas<small>29</small></button><button class="chip2" onclick="MZ.diarioBroker('etrade')">E*TRADE<small>15</small></button><button class="chip2" onclick="MZ.diarioBroker('schwab')">Schwab<small>5</small></button><button class="chip2" onclick="MZ.diarioBroker('tasty')">tasty<small>3</small></button><button class="chip2" onclick="MZ.diarioBroker('moomoo')">moomoo<small>6</small></button></div><div class="card" style="padding:2px 13px 8px"><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">QQQ CALL 600</b> <span class="fresco">25 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×1 @ $1.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>24 sept, 15:30 · Schwab</span>
+        <span>monto $110.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">META PUT 700</b> <span class="fresco">16 oct</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×1 @ $5.00</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>24 sept, 11:00 · tasty</span>
+        <span>monto $500.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">SPY CALL 769</b> <span class="fresco">25 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×1 @ $4.00</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>23 sep (sin hora) · E*TRADE</span>
+        <span>monto $400.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">NVDA CALL 185</b> <span class="fresco">2 oct</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×3 @ $2.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>22 sept, 10:10 · Schwab</span>
+        <span>monto $630.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">SPY CALL 769</b> <span class="fresco">25 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×2 @ $3.30</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>22 sep (sin hora) · E*TRADE</span>
+        <span>monto $660.00 · com $1.30</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">META PUT 700</b> <span class="fresco">18 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--oro)">VENCIMIENTO</span> ×1 @ $0.00</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>18 sep (sin hora) · E*TRADE</span>
+        <span>monto $0.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">AAPL CALL 235</b> <span class="fresco">18 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×2 @ $1.80</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>16 sept, 13:10 · tasty</span>
+        <span>monto $360.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">AAPL CALL 235</b> <span class="fresco">18 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×2 @ $1.32</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>15 sept, 10:40 · tasty</span>
+        <span>monto $264.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">META PUT 700</b> <span class="fresco">18 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×1 @ $5.00</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>14 sep (sin hora) · E*TRADE</span>
+        <span>monto $500.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">SPY CALL 655</b> <span class="fresco">18 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×2 @ $3.60</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>11 sept, 14:55 · moomoo</span>
+        <span>monto $720.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">SPY CALL 655</b> <span class="fresco">18 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×2 @ $3.05</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>11 sept, 10:20 · moomoo</span>
+        <span>monto $610.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">SPY CALL 660</b> <span class="fresco">11 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×1 @ $2.40</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>10 sept, 10:05 · Schwab</span>
+        <span>monto $240.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">NVDA CALL 180</b> <span class="fresco">11 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×2 @ $2.95</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>09 sept, 11:31 · Schwab</span>
+        <span>monto $590.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">NVDA CALL 180</b> <span class="fresco">11 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×2 @ $2.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>08 sept, 10:02 · Schwab</span>
+        <span>monto $420.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">TSLA PUT 400</b> <span class="fresco">11 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×1 @ $2.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>4 sep (sin hora) · E*TRADE</span>
+        <span>monto $210.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">TSLA PUT 400</b> <span class="fresco">11 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×1 @ $4.40</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>3 sep (sin hora) · E*TRADE</span>
+        <span>monto $440.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">TSLA PUT 400</b> <span class="fresco">11 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×2 @ $3.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>2 sep (sin hora) · E*TRADE</span>
+        <span>monto $620.00 · com $1.30</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">AAPL CALL 230</b> <span class="fresco">4 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×3 @ $1.85</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>1 sep (sin hora) · E*TRADE</span>
+        <span>monto $555.00 · com $1.95</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">AAPL CALL 230</b> <span class="fresco">4 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×3 @ $1.20</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>31 ago (sin hora) · E*TRADE</span>
+        <span>monto $360.00 · com $1.95</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">META CALL 760</b> <span class="fresco">4 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×1 @ $8.90</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>27 ago (sin hora) · E*TRADE</span>
+        <span>monto $890.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">META CALL 760</b> <span class="fresco">4 sep</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×1 @ $6.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>26 ago (sin hora) · E*TRADE</span>
+        <span>monto $610.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">AAPL PUT 225</b> <span class="fresco">28 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×3 @ $0.72</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>20 ago, 13:10 · moomoo</span>
+        <span>monto $216.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">AAPL PUT 225</b> <span class="fresco">28 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×3 @ $1.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>18 ago, 09:45 · moomoo</span>
+        <span>monto $330.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">TSLA CALL 340</b> <span class="fresco">21 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×1 @ $3.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>13 ago (sin hora) · E*TRADE</span>
+        <span>monto $310.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">TSLA CALL 340</b> <span class="fresco">21 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×1 @ $4.20</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>11 ago (sin hora) · E*TRADE</span>
+        <span>monto $420.00 · com $0.65</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">NVDA CALL 175</b> <span class="fresco">14 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×2 @ $2.35</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>05 ago, 11:40 · moomoo</span>
+        <span>monto $470.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">NVDA CALL 175</b> <span class="fresco">14 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×2 @ $1.90</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>04 ago, 10:05 · moomoo</span>
+        <span>monto $380.00</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">SPY CALL 630</b> <span class="fresco">7 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--verde)">COMPRA</span> ×2 @ $2.10</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>31 jul (sin hora) · E*TRADE</span>
+        <span>monto $420.00 · com $1.30</span></div></div><div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div class="fila"><span><b style="font-size:13.5px">SPY CALL 630</b> <span class="fresco">7 ago</span></span>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap"><span style="color:var(--rojo)">VENTA</span> ×2 @ $2.55</span></div>
+      <div class="fila fresco" style="margin-top:2px"><span>31 jul (sin hora) · E*TRADE</span>
+        <span>monto $510.00 · com $1.30</span></div></div>
+    
+    <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución y solo la fecha; Schwab (órdenes) y moomoo (ejecuciones de OpenD) no mandan comisiones.</div></div><div id="diarioNotas"><div class="sec">NOTAS Y LECCIONES</div>
+    <div class="card">
+      <div class="fila" style="gap:6px"><input type="date" id="nFecha" value="2026-09-27" style="flex:1" onchange="MZ.notaBorradorCampo('fecha', this.value)">
+        <select id="nSym" style="flex:1" onchange="MZ.notaBorradorCampo('symbol', this.value)"><option value="">sin ticker</option><option value="AAPL">AAPL</option><option value="META">META</option><option value="NVDA">NVDA</option><option value="QQQ">QQQ</option><option value="SPY">SPY</option><option value="TSLA">TSLA</option></select></div>
+      <select id="nPos" style="margin-top:6px" onchange="MZ.notaBorradorCampo('posicion_id', this.value)"><option value="">sin posición</option><option value="7">META PUT 700 · abierta 24 sep</option><option value="4">NVDA CALL 185 · abierta 22 sep</option><option value="1">SPY CALL 769 · abierta 22 sep</option></select>
+      <textarea id="nTexto" maxlength="4000" placeholder="¿Qué pasó hoy? ¿Qué aprendiste? (hasta 4000 caracteres)" style="margin-top:6px" oninput="MZ.notaBorrador(this.value)"></textarea>
+      <div class="fila" style="margin-top:8px"><span class="fresco">personal: solo tú la ves</span><button class="pri" style="flex:none;padding:10px 16px" onclick="MZ.notaGuardar()">Guardar nota</button></div>
+      </div><div class="fresco" style="padding:4px 4px 0;font-weight:700;letter-spacing:.08em">27 SEP 2026 · HOY</div><div class="card" style="padding:11px 13px">
+      <div style="margin-bottom:5px"><span class="chip c-esp">SPY</span> <span class="chip c-vig">SPY CALL 769</span></div>
+      <div style="font-size:13.5px;line-height:1.5;white-space:pre-wrap">SPY: entré en la parte alta del rango un jueves. Lección: si el bid se mueve 10 % en el minuto de la señal, espero la siguiente.</div>
+        <div class="fila" style="margin-top:7px"><span class="fresco">27 sept, 19:47</span>
+          <span><a href="#" class="lnk" onclick="MZ.notaEditar('31');return false">Editar</a><a href="#" class="lnk" onclick="MZ.notaBorrar('31');return false" style="color:var(--tx3)">Borrar</a></span></div>
+    </div><div class="fresco" style="padding:4px 4px 0;font-weight:700;letter-spacing:.08em">18 SEP 2026</div><div class="card" style="padding:11px 13px">
+      <div style="margin-bottom:5px"><span class="chip c-esp">META</span></div>
+      <div style="font-size:13.5px;line-height:1.5;white-space:pre-wrap">META PUT venció sin venderse: −$500. No puse la GTC porque «iba a rebotar». Regla rota.</div>
+        <div class="fila" style="margin-top:7px"><span class="fresco">18 sept, 17:00</span>
+          <span><a href="#" class="lnk" onclick="MZ.notaEditar('30');return false">Editar</a><a href="#" class="lnk" onclick="MZ.notaBorrar('30');return false" style="color:var(--tx3)">Borrar</a></span></div>
+    </div></div><div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">El Diario se calcula en este equipo sobre el libro de fills (compras y ventas guardadas para siempre). E*TRADE y Schwab lo alimentan desde aquí al sincronizar; tastytrade y moomoo los alimenta el worker (24/5). <a href="#" class="lnk" onclick="MZ.diarioSincronizar();return false">Sincronizar ahora</a></div></div></div></section>
+</div></body></html>
