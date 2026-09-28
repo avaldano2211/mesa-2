@@ -121,6 +121,7 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
       'SPY   261002P00662500': { realtime: true, quote: { bidPrice: 0, askPrice: 0, lastPrice: 0, mark: 3.2 } }, 'errors': { invalids: ['X'] } }));
     igual([r.n, r.estado, r.por[K_NV].mark, r.por[K_SP].mark], [2, 'REALTIME', 0.33, 3.2], 'Schwab: por OSI; sin puntas ni cruce vale su «mark»; la clave errors se ignora');
     igual(M.parsearCotizacionesSchwab(RT({ 'NVDA  260928C00235000': { realtime: false, quote: { bidPrice: 0.3, askPrice: 0.36 } } })).estado, 'DELAYED', 'realtime=false → con retraso');
+    igual(M.parsearCotizacionesSchwab(RT({ 'NVDA  260928C00235000': { quote: { bidPrice: 0.3, askPrice: 0.36 } } })).estado, 'DELAYED', 'sin el campo realtime no se presume en vivo (un festivo sin latido daría el cierre como precio de ahora)');
   }
   // ════════════════ 5. aplicar una cotización ════════════════
   {
@@ -162,6 +163,9 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
     M._vivo.por[K_SP].ts = ahora;
     igual(M.aplicarVivo(), 3, 'con SPY fresco: los tres');
     igual(_cart.moomoo.items[0].pnl_usd, 40, 'moomoo: 340 − 300');
+    M._vivo.por[K_NV].ts = ahora - 30000; M._vivo.por[K_SP].ts = ahora - 30000;
+    igual(M.aplicarVivo(), 0, 'las dos envejecieron (30 s): ninguna se aplica…');
+    igual([_cart.etrade.items[0].mark, _cart.etrade.items[0].pnl_usd, _cart.etrade.items[0].vivo_at, _cart.etrade.items[0]._broker, _cart.moomoo.items[0].mark], [5, 95, undefined, undefined, 3.1], '…y los ítems VUELVEN a las cifras del bróker (no se queda un «en vivo» viejo en pantalla)');
   }
   // ════════════════ 7. vivoToca / vivoFuente ════════════════
   {
@@ -251,6 +255,7 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
     B._cart.etrade = { estado: 'ok', ts: Date.now(), items: [itemBroker({ ...NV, broker: 'etrade', contratos: 1 })] };
     await B.M.cotizarVivo(); await B.M.cotizarVivo();
     igual([B.M._vivo.fallos, B.M._vivo.estado, B.M._vivo.error, B.M._vivo.pausaHasta, B.M._vivo.vetoEtrade], [2, 'error', 'oops', 0, false], 'dos fallos DEL BRÓKER: se sigue intentando, sin veto');
+    assert(/^cotización en vivo por E\*TRADE: oops/.test(B.reg.nodos['#g_vivo_estado'].textContent), 'la barra nombra la fuente desde el primer error: ' + B.reg.nodos['#g_vivo_estado'].textContent);
     await B.M.cotizarVivo();
     igual([B.M._vivo.fallos, B.M._vivo.pausaHasta > Date.now()], [3, true], 'al tercero: pausa de 5 min (no se martilla el proxy)');
     assert(/oops/.test(B.reg.nodos['#g_vivo_estado'].textContent) && /pausa/.test(B.reg.nodos['#g_vivo_estado'].textContent), 'la barra dice el error y la pausa');
@@ -264,6 +269,12 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
     assert(/se usa Schwab/.test(P.M._vivo.error), 'y se dice que se pasa a Schwab');
     const rP = await P.M.cotizarVivo();
     igual([rP.n, P.M._vivo.fuente, brP.mark, P.reg.swLecturas.length, P.reg.lecturas.length], [1, 'schwab', 6, 1, 1], 'el siguiente tic cotiza por Schwab (sin volver a pegar a E*TRADE)');
+    // veto SIN Schwab: la barra dice lo que pasa (no «conecta E*TRADE» con E*TRADE conectado)
+    const P2 = armar({ etrade: { status: 404, data: {} } }); P2.reg.nodos['#g_vivo_estado'] = nodo();
+    P2._cart.etrade = { estado: 'ok', ts: Date.now(), items: [itemBroker({ ...NV, broker: 'etrade', contratos: 1 })] };
+    await P2.M.cotizarVivo(); await P2.M.cotizarVivo();
+    igual([P2.M._vivo.vetoEtrade, P2.M._vivo.estado, P2.reg.lecturas.length], [true, 'sin_fuente', 1], '404 del proxy sin Schwab: veto y «sin fuente» al siguiente tic (sin volver a pegar)');
+    assert(/el proxy no permite la ruta de cotizaciones de E\*TRADE/.test(P2.reg.nodos['#g_vivo_estado'].textContent), 'y la barra lo dice: ' + P2.reg.nodos['#g_vivo_estado'].textContent);
     // Schwab de respaldo sin E*TRADE
     const S = armar({ creds: null, sw: { token: 'x' }, schwab: RT({ 'NVDA  260928C00235000': { realtime: true, quote: { bidPrice: 5.9, askPrice: 6.1, lastPrice: 6 } } }) });
     const brS = itemBroker({ ...NV, broker: 'moomoo', contratos: 30, prima_fill: 0.3, mark: 0.2, valor_actual: 600, invertido: 900, pnl_usd: -300 });

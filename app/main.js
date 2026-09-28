@@ -4677,7 +4677,7 @@ function parsearCotizacionesSchwab(resp) {
     const info = d[osi]; if (!info || typeof info !== 'object' || !info.quote) return;
     const c = desOsi(osi); if (!c) return;
     const clave = claveContrato(c); if (!clave) return;
-    const q = info.quote, estado = info.realtime === false ? 'DELAYED' : 'REALTIME';
+    const q = info.quote, estado = info.realtime === true ? 'REALTIME' : 'DELAYED';   // sin el campo no se presume en vivo
     estados.push(estado);
     let mark = markDeCotizacion(q.bidPrice, q.askPrice, q.lastPrice);
     if (mark == null && Number(q.mark) > 0) mark = Math.round(Number(q.mark) * 10000) / 10000;
@@ -4736,7 +4736,10 @@ function aplicarVivoLista(lista, tipo) {
   const ahora = Date.now(); let n = 0;
   (lista || []).forEach(it => {
     const q = _vivo.por[claveContrato(it)];
-    if (q && Number(q.ts) > 0 && ahora - q.ts <= VIVO_FRESCA_MS && aplicarCotizacion(it, q, q.ts, tipo)) n++;
+    if (q && Number(q.ts) > 0 && ahora - q.ts <= VIVO_FRESCA_MS) { if (aplicarCotizacion(it, q, q.ts, tipo)) n++; }
+    else if (it && it._broker) {   // la cotización envejeció sin relectura: vuelven las cifras DEL BRÓKER (no se queda un «en vivo» viejo)
+      Object.assign(it, it._broker); delete it._broker; delete it.vivo_at; delete it.bid; delete it.ask;
+    }
   });
   return n;
 }
@@ -4767,7 +4770,7 @@ async function cotizarVivo() {
   if (!lista.length) { _vivo.estado = 'nada'; pintarVivoEstado(); return null; }
   const f = vivoFuente();
   if (!f.fuente) { _vivo.fuente = null; _vivo.estado = 'sin_fuente'; pintarVivoEstado(); return null; }
-  _vivo.enVuelo = true;
+  _vivo.enVuelo = true; _vivo.fuente = f.fuente;   // también para el texto de un primer error
   let r = null;
   try {
     let res;
@@ -4819,6 +4822,7 @@ function tickVivo() {
   if (!vivoToca()) { pintarVivoEstado(); return; }   // la barra no se queda en «EN VIVO» al cerrar o al cambiar de sesión
   cotizarVivo().catch(() => {});
   pintarVivoEstado();                                 // con el proxy lento (hasta 25 s) el «hace N s» sigue diciendo la verdad
+  if (_vivo.ts && Date.now() - _vivo.ts > VIVO_FRESCA_MS) { try { aplicarVivo(); pintarVivoEnSitio(); } catch (_) {} }   // envejecida: las celdas vuelven al bróker
   const ahora = Date.now();
   const releer = CART_BROKERS.some(b => _cart.releer[b]);
   if ((ahora - _vivo.ultimoTickCartera < VIVO_CARTERA_MS && !releer) || document.querySelector('.modal')) return;
@@ -4918,7 +4922,9 @@ function textoVivoEstado() {
   const nom = _vivo.fuente ? (BROKER_NOMBRE[_vivo.fuente] || _vivo.fuente) : '';
   if (sesionNY(_hbUltimo) !== 'regular') return 'fuera de la sesión regular: marks del cierre (la cotización en vivo corre de 9:30 a 16:00 ET)';
   if (_vivo.estado === 'no_vivo') return `${nom} devuelve «${_vivo.detalle || 'sin estado'}», que no es un precio de ahora: no se usa · marks del bróker (20 s) y del worker (1 min)`;
-  if (_vivo.estado === 'sin_fuente') return 'sin cotización en vivo: conecta E*TRADE o Schwab en este equipo (los marks siguen llegando por la cartera cada 20 s y por el worker cada minuto)';
+  if (_vivo.estado === 'sin_fuente') return (_vivo.vetoEtrade && etCreds())
+    ? 'el proxy no permite la ruta de cotizaciones de E*TRADE (avísale a Claude) · marks del bróker (20 s) y del worker (1 min)'
+    : 'sin cotización en vivo: conecta E*TRADE o Schwab en este equipo (los marks siguen llegando por la cartera cada 20 s y por el worker cada minuto)';
   if (_vivo.estado === 'DELAYED') return `${nom} da la cotización CON RETRASO: no se usa (marks del bróker cada 20 s y del worker cada minuto) · se vuelve a probar en 5 min`;
   if (_vivo.estado === 'error') return `cotización en vivo por ${nom}: ${_vivo.error || 'error'}${_vivo.pausaHasta > Date.now() ? ' · en pausa 5 min' : ''} · marks del bróker (20 s) y del worker (1 min)`;
   if (_vivo.estado === 'vacia') return `${nom} no devolvió cotizaciones para estos contratos · marks del bróker (20 s) y del worker (1 min)`;
