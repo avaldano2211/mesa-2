@@ -266,7 +266,7 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'techoPisoProximos',
     let velasResp = { AAPL: { payload: pk, actualizado_at: new Date().toISOString() } }, esperarVelas = null;
     const reg = { cargasVelas: [] };
     const P = construir(['pintarChart', 'cargarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista',
-      'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart'], {
+      'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart'], { anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
       $: (s) => nodos[s] || null, localStorage: localStorageFalso({}), esc, haceCuanto, document: { activeElement: nodos['#tgT'] },
       cargarVelas: async (syms, tf, forzar) => { reg.cargasVelas.push([syms, tf, forzar]); if (esperarVelas) await esperarVelas.promesa; return velasResp; },
       cargarTargets: async () => ({ AAPL: { target: 260, target_alto: 280, target_bajo: 240, fecha: '2026-09-21', fuente: 'finviz' } }),

@@ -205,6 +205,29 @@
      (#app.ancho); dentro, .diario es un contenedor (@container) y su CSS reacciona al ancho REAL que tiene:
      en el iPhone tarjetas a dos columnas e historial apilado; en el Mac fila de tarjetas y una sola línea. */
   @media (min-width:900px){#app.ancho{max-width:1180px} #app.ancho main.vista{padding:8px 24px 96px}}
+  /* v57: la pestaña TICKERS en GRANDE en pantallas anchas (Andrés 2026-09-29, desde el laptop: «están muy
+     chiquitos»): el envoltorio crece hasta 1560 px, las tarjetas van en rejilla (2 columnas desde ~1230 px,
+     3 desde ~1850), el gráfico se dibuja con un viewBox más ancho y alto (velas más grandes y legibles) y la
+     tipografía sube un escalón. En el iPhone nada cambia. La hoja del gráfico (#modalChart) también crece. */
+  @media (min-width:900px){
+    #app.ancho.tk{max-width:1560px}
+    #app.tk main.vista{display:grid;grid-template-columns:repeat(auto-fit,minmax(600px,1fr));gap:14px;align-content:start;padding:8px 24px 96px}
+    #app.tk main.vista>#chartSel{grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap}
+    #app.tk main.vista>#chartSel .periodos{flex:1 1 340px;margin:0}
+    #app.tk .perbtn{font-size:15px;padding:12px 10px}
+    #app.tk .card{padding:18px 22px;border-radius:18px}
+    #app.tk .card h3{font-size:26px}
+    #app.tk .tg{font-size:14.5px}
+    #app.tk .tend{gap:12px}
+    #app.tk .rango{gap:10px;margin-top:10px}
+    #app.tk .rango>span:first-child{font-size:14px}
+    #app.tk .rango b{font-size:22px}
+    #app.tk .fresco{font-size:12.5px}
+    #app.tk .mut{font-size:14px}
+    #app.tk .chart{margin-top:12px}
+    #app.tk .chart svg text{font-size:10.5px}
+    #modalChart .hoja{max-width:1000px}
+  }
   .diario{display:flex;flex-direction:column;gap:11px;container-type:inline-size}
   .diario .etq{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--tx3);align-self:center;min-width:52px}
   .dcards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -316,7 +339,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=56"></script>
-  <script src="./app/main.js?v=56"></script>
+  <script src="./config.js?v=57"></script>
+  <script src="./app/main.js?v=57"></script>
 </body>
 </html>

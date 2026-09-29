@@ -90,7 +90,7 @@ function arrancar(session) {
 }
 window.addEventListener('hashchange', ruta);
 // v55: al cambiar el ancho (Mac: ventana; iPhone: giro) el gestor pasa de tabla a tarjetas o al revés
-(() => { let t = null; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => { if (sesionActiva && (location.hash.replace('#/', '') || 'informe') === 'copiloto') ruta(); }, 250); }); })();
+(() => { let t = null; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => { if (sesionActiva && ['copiloto', 'tickers'].includes(location.hash.replace('#/', '') || 'informe')) ruta(); }, 250); }); })();   // v57: Tickers también (viewBox del gráfico según el ancho)
 // Al volver del fondo (iOS congela la PWA y corta los fetch en vuelo): si estuvo
 // oculta más de 30 s se redibuja la vista y, si hay un formulario de orden
 // abierto, se recarga la cadena.
@@ -219,6 +219,7 @@ async function ruta() {
   const tab = (location.hash.replace('#/', '') || 'informe');
   if (tab !== 'cuentas' && typeof _diario === 'object' && _diario) _diario.notaPre = null;   // v53: «Nota» del Copiloto solo vale para la visita que abre
   if (tab !== 'cuentas' && typeof diarioAncho === 'function') diarioAncho(false);              // v55: el envoltorio ancho es solo del Diario
+  if (typeof tickersAncho === 'function') tickersAncho(tab === 'tickers');                       // v57: Tickers en GRANDE en pantallas anchas (rejilla)
   if (tab === 'copiloto' && typeof copilotoAncho === 'function') copilotoAncho(true);           // v55: …y del Copiloto (la tabla del gestor), en el mismo tick: sin salto de ancho
   document.querySelectorAll('#nav a').forEach(a =>
     a.classList.toggle('on', a.dataset.tab === tab));
@@ -337,8 +338,17 @@ function tg(lbl, v) {
 // (el chart no parpadea) y las velas no se vuelven a pedir mientras la caché
 // esté fresca.
 let _vistaTickersHtml = '';
+// v57: en pantallas anchas (≥ 900 px, el mismo umbral que la tabla del gestor) la pestaña va en GRANDE: el
+// envoltorio ancho con rejilla de tarjetas y el gráfico con un viewBox de 720×320 (más velas legibles).
+function tickersGrande() { return anchoVista() >= GESTOR_ANCHO_TABLA; }
+function tickersAncho(on) {
+  const app = $('#app'); if (!app || !app.classList) return;
+  app.classList.toggle('tk', !!on);
+  if (on) app.classList.add('ancho');
+}
 async function vistaTickers() {
   const { vista, tf } = chartPrefs();
+  const grande = tickersGrande();
   const [est, velas, targets] = await Promise.all([
     sb.from('ticker_estado').select('*'),
     cargarVelas(TICKERS, tf),
@@ -350,7 +360,7 @@ async function vistaTickers() {
   // de ese ticker lanza, esa tarjeta sale sin chart y las demás siguen.
   h += TICKERS.map(t => {
     let c = '';
-    try { c = chartInline(t, velas[t] || null, vista, tf, targets[t] || null); }
+    try { c = chartInline(t, velas[t] || null, vista, tf, targets[t] || null, grande); }
     catch (_) { c = `<div class="chart"><div class="vacio">Chart no disponible (datos inválidos)</div></div>`; }
     return tarjetaTicker(estados.find(e => e.symbol === t), t, false, c);
   }).join('');
@@ -664,9 +674,9 @@ function chartFrescoTxt(fila, tf) {
   }
   return s;
 }
-function chartInline(sym, fila, vista, tf, tg) {
+function chartInline(sym, fila, vista, tf, tg, grande) {
   const pk = fila && fila.payload;
-  const svg = chartSvg(pk, { vista, tf, h: 200, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)' });
+  const svg = chartSvg(pk, { vista, tf, h: grande ? 320 : 200, w: grande ? 720 : 400, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)' });   // v57: en grande, viewBox 720×320
   return `<div class="chart" role="button" onclick="MZ.chartAbrir('${esc(sym)}')">
     <div class="fila"><span class="fresco">${esc(nombreTf(tf))} · ${esc(nombreVista(vista))}</span>
       <span class="fresco">${esc(chartFrescoTxt(fila, tf))}</span></div>${svg}</div>`;
@@ -825,7 +835,8 @@ function pintarChart(fila, tg) {
   const pk = fila && fila.payload, dec = decDe(_ch.sym);
   $('#chSel').innerHTML = chartSelectores(vista, tf, 'chartSelHoja');
   $('#chFresco').textContent = chartFrescoTxt(fila, tf);
-  $('#chSvg').innerHTML = chartSvg(pk, { vista, tf, h: 300, targets: tg, dec, fondo: 'var(--bg2)' });
+  const grande = anchoVista() >= GESTOR_ANCHO_TABLA;   // v57: la hoja del gráfico también crece en pantallas anchas (#modalChart .hoja 1000 px)
+  $('#chSvg').innerHTML = chartSvg(pk, { vista, tf, h: grande ? 380 : 300, w: grande ? 880 : 400, targets: tg, dec, fondo: 'var(--bg2)' });
   $('#chLectura').innerHTML = lecturaChart(pk, tf, dec);
   $('#chHlines').innerHTML = hlinesLista(pk, tg, dec);
   // el editor de target se rellena también si los targets llegaron DESPUÉS de
