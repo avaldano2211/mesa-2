@@ -349,6 +349,54 @@ function tg(lbl, v) {
 // (el chart no parpadea) y las velas no se vuelven a pedir mientras la caché
 // esté fresca.
 let _vistaTickersHtml = '';
+// v58 rev: ¿Andrés está escribiendo en el campo «agregar ticker» de la pestaña? La guarda de diarioEnUso(),
+// pero solo para #tkSym (el resto de la pestaña no tiene campos): un redibujo automático no lo pisa.
+// Sin document (pruebas) → false.
+function tickersEnUso(v) {
+  try {
+    const a = document.activeElement;
+    return !!(a && a.id === 'tkSym' && v && typeof v.contains === 'function' && v.contains(a));
+  } catch (_) { return false; }
+}
+// Estado del editor de la pestaña ANTES de reconstruir su HTML: texto y cursor de #tkSym (y si tenía el foco)
+// y el aviso de #tkErr («Guardando…», «META ya está en el catálogo…», el error de la base). null si no hay editor.
+function editorTickersCapturar(raiz) {
+  try {
+    const i = raiz && typeof raiz.querySelector === 'function' ? raiz.querySelector('#tkSym') : null;
+    if (!i) return null;
+    const e = raiz.querySelector('#tkErr');
+    let foco = false; try { foco = document.activeElement === i; } catch (_) {}
+    return { valor: String(i.value == null ? '' : i.value), ini: i.selectionStart, fin: i.selectionEnd, foco,
+      err: e ? String(e.textContent || '') : '', errColor: e && e.style ? String(e.style.color || '') : '' };
+  } catch (_) { return null; }
+}
+// …y DESPUÉS: el <input> nuevo nace vacío, así que se rellena, recupera el foco y el cursor (como
+// pintarConservandoFoco del Diario, que no guarda el valor) y el aviso vuelve a su sitio. El valor se pone
+// antes que el cursor: asignar .value manda el cursor al final.
+function editorTickersRestaurar(raiz, ed) {
+  if (!ed || !raiz || typeof raiz.querySelector !== 'function') return;
+  try {
+    const i = raiz.querySelector('#tkSym');
+    if (i && (ed.valor || ed.foco)) {
+      i.value = ed.valor;
+      if (ed.foco) {
+        i.focus();
+        if (typeof i.setSelectionRange === 'function') {
+          if (Number.isFinite(ed.ini)) i.setSelectionRange(ed.ini, Number.isFinite(ed.fin) ? ed.fin : ed.ini);
+          else { const L = ed.valor.length; i.setSelectionRange(L, L); }
+        }
+      }
+    }
+    const e = raiz.querySelector('#tkErr');
+    if (e && ed.err) { e.textContent = ed.err; if (e.style) e.style.color = ed.errColor; }
+  } catch (_) {}
+}
+// Reasigna #vista conservando el editor de la pestaña (ver arriba).
+function pintarTickersConservando(v, h) {
+  const ed = editorTickersCapturar(v);
+  v.innerHTML = h;
+  editorTickersRestaurar(v, ed);
+}
 // v57: en pantallas anchas (≥ 900 px, el mismo umbral que la tabla del gestor) la pestaña va en GRANDE: el
 // envoltorio ancho con rejilla de tarjetas y el gráfico con un viewBox de 720×320 (más velas legibles).
 function tickersGrande() { return anchoVista() >= GESTOR_ANCHO_TABLA; }
@@ -357,7 +405,9 @@ function tickersAncho(on) {
   app.classList.toggle('tk', !!on);
   if (on) app.classList.add('ancho');
 }
-async function vistaTickers() {
+// forzar (v58 rev): la llamada viene de un toque (chartExt / chartVista / chartTf / tickerQuitar / tickerQuitarSi /
+// tickerQuitarNo) y repinta aunque el campo tenga el foco; sin él (ruta(): timer de 60 s, Realtime) es automática.
+async function vistaTickers(forzar) {
   const { vista, tf, ext } = chartPrefs();
   const grande = tickersGrande();
   const [est, velas, targets] = await Promise.all([
@@ -378,8 +428,17 @@ async function vistaTickers() {
   if ((location.hash.replace('#/', '') || 'informe') !== 'tickers') return;   // cambió de pestaña mientras cargaba
   const v = $('#vista');
   if (h === _vistaTickersHtml && v.querySelector('#chartSel')) return;         // sin cambios: no redibujar
+  // v58 rev: el editor (#tkSym / #tkErr) vive dentro de #vista, que se reconstruye entero cada 60 s y con cada
+  // Realtime (la doctrina v53 del Diario, diarioEnUso): el HTML cambia casi siempre («hace segundos» → «hace
+  // 1 min», la vela viva) y el <input> se creaba de nuevo vacío, sin foco (en el iPhone se cierra el teclado) y
+  // sin el aviso de #tkErr. Una vuelta AUTOMÁTICA no pisa el campo mientras Andrés escribe en él: se deja para la
+  // siguiente, sin tocar _vistaTickersHtml. Cuenta como forzada también la vuelta con _vistaTickersHtml = ''
+  // (quien escribió en el catálogo —tickerEscribir— o cambió la pregunta de una tarjeta lo puso así antes de
+  // llamar a ruta()): lo que cambió se tiene que ver. Y cuando se repinta, el texto, el cursor y el aviso se
+  // conservan (pintarTickersConservando).
+  if (!forzar && _vistaTickersHtml !== '' && tickersEnUso(v)) return;
   _vistaTickersHtml = h;
-  v.innerHTML = h;
+  pintarTickersConservando(v, h);
 }
 
 // ---------- Charts: velas + Bollinger + H-lines (como las dos ventanas de TC2000 del curso) ----------
@@ -545,7 +604,14 @@ function chartSvg(pk, op) {
   // solo cuando se mira el presente y NO hay vela viva regular (fuera de la sesión regular).
   let extendidas = [];
   if (conExt) {
-    const tMin = cerradas[0].t - 6 * 3600, tReg = new Set(cerradas.map(c => c.t));
+    // v58 rev: las 6 h hacia atrás (el pre de ese día) SOLO si la primera regular a la vista abre su día. El
+    // worker publica 5 sesiones (N_MAX 130 / 150) y la ventana de 2 (MAXV_EXT) empieza a media sesión de D−2
+    // durante toda la regular: con 6 h a secas, el pre de ese día se pegaba a la regular de mediodía sin hueco
+    // ni separador (mismo día) y el eje saltaba de 9:15 a 12:00 — una continuidad temporal falsa. Si la ventana
+    // corta a media sesión, las extendidas anteriores a esa regular no entran.
+    const tPrev = start > 0 ? Number(pk.velas[start - 1][0]) : NaN;
+    const abreDia = !Number.isFinite(tPrev) || chartTiempo(tPrev).ymd !== chartTiempo(cerradas[0].t).ymd;
+    const tMin = abreDia ? cerradas[0].t - 6 * 3600 : cerradas[0].t, tReg = new Set(cerradas.map(c => c.t));
     extendidas = vExt.filter(c => c.t >= tMin && !tReg.has(c.t) && (!vivaOk || c.t < viva.t)).slice(-150).map(c => Object.assign(c, { ext: true }));
     if (end >= total && !vivaOk && vivaExt0 && bienFormada(vivaExt0) && !tReg.has(vivaExt0.t)) extendidas.push(Object.assign(vivaExt0, { viva: true, ext: true }));
   }
@@ -751,7 +817,11 @@ function chartFrescoTxt(fila, tf, ext) {
     const vx = Array.isArray(pk.velas_ext) ? pk.velas_ext.filter(v => Array.isArray(v) && v.length >= 5) : [];
     if (Array.isArray(pk.vela_viva_ext) && pk.vela_viva_ext.length >= 5 && haceCuanto(fila.actualizado_at).min <= 10) return 'vela extendida en curso';
     const ux = vx.length ? vx[vx.length - 1] : null;
-    if (ux && Number(ux[0]) > Number(u[0])) return 'última vela (extendida) ' + haceCuanto((Number(ux[0]) + dur) * 1000).txt;
+    // v58 rev: con una vela REGULAR en curso (9:30–10:30 en Hora, 9:30–9:45 en 15 min) la última regular CERRADA
+    // es la de ayer y la extendida del pre es más nueva, pero lo que el gráfico enseña es la viva regular: la frase
+    // es la regular («… · en curso»), no la de una extendida ya cerrada (lo que se dice = lo que se ve).
+    const hayViva = Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5;
+    if (ux && !hayViva && Number(ux[0]) > Number(u[0])) return 'última vela (extendida) ' + haceCuanto((Number(ux[0]) + dur) * 1000).txt;
     if (!vx.length) return 'extendido: sin datos aún';
   }
   let s = 'última vela ' + haceCuanto((Number(u[0]) + dur) * 1000).txt;
@@ -761,11 +831,13 @@ function chartFrescoTxt(fila, tf, ext) {
   }
   return s;
 }
-// ext (v58): «Extendido» encendido; la cabecera solo dice «· extendido» cuando hay algo extendido publicado.
+// ext (v58): «Extendido» encendido; la cabecera solo dice «· extendido» cuando el svg DIBUJÓ alguna extendida
+// (v58 rev: chartSvg emite data-ext solo con nExt > 0, el mismo criterio que su aria-label). Un payload con
+// velas_ext fuera de la ventana o mal formadas no lo dice: lo que se dice = lo que se ve.
 function chartInline(sym, fila, vista, tf, tg, grande, ext) {
   const pk = fila && fila.payload;
   const svg = chartSvg(pk, { vista, tf, h: grande ? 320 : 200, w: grande ? 720 : 400, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)', ext: ext === true });   // v57: en grande, viewBox 720×320
-  const hayExt = ext === true && tf !== 'dia' && !!pk && Array.isArray(pk.velas_ext) && (pk.velas_ext.length > 0 || (Array.isArray(pk.vela_viva_ext) && pk.vela_viva_ext.length >= 5));
+  const hayExt = ext === true && /data-ext="1"/.test(svg);
   return `<div class="chart" role="button" onclick="MZ.chartAbrir('${esc(sym)}')">
     <div class="fila"><span class="fresco">${esc(nombreTf(tf))} · ${esc(nombreVista(vista))}${hayExt ? ' · extendido' : ''}</span>
       <span class="fresco">${esc(chartFrescoTxt(fila, tf, ext === true))}</span></div>${svg}</div>`;
@@ -942,7 +1014,10 @@ function pintarChart(fila, tg) {
 function pintarSelectores() {
   const { vista, tf } = chartPrefs();
   ['chartSel', 'chartSelHoja'].forEach(id => {
-    const el = $('#' + id); if (el) el.outerHTML = chartSelectores(vista, tf, id, id === 'chartSel');   // v58: el editor de tickers solo en la pestaña
+    const el = $('#' + id); if (!el) return;
+    const ed = id === 'chartSel' ? editorTickersCapturar(el) : null;   // v58 rev: lo escrito en #tkSym y el aviso sobreviven al repintado
+    el.outerHTML = chartSelectores(vista, tf, id, id === 'chartSel');   // v58: el editor de tickers solo en la pestaña
+    if (ed) editorTickersRestaurar($('#chartSel'), ed);
   });
 }
 // v58: interruptor «Extendido» (pre 4:00–9:30 y post 16:00–20:00 ET en 15 min y Hora). Mismo patrón que
@@ -954,7 +1029,7 @@ function chartExt() {
   pintarSelectores();
   _vistaTickersHtml = '';
   if (_ch && $('#modalChart')) pintarChart();
-  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers();
+  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers(true);
 }
 function chartVista(v) {
   if (!CHART_VISTAS.some(x => x[0] === v)) return;
@@ -962,7 +1037,7 @@ function chartVista(v) {
   pintarSelectores();
   _vistaTickersHtml = '';
   if (_ch && $('#modalChart')) pintarChart();
-  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers();
+  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers(true);
 }
 function chartTf(tf) {
   if (!CHART_TFS.some(x => x[0] === tf)) return;
@@ -970,7 +1045,7 @@ function chartTf(tf) {
   pintarSelectores();
   _vistaTickersHtml = '';
   if (_ch && $('#modalChart')) cargarChart(false);
-  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers();
+  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers(true);
 }
 // Target de analistas (Finviz), PERSONAL: upsert en ticker_targets con user_id =
 // sesionActiva.user.id (muralla RLS user_id = auth.uid()).
@@ -8865,17 +8940,35 @@ function pintarTickersCuenta() {
 }
 // v58: el editor vive en DOS sitios con los mismos ids (⚙ Tu cuenta y la pestaña Tickers); con el cuadro de
 // la cuenta abierto encima de la pestaña manda el campo del cuadro (querySelector devolvería el de atrás).
+// Devuelve true si se escribió (quien llama puede vaciar su campo) y false si falló.
+//   v58 rev: en la pestaña el #tkErr es el de la fila de edición, arriba del todo (en el iPhone, fuera de
+// pantalla cuando se toca [Quitar] en una tarjeta de abajo): el fallo se avisa también con un toast, donde se
+// tocó. En el cuadro de la cuenta no hace falta (su #tkErr está bajo el botón). Tras escribir, la pestaña se
+// repinta aunque el campo tenga el foco (_vistaTickersHtml = '' fuerza la vuelta de ruta()): la tarjeta nueva,
+// o la que se quitó, se ve al momento.
 async function tickerEscribir(fn, ok) {
-  const err = $('#modalCuenta #tkErr') || $('#tkErr'); if (err) { err.style.color = ''; err.textContent = 'Guardando…'; }
+  const enCuadro = !!$('#modalCuenta #tkErr');
+  // el #tkErr se busca cada vez que se escribe en él: un redibujo automático de la pestaña durante la escritura lo
+  // reemplaza (el redibujo copia su texto al nodo nuevo) y escribir en el viejo, ya fuera del DOM, dejaría
+  // «Guardando…» colgado para siempre en el vivo
+  const errEl = () => (enCuadro ? $('#modalCuenta #tkErr') : $('#tkErr'));
+  let err = errEl(); if (err) { err.style.color = ''; err.textContent = 'Guardando…'; }
   try {
     const r = await fn();
     if (r && r.error) throw r.error;
     await cargarTickers(true);
     pintarTickersCuenta();
-    if (err) err.textContent = '';
+    err = errEl(); if (err) err.textContent = '';
     if (ok) toast(ok);
+    _vistaTickersHtml = '';
     ruta();
-  } catch (e) { if (err) { err.style.color = 'var(--rojo)'; err.textContent = textoErrorTickers(e); } }
+    return true;
+  } catch (e) {
+    const m = textoErrorTickers(e);
+    err = errEl(); if (err) { err.style.color = 'var(--rojo)'; err.textContent = m; }
+    if (!enCuadro) toast(m);
+    return false;
+  }
 }
 function tickerActivo(sym, on) {
   return tickerEscribir(() => sb.from('tickers').update({ activo: !!on }).eq('symbol', String(sym).toUpperCase()), `${sym}: ${on ? 'activo' : 'inactivo (no se borra)'}`);
@@ -8902,25 +8995,54 @@ function tickerAgregar() {
   const ya = (_tickers.filas || []).find(f => f && String(f.symbol).toUpperCase() === sym);
   if (ya) { if (err) { err.style.color = 'var(--rojo)'; err.textContent = `${sym} ya está en el catálogo${ya.activo === false ? ' (inactivo): actívalo en la lista' : ''}.`; } return; }
   const orden = Math.max(0, ...(_tickers.filas || []).map(f => Number(f.orden) || 0)) + 1;
+  const enCuadro = !!$('#modalCuenta #tkSym');
   return tickerEscribir(() => sb.from('tickers').insert({ symbol: sym, nombre: nom || sym, rol: 'operable', activo: true, orden }),
-    `${sym} agregado: el worker empieza a vigilarlo en ≤2 min`);
+    `${sym} agregado: el worker empieza a vigilarlo en ≤2 min`).then(ok => {
+      // v58 rev: en la pestaña el campo se vacía tras agregar (antes lo vaciaba, de rebote, el redibujo entero de
+      // #vista; ahora el redibujo conserva lo escrito). El cuadro de la cuenta sigue como estaba.
+      if (ok && !enCuadro) { const i = campo('tkSym'); if (i) i.value = ''; }
+      return ok;
+    });
 }
 // v58: quitar desde la tarjeta de la pestaña Tickers, en dos toques y sin confirm() nativo: el primero
 // (tickerQuitar) pone la tarjeta a preguntar y la redibuja; [Quitar] = activo false (no se borra: se
 // vuelve a activar desde los chips «inactivos» de la misma pestaña); [No] vuelve a la cabecera normal.
-function tickerQuitar(sym) {
-  _tickers.quitando = String(sym || '').toUpperCase() || null;
-  _vistaTickersHtml = '';
-  return vistaTickers();
+//   v58 rev: con el catálogo sin leer (o vacío) la pestaña enseña la lista de RESPALDO y el ✕ de esas tarjetas
+// mandaría un update a 0 filas que PostgREST contesta sin error (toast de éxito y la tarjeta intacta): un ticker
+// que no está en el catálogo leído no se puede quitar desde aquí, y se dice (en #tkErr y en un toast). El ✕ se
+// deja en la tarjeta a propósito: un botón que falta no explica nada; el aviso sí.
+function tickerEnCatalogo(sym) {
+  const s = String(sym || '').toUpperCase();
+  return (_tickers.filas || []).some(f => f && String(f.symbol || '').toUpperCase() === s);
 }
+function tickerQuitarAviso(sym) {
+  const m = `${String(sym || '').toUpperCase()} no está en el catálogo leído (lista de respaldo): no se puede quitar desde aquí.`;
+  const err = $('#tkErr'); if (err) { err.style.color = 'var(--rojo)'; err.textContent = m; }
+  toast(m);
+}
+function tickerQuitar(sym) {
+  const s = String(sym || '').toUpperCase() || null;
+  if (s && !tickerEnCatalogo(s)) { tickerQuitarAviso(s); return Promise.resolve(); }
+  _tickers.quitando = s;
+  _vistaTickersHtml = '';
+  return vistaTickers(true);
+}
+// [Quitar]: el estado «quitando» se mantiene hasta saber el resultado y SIEMPRE se cierra con un redibujo forzado.
+// Antes se limpiaba ANTES de escribir y, si el update fallaba (policy, red caída, iOS cortando el fetch), la
+// tarjeta seguía preguntando sin que nadie la repintara, con el error en el #tkErr de arriba (fuera de la vista)
+// que el siguiente redibujo automático borraba.
 function tickerQuitarSi(sym) {
-  _tickers.quitando = null;
-  return tickerActivo(sym, false);
+  if (!tickerEnCatalogo(sym)) { _tickers.quitando = null; tickerQuitarAviso(sym); _vistaTickersHtml = ''; return vistaTickers(true); }
+  return tickerActivo(sym, false).finally(() => {
+    _tickers.quitando = null;
+    _vistaTickersHtml = '';
+    if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers(true);
+  });
 }
 function tickerQuitarNo() {
   _tickers.quitando = null;
   _vistaTickersHtml = '';
-  return vistaTickers();
+  return vistaTickers(true);
 }
 
 window.MZ = Object.assign(window.MZ || {}, {
