@@ -180,6 +180,19 @@
   .hl:first-child{border-top:none}
   .hl i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:7px}
   .hl .fresco{text-align:right;white-space:nowrap}
+  /* v58: editor de tickers EN la pestaña Tickers (agregar / reactivar / quitar) y el botón «Extendido».
+     El campo va a 16 px: por debajo Safari en el iPhone amplía la página al enfocarlo y no vuelve solo. */
+  .tkedit{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:2px 0}
+  .tkedit input{flex:1 1 150px;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:9px 10px;color:var(--tx);font-size:16px;font-family:var(--sans)}
+  .tkedit .btnsec{flex:none;padding:9px 12px}
+  .tkedit .err{flex:1 1 100%;text-align:left;min-height:0}
+  .tkedit .err:empty{display:none}
+  .tkoff{color:var(--tx2)}
+  .tkder{display:flex;align-items:center;flex:none}
+  .tkquitar{flex:none;background:transparent;border:1px solid var(--line);color:var(--tx3);border-radius:9px;padding:4px 8px;font-size:12px;cursor:pointer;margin-left:8px}
+  .tkquitar:active{background:var(--card)}
+  .tkconf .mut{color:var(--tx)}
+  .perbtn:disabled{opacity:.45;cursor:not-allowed}
   /* Diario (v52): tablas compactas con scroll horizontal, chips de período y notas */
   .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:4px}
   .tbl{width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap}
@@ -214,6 +227,7 @@
     #app.tk main.vista{display:grid;grid-template-columns:repeat(auto-fit,minmax(600px,1fr));gap:14px;align-content:start;padding:8px 24px 96px}
     #app.tk main.vista>#chartSel{grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap}
     #app.tk main.vista>#chartSel .periodos{flex:1 1 340px;margin:0}
+    #app.tk main.vista>#chartSel .tkedit{flex:1 1 100%}
     #app.tk .perbtn{font-size:15px;padding:12px 10px}
     #app.tk .card{padding:18px 22px;border-radius:18px}
     #app.tk .card h3{font-size:26px}
@@ -339,7 +353,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=57"></script>
-  <script src="./app/main.js?v=57"></script>
+  <script src="./config.js?v=58"></script>
+  <script src="./app/main.js?v=58"></script>
 </body>
 </html>

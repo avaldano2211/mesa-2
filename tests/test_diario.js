@@ -772,16 +772,16 @@ function sbGrabador(respuestas) {
   assert(/cargarTickers\(\)\.then\(c => \{ if \(c\) ruta\(\); \}\)/.test(FUENTE) && /_mzTimerTickers = setInterval/.test(FUENTE) && /10 \* 60000\);/.test(FUENTE), 'al arrancar y cada 10 min se relee el catálogo');
   const LT = construir(['listaTickersHtml', 'seccionTickersCuenta'], { esc, TICKERS: ['AAPL', 'META'], _tickers: { filas: CAT } });
   const hTk = LT.seccionTickersCuenta();
-  assert(/TICKERS/.test(hTk) && /MZ\.tickerAgregar\(\)/.test(hTk) && /MZ\.tickerActivo\('TSLA', true\)/.test(hTk) && /MZ\.tickerActivo\('SPY', false\)/.test(hTk) && /MZ\.tickerMover\('NVDA', -1\)/.test(hTk) && /10 min/.test(hTk) && /necesita historia/.test(hTk) && /Desactivar NO borra/.test(hTk) && !/MERCADO/.test(hTk.split('Los tickers globales')[0]),
-    '⚙ Tu cuenta → Tickers: lista con interruptor activo/inactivo y orden, Agregar ticker, y la explicación del worker (10 min) y de la historia; el global no se toca');
+  assert(/TICKERS/.test(hTk) && /MZ\.tickerAgregar\(\)/.test(hTk) && /MZ\.tickerActivo\('TSLA', true\)/.test(hTk) && /MZ\.tickerActivo\('SPY', false\)/.test(hTk) && /MZ\.tickerMover\('NVDA', -1\)/.test(hTk) && /2 min/.test(hTk) && /necesita historia/.test(hTk) && /Desactivar NO borra/.test(hTk) && !/MERCADO/.test(hTk.split('Los tickers globales')[0]),
+    '⚙ Tu cuenta → Tickers: lista con interruptor activo/inactivo y orden, Agregar ticker, y la explicación del worker (2 min desde el 0.1.8, v58) y de la historia; el global no se toca');
   assert(/RANGOS_TABLA\[sym\] \|\| null/.test(FUENTE) && /RANGOS_TABLA\[f\.symbol\] \|\| null/.test(FUENTE) && /RANGOS_TABLA\[e\.symbol\] \|\| null/.test(FUENTE), 'un ticker sin fila en RANGOS_TABLA no rompe nada (todas las lecturas van con || null)');
   const TR = construir(['textoRangoOrden', 'bandaDelDia'], { esc, fmtFechaNY, RANGOS_TABLA_ANALISIS: '2026-05-19', DIAS_ES: constante('DIAS_ES') });
   assert(/no está en la tabla de rangos/.test(TR.textoRangoOrden('ZZZ', null, null, 1)), 'y el formulario de orden lo dice sin reventar');
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════
   // v54: 31184c9 (v53) ya está publicado; sin subir el número la Mesa instalada no se actualiza sola
-  assert(/config\.js\?v=57/.test(INDEX) && /app\/main\.js\?v=57/.test(INDEX), 'index.html carga config.js?v=57 y app/main.js?v=57 (v57: Tickers en grande en pantallas anchas)');
-  assert(/const VER = 'mesa2-v46';/.test(SW), 'sw.js VER mesa2-v46');
+  assert(/config\.js\?v=58/.test(INDEX) && /app\/main\.js\?v=58/.test(INDEX), 'index.html carga config.js?v=58 y app/main.js?v=58 (v58: tickers de la semana y sesión extendida)');
+  assert(/const VER = 'mesa2-v47';/.test(SW), 'sw.js VER mesa2-v47');
   // v55: el CSS del Diario (envoltorio ancho solo con el Diario, rejilla de tarjetas, historial en línea/apilado por @container)
   assert(/@media \(min-width:900px\)\{#app\.ancho\{max-width:1180px\}/.test(INDEX) && /\.diario\{[^}]*container-type:inline-size/.test(INDEX) && /@container \(min-width:860px\)\{/.test(INDEX), 'v55 CSS: #app.ancho a 1180 px desde 900 px y .diario como contenedor de @container (min-width:860px)');
   assert(/\.dcards\{display:grid;grid-template-columns:1fr 1fr/.test(INDEX) && /\.dcards\{grid-template-columns:repeat\(auto-fill,minmax\(168px,1fr\)\)\}/.test(INDEX) && /\.dcard \.vl\{font-family:var\(--mono\)/.test(INDEX), 'v55 CSS: tarjetas a dos columnas en el iPhone, en filas en el Mac, número monoespaciado');
@@ -829,7 +829,7 @@ function sbGrabador(respuestas) {
     addEventListener() {}, location: { hash: '#/copiloto', reload() {} }, Intl, Date, Math, JSON, Promise,
     setTimeout, setInterval: () => 0, clearInterval() {}, console, fetch: () => Promise.reject(new Error('sin red')),
     navigator: { serviceWorker: { register: () => Promise.resolve(), addEventListener() {} } },
-    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=57' } } };
+    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=58' } } };
   win.window = win;
   vm.createContext(win);
   let cargo = true;

@@ -220,6 +220,7 @@ async function ruta() {
   if (tab !== 'cuentas' && typeof _diario === 'object' && _diario) _diario.notaPre = null;   // v53: «Nota» del Copiloto solo vale para la visita que abre
   if (tab !== 'cuentas' && typeof diarioAncho === 'function') diarioAncho(false);              // v55: el envoltorio ancho es solo del Diario
   if (typeof tickersAncho === 'function') tickersAncho(tab === 'tickers');                       // v57: Tickers en GRANDE en pantallas anchas (rejilla)
+  if (tab !== 'tickers' && typeof _tickers === 'object' && _tickers) _tickers.quitando = null;   // v58: la pregunta «¿Quitar X?» no sobrevive a un cambio de pestaña
   if (tab === 'copiloto' && typeof copilotoAncho === 'function') copilotoAncho(true);           // v55: …y del Copiloto (la tabla del gestor), en el mismo tick: sin salto de ancho
   document.querySelectorAll('#nav a').forEach(a =>
     a.classList.toggle('on', a.dataset.tab === tab));
@@ -281,15 +282,13 @@ async function vistaInforme(hb) {
 
 // chartHtml: chart inline del ticker (solo en la pestaña Tickers; en el Informe no va).
 function tarjetaTicker(e, sym, compacto, chartHtml) {
-  if (!e) return `<div class="card"><div class="fila"><h3>${esc(sym)}</h3>
-    <span class="chip c-esp">SIN DATO</span></div>${chartHtml || ''}</div>`;
+  if (!e) return `<div class="card">${cabeceraTicker(sym, compacto, `<span class="chip c-esp">SIN DATO</span>`)}${chartHtml || ''}</div>`;
   const p = e.payload || {};
   const te = p.tendencias || {};
   const fr = haceCuanto(e.actualizado_at);
   const av = (p.avisos || []).slice(0, compacto ? 1 : 4);
   return `<div class="card">
-    <div class="fila"><h3>${esc(sym)}</h3>
-      <span class="fresco">${esc(fr.txt)}</span></div>
+    ${cabeceraTicker(sym, compacto, `<span class="fresco">${esc(fr.txt)}</span>`)}
     <div class="tend" style="margin-top:6px">
       ${tg('15m', te.m15)} ${tg('hora', te.hora)} ${tg('día', te.dia)}
       ${volTxt(p.volatilidad)}</div>
@@ -297,6 +296,18 @@ function tarjetaTicker(e, sym, compacto, chartHtml) {
     ${chartHtml || ''}
     ${av.length ? `<div class="mut" style="margin-top:7px">${av.map(esc).join(' · ')}</div>` : ''}
   </div>`;
+}
+// Cabecera de la tarjeta. En el Informe (compacto) es la de siempre. En la pestaña Tickers (v58, Andrés
+// 2026-10-02: «agregar y remover tickers que vaya usando») lleva el ✕ «Quitar de la Mesa» y, mientras se
+// confirma (_tickers.quitando === sym), la pregunta con [Quitar]/[No] EN VEZ de la cabecera: nada de
+// confirm()/prompt() nativos, que no funcionan en la PWA instalada. Quitar = activo false (no se borra).
+function cabeceraTicker(sym, compacto, derecha) {
+  if (compacto) return `<div class="fila"><h3>${esc(sym)}</h3>
+      ${derecha}</div>`;
+  if (_tickers.quitando === sym) return `<div class="tkconf"><div class="mut">¿Quitar ${esc(sym)}? El worker deja de vigilarlo y sus señales no suenan; se puede volver a activar aquí.</div>
+      <div class="fila" style="margin-top:8px"><button class="btnsec" style="color:var(--rojo);border-color:rgba(242,109,95,.45)" onclick="MZ.tickerQuitarSi('${esc(sym)}')">Quitar</button><button class="btnsec" onclick="MZ.tickerQuitarNo()">No</button></div></div>`;
+  return `<div class="fila"><h3>${esc(sym)}</h3>
+      <span class="tkder">${derecha}<button class="tkquitar" title="Quitar de la Mesa (no se borra)" onclick="MZ.tickerQuitar('${esc(sym)}')">✕</button></span></div>`;
 }
 // Línea «Rango óptimo del día» de la tarjeta: manda el método de la academia, luego
 // la tabla, luego el rango por delta (componerRango). Un rango con lo > hi (el
@@ -347,7 +358,7 @@ function tickersAncho(on) {
   if (on) app.classList.add('ancho');
 }
 async function vistaTickers() {
-  const { vista, tf } = chartPrefs();
+  const { vista, tf, ext } = chartPrefs();
   const grande = tickersGrande();
   const [est, velas, targets] = await Promise.all([
     sb.from('ticker_estado').select('*'),
@@ -355,12 +366,12 @@ async function vistaTickers() {
     cargarTargets(),
   ]);
   const estados = est.data || [];
-  let h = chartSelectores(vista, tf);
+  let h = chartSelectores(vista, tf, undefined, true);   // v58: con el editor de tickers (agregar / reactivar)
   // Un payload raro de UN ticker no puede tumbar la pestaña entera: si el chart
   // de ese ticker lanza, esa tarjeta sale sin chart y las demás siguen.
   h += TICKERS.map(t => {
     let c = '';
-    try { c = chartInline(t, velas[t] || null, vista, tf, targets[t] || null, grande); }
+    try { c = chartInline(t, velas[t] || null, vista, tf, targets[t] || null, grande, ext); }
     catch (_) { c = `<div class="chart"><div class="vacio">Chart no disponible (datos inválidos)</div></div>`; }
     return tarjetaTicker(estados.find(e => e.symbol === t), t, false, c);
   }).join('');
@@ -380,7 +391,10 @@ async function vistaTickers() {
 // punteado) y apertura de hoy (punteado tenue). Temporalidades 15m / hora / día.
 // Los datos los publica el worker en ticker_velas (contrato fijo, schema_version 1);
 // aquí SOLO se dibuja. Sin crosshair ni zoom en v1.
-const CHART_VISTA_K = 'mz_chart_vista', CHART_TF_K = 'mz_chart_tf';
+// v58: «Extendido» (CHART_EXT_K) enseña además pre 4:00–9:30 y post 16:00–20:00 ET en 15 min y Hora.
+// Las velas extendidas (velas_ext / vela_viva_ext del contrato) son SOLO para mirar: nada de lo que come
+// el vigilante (bb, sma, niveles, señales) las toca, y aquí se dibujan sombreadas y aparte.
+const CHART_VISTA_K = 'mz_chart_vista', CHART_TF_K = 'mz_chart_tf', CHART_EXT_K = 'mz_chart_ext';
 const CHART_VISTAS = [['bb', 'Bollinger'], ['hl', 'Medias + H-lines']];
 const CHART_TFS = [['m15', '15 min'], ['hora', 'Hora'], ['dia', 'Día']];
 const CHART_CACHE_MS = 50000;                   // ruta() corre cada 60 s: una petición por minuto como mucho
@@ -391,19 +405,37 @@ const nombreVista = (v) => (CHART_VISTAS.find(x => x[0] === v) || CHART_VISTAS[0
 const decDe = (sym) => (sym === 'SPX' ? 0 : 2);
 
 function chartPrefs() {
-  let vista = 'bb', tf = 'm15';
+  let vista = 'bb', tf = 'm15', ext = false;
   try {
     const v = localStorage.getItem(CHART_VISTA_K), t = localStorage.getItem(CHART_TF_K);
     if (CHART_VISTAS.some(x => x[0] === v)) vista = v;
     if (CHART_TFS.some(x => x[0] === t)) tf = t;
+    ext = localStorage.getItem(CHART_EXT_K) === '1';      // v58: por defecto apagado (el gráfico de siempre)
   } catch (_) {}
-  return { vista, tf };
+  return { vista, tf, ext };
 }
-function chartSelectores(vista, tf, id) {
+// conEditor (v58): solo la pestaña Tickers lleva la fila de agregar / reactivar tickers; la hoja del gráfico no.
+// El botón «Extendido» refleja la preferencia guardada aunque en Día no aplique (ahí va deshabilitado: al
+// volver a 15 min u Hora sigue como estaba, sin sorpresas).
+function chartSelectores(vista, tf, id, conEditor) {
+  const ext = chartPrefs().ext, enDia = tf === 'dia';
   return `<div id="${id || 'chartSel'}"><div class="periodos">${CHART_VISTAS.map(([k, l]) =>
       `<button class="perbtn ${vista === k ? 'on' : ''}" onclick="MZ.chartVista('${k}')">${l}</button>`).join('')}</div>
     <div class="periodos">${CHART_TFS.map(([k, l]) =>
-      `<button class="perbtn ${tf === k ? 'on' : ''}" onclick="MZ.chartTf('${k}')">${l}</button>`).join('')}</div></div>`;
+      `<button class="perbtn ${tf === k ? 'on' : ''}" onclick="MZ.chartTf('${k}')">${l}</button>`).join('')}<button class="perbtn ${ext ? 'on' : ''}"${enDia ? ' disabled title="solo 15 min y Hora"' : ''} onclick="MZ.chartExt()">Extendido</button></div>${conEditor ? editorTickersHtml(_tickers.filas) : ''}</div>`;
+}
+// Fila de edición de tickers EN la pestaña (v58, Andrés 2026-10-02: «agregar y remover tickers que vaya
+// usando, dependiendo de la semana»): un campo + Agregar, y los operables INACTIVOS como chips «META ↺»
+// para volver a activarlos con un toque (un ticker no se borra: quitar = activo false, trigger 0017).
+// Enter en el campo = Agregar. El #tkErr lo escribe tickerEscribir («Guardando…» / el error).
+function editorTickersHtml(filas) {
+  const inactivos = (Array.isArray(filas) ? filas : [])
+    .filter(f => f && f.symbol && String(f.rol || 'operable') === 'operable' && f.activo === false)
+    .sort((a, b) => ((Number(a.orden) || 0) - (Number(b.orden) || 0)) || String(a.symbol).localeCompare(String(b.symbol)))
+    .map(f => String(f.symbol).toUpperCase().trim());
+  return `<div class="tkedit"><input id="tkSym" placeholder="agregar ticker (ej. META)" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="7" style="text-transform:uppercase" onkeydown="if(event.key==='Enter'){event.preventDefault();MZ.tickerAgregar()}"><button class="btnsec" onclick="MZ.tickerAgregar()">Agregar</button>${
+    inactivos.length ? `<span class="fresco">inactivos:</span>` + inactivos.map(s => `<button class="btnsec tkoff" title="volver a activar ${esc(s)}" onclick="MZ.tickerActivo('${esc(s)}', true)">${esc(s)} ↺</button>`).join('') : ''
+  }<div class="err" id="tkErr"></div></div>`;
 }
 
 // Respaldo si el payload no trae bb: Bollinger (SMA n ± k·σ) con desviación
@@ -472,8 +504,14 @@ const fmtVol = (v) => { v = Number(v); if (!Number.isFinite(v) || v <= 0) return
 // (tramo de velas a la vista: zoom y arrastre; sin ella, las últimas MAXV), op.extra (líneas
 // más, p. ej. los strikes: {v, c, lb, k, dash, w, op}), op.hlines (las H-lines Sardiñas también
 // en la ventana Bollinger) y op.bb === false (sin bandas).
+//   v58 (sesión extendida): op.ext === true con tf 15 min u Hora y pk.velas_ext (contrato del worker 0.1.8)
+// dibuja además las velas de pre (4:00–9:30) y post (16:00–20:00 ET) del MISMO snapshot: ventana regular
+// de 2 sesiones (MAXV_EXT), las extendidas sombreadas (data-ext) y translúcidas, y las líneas (bb/sma)
+// troceadas por tramos de regulares consecutivas — jamás una recta atraviesa una zona extendida, porque
+// bb/sma siguen siendo las de la serie REGULAR (doctrina a: nada de lo que come el vigilante cambia).
+// Sin velas_ext (worker viejo), en Día o con op.ext false: la MISMA cadena que antes.
 function chartSvg(pk, op) {
-  op = Object.assign({ vista: 'bb', h: 200, tf: null, targets: null, dec: 2, fondo: 'var(--card)', w: 400, ventana: null, extra: null, hlines: false, bb: true }, op || {});
+  op = Object.assign({ vista: 'bb', h: 200, tf: null, targets: null, dec: 2, fondo: 'var(--card)', w: 400, ventana: null, extra: null, hlines: false, bb: true, ext: false }, op || {});
   const vacio = `<div class="vacio">Sin velas todavía para este marco (el worker las publica cada minuto en sesión)</div>`;
   if (!pk || !Array.isArray(pk.velas) || pk.velas.length < 2) return vacio;
   // Una fila mal formada rompería el mapeo Y la alineación con bb/sma: mejor
@@ -481,19 +519,44 @@ function chartSvg(pk, op) {
   if (!pk.velas.every(v => Array.isArray(v) && v.length >= 5)) return vacio;
   const tf = op.tf || pk.tf || 'm15';
   const MAXV = { m1: 120, m5: 96, m15: 78, hora: 90, dia: 120 };          // 15m = 3 sesiones; se recorta por la derecha
+  const MAXV_EXT = { m15: 52, hora: 60 };                                 // v58: con extendido, 2 sesiones regulares (las ext ocupan sitio)
   const TFMIN = { m1: 1, m5: 5, m15: 15, hora: 60, dia: 1440 };
   const tfMin = TFMIN[tf] || 15;
   const total = pk.velas.length;
-  const ven = op.ventana && typeof op.ventana === 'object' ? op.ventana : null;
-  const start = ven ? Math.max(0, Math.min(total, Math.floor(Number(ven.start)) || 0)) : Math.max(0, total - (MAXV[tf] || 90));
-  const end = ven ? Math.max(start, Math.min(total, Number.isFinite(Number(ven.end)) ? Math.floor(Number(ven.end)) : total)) : total;
   const aVela = (v) => ({ t: Number(v[0]), o: Number(v[1]), h: Number(v[2]), l: Number(v[3]), c: Number(v[4]), v: Number(v[5]) || 0 });
+  const bienFormada = (c) => Number.isFinite(c.t) && Number.isFinite(c.o) && Number.isFinite(c.h) && Number.isFinite(c.l) && Number.isFinite(c.c);
+  // v58: hay extendido solo si se pidió, el marco lo admite y el worker publicó algo extendido (una lista
+  // vacía o un worker viejo dejan el dibujo IDÉNTICO al de siempre: nada inventado)
+  const vExt = (op.ext === true && (tf === 'm15' || tf === 'hora') && Array.isArray(pk.velas_ext))
+    ? pk.velas_ext.filter(v => Array.isArray(v) && v.length >= 5).map(aVela).filter(bienFormada) : [];
+  const vivaExt0 = (op.ext === true && (tf === 'm15' || tf === 'hora') && Array.isArray(pk.velas_ext) && Array.isArray(pk.vela_viva_ext) && pk.vela_viva_ext.length >= 5) ? aVela(pk.vela_viva_ext) : null;
+  const conExt = vExt.length > 0 || (vivaExt0 !== null && bienFormada(vivaExt0));
+  const ven = op.ventana && typeof op.ventana === 'object' ? op.ventana : null;
+  const start = ven ? Math.max(0, Math.min(total, Math.floor(Number(ven.start)) || 0)) : Math.max(0, total - ((conExt ? MAXV_EXT[tf] : MAXV[tf]) || 90));
+  const end = ven ? Math.max(start, Math.min(total, Number.isFinite(Number(ven.end)) ? Math.floor(Number(ven.end)) : total)) : total;
   const cerradas = pk.velas.slice(start, end).map(aVela).filter(c => Number.isFinite(c.o) && Number.isFinite(c.h) && Number.isFinite(c.l) && Number.isFinite(c.c));
   if (cerradas.length < 2) return vacio;
+  cerradas.forEach(c => { c.reg = true; });     // regulares: las únicas alineadas con bb/sma
   // la vela en curso solo cuando se mira el presente (con el arrastre hacia atrás no pinta nada)
   const viva = (end >= total && Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5) ? Object.assign(aVela(pk.vela_viva), { viva: true }) : null;
-  const cs = (viva && Number.isFinite(viva.c)) ? cerradas.concat([viva]) : cerradas;
-  const n = cs.length, nCerr = cerradas.length;
+  const vivaOk = !!(viva && Number.isFinite(viva.c));
+  // v58: extendidas desde 6 h antes de la primera regular a la vista (el pre de ese día), nunca por delante
+  // de la vela viva regular, sin pisar una ranura regular, como mucho las últimas 150; la viva extendida
+  // solo cuando se mira el presente y NO hay vela viva regular (fuera de la sesión regular).
+  let extendidas = [];
+  if (conExt) {
+    const tMin = cerradas[0].t - 6 * 3600, tReg = new Set(cerradas.map(c => c.t));
+    extendidas = vExt.filter(c => c.t >= tMin && !tReg.has(c.t) && (!vivaOk || c.t < viva.t)).slice(-150).map(c => Object.assign(c, { ext: true }));
+    if (end >= total && !vivaOk && vivaExt0 && bienFormada(vivaExt0) && !tReg.has(vivaExt0.t)) extendidas.push(Object.assign(vivaExt0, { viva: true, ext: true }));
+  }
+  const base = vivaOk ? cerradas.concat([viva]) : cerradas;
+  const cs = conExt ? base.concat(extendidas).sort((a, b) => a.t - b.t) : base;
+  const n = cs.length, nCerr = cerradas.length, nExt = conExt ? extendidas.length : 0;
+  // posReg[k] = índice en cs de la k-ésima cerrada regular (sin extendido es k); los tramos son las
+  // rachas de regulares CONSECUTIVAS en cs, por donde se trocean bb y sma (sin extendido, un solo tramo)
+  const posReg = []; cs.forEach((c, i) => { if (c.reg) posReg.push(i); });
+  const tramos = [];
+  for (let k = 0; k < nCerr; k++) { if (k > 0 && posReg[k] === posReg[k - 1] + 1) tramos[tramos.length - 1][1] = k; else tramos.push([k, k]); }
   const hl = op.vista === 'hl';
   const conBB = !hl && op.bb !== false;          // v55: BB apagable en el gráfico del gestor
   const conHl = hl || !!op.hlines;               // v55: H-lines Sardiñas también sobre Bollinger
@@ -560,7 +623,7 @@ function chartSvg(pk, op) {
   const Y = (v) => pad.t + ih - (v - lo) / (hi - lo) * ih;
   const cp = 'cp-' + String(pk.ticker || 'x').replace(/[^A-Za-z0-9]/g, '') + '-' + tf + '-' + (hl ? 'hl' : 'bb') + '-' + H + '-' + W;
 
-  let out = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc((pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger'))}" style="display:block;font-family:var(--mono);font-size:9px">`;
+  let out = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc((pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger') + (nExt ? ' extendido' : ''))}" style="display:block;font-family:var(--mono);font-size:9px">`;
   out += `<defs><clipPath id="${cp}"><rect x="${pad.l}" y="${pad.t}" width="${f1(iw)}" height="${f1(ih)}"/></clipPath></defs>`;
 
   // 1) rejilla horizontal + eje de precios en múltiplos redondos --------------
@@ -602,34 +665,47 @@ function chartSvg(pk, op) {
   }
 
   out += `<g clip-path="url(#${cp})">`;
-  // 3) Bollinger (ventana derecha): banda + sup/inf punteadas + punto medio ----
-  if (conBB) {
-    const idx = []; for (let i = 0; i < nCerr; i++) if (bb.sup[i] != null && bb.inf[i] != null) idx.push(i);
-    if (idx.length >= 2) {
-      const sup = idx.map(i => `${f1(X(i))},${f1(Y(Number(bb.sup[i])))}`);
-      const inf = idx.map(i => `${f1(X(i))},${f1(Y(Number(bb.inf[i])))}`).reverse();
-      out += `<polygon data-bb="banda" points="${sup.concat(inf).join(' ')}" fill="var(--azul)" fill-opacity=".08" stroke="none"/>`;
-      const linea = (k, dash) => `<polyline data-bb="${k}" points="${idx.map(i => `${f1(X(i))},${f1(Y(Number(bb[k][i])))}`).join(' ')}" fill="none" stroke="var(--azul)" stroke-width="1"${dash ? ` stroke-dasharray="${dash}"` : ''} opacity=".85"/>`;
-      out += linea('sup', '3 3') + linea('inf', '3 3') + linea('medio', '');
+  // 2b) v58: sombreado de cada racha de velas extendidas (debajo de líneas y velas) --
+  if (nExt) {
+    for (let i = 0; i < n; i++) {
+      if (!cs[i].ext) continue;
+      let j = i; while (j + 1 < n && cs[j + 1].ext) j++;
+      out += `<rect data-ext="1" x="${f1(XL(i))}" y="${pad.t}" width="${f1(XL(j + 1) - XL(i))}" height="${f1(ih)}" fill="var(--tx3)" fill-opacity=".09"/>`;
+      i = j;
     }
   }
-  // 4) medias simples (ventana izquierda) -----------------------------------
+  // 3) Bollinger (ventana derecha): banda + sup/inf punteadas + punto medio, por tramo
+  //    de regulares consecutivas (sin extendido es un solo tramo: el dibujo de siempre) --
+  if (conBB) {
+    tramos.forEach(([a, b]) => {
+      const idx = []; for (let k = a; k <= b; k++) if (bb.sup[k] != null && bb.inf[k] != null) idx.push(k);
+      if (idx.length < 2) return;
+      const sup = idx.map(k => `${f1(X(posReg[k]))},${f1(Y(Number(bb.sup[k])))}`);
+      const inf = idx.map(k => `${f1(X(posReg[k]))},${f1(Y(Number(bb.inf[k])))}`).reverse();
+      out += `<polygon data-bb="banda" points="${sup.concat(inf).join(' ')}" fill="var(--azul)" fill-opacity=".08" stroke="none"/>`;
+      const linea = (q, dash) => `<polyline data-bb="${q}" points="${idx.map(k => `${f1(X(posReg[k]))},${f1(Y(Number(bb[q][k])))}`).join(' ')}" fill="none" stroke="var(--azul)" stroke-width="1"${dash ? ` stroke-dasharray="${dash}"` : ''} opacity=".85"/>`;
+      out += linea('sup', '3 3') + linea('inf', '3 3') + linea('medio', '');
+    });
+  }
+  // 4) medias simples (ventana izquierda), también por tramo ------------------
   if (hl) {
     SMAS.forEach(([k, col, w]) => {
-      const pts = []; for (let i = 0; i < nCerr; i++) if (smas[k][i] != null) pts.push(`${f1(X(i))},${f1(Y(Number(smas[k][i])))}`);
-      if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
+      tramos.forEach(([a, b]) => {
+        const pts = []; for (let q = a; q <= b; q++) if (smas[k][q] != null) pts.push(`${f1(X(posReg[q]))},${f1(Y(Number(smas[k][q])))}`);
+        if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
+      });
     });
   }
   // 5) velas: verde/roja por apertura-cierre, rellenas, mecha del color de la vela;
-  //    la vela viva punteada y translúcida ----------------------------------
+  //    la vela viva punteada y translúcida; las extendidas (v58) más tenues ---
   const body = Math.max(1.2, bw * 0.66);
   cs.forEach((c, i) => {
     const up = c.c >= c.o, col = up ? 'var(--verde)' : 'var(--rojo)';
     const x = X(i), yo = Y(c.o), yc = Y(c.c), yh = Y(c.h), yl = Y(c.l);
     const top = Math.min(yo, yc), hgt = Math.max(1, Math.abs(yc - yo));
-    if (bw >= 2) out += `<line x1="${f1(x)}" y1="${f1(yh)}" x2="${f1(x)}" y2="${f1(yl)}" stroke="${col}" stroke-width="${bw >= 12 ? 1.4 : 1}" opacity="${c.viva ? .55 : .9}"/>`;
-    out += `<rect class="vela${c.viva ? ' viva' : ''}" x="${f1(x - body / 2)}" y="${f1(top)}" width="${f1(body)}" height="${f1(hgt)}" fill="${col}"`
-      + (c.viva ? ` fill-opacity=".45" stroke="${col}" stroke-width="1" stroke-dasharray="2 2"` : '') + `/>`;
+    if (bw >= 2) out += `<line x1="${f1(x)}" y1="${f1(yh)}" x2="${f1(x)}" y2="${f1(yl)}" stroke="${col}" stroke-width="${bw >= 12 ? 1.4 : 1}" opacity="${c.viva ? .55 : c.ext ? .7 : .9}"/>`;
+    out += `<rect class="vela${c.ext ? ' ext' : ''}${c.viva ? ' viva' : ''}" x="${f1(x - body / 2)}" y="${f1(top)}" width="${f1(body)}" height="${f1(hgt)}" fill="${col}"`
+      + (c.viva ? ` fill-opacity=".45" stroke="${col}" stroke-width="1" stroke-dasharray="2 2"` : c.ext ? ` fill-opacity=".75"` : '') + `/>`;
   });
   out += `</g>`;
 
@@ -662,11 +738,22 @@ function chartSvg(pk, op) {
 // Antigüedad honesta de la última vela: «última vela hace 3 min · en curso». Con
 // mercado cerrado no puede parecer en vivo (la vela viva solo cuenta si el
 // worker la publicó hace ≤ 10 min).
-function chartFrescoTxt(fila, tf) {
+//   v58 con ext (15 min / Hora): la vela extendida en formación se dice como tal («vela extendida en
+// curso», solo si la publicación tiene ≤ 10 min); si la última extendida es más nueva que la última
+// regular (post de hoy, pre de mañana) se dice «última vela (extendida) hace N»; sin velas_ext se dice
+// «extendido: sin datos aún» en vez de dibujar o insinuar algo. Un dato viejo jamás se presenta como fresco.
+function chartFrescoTxt(fila, tf, ext) {
   const pk = fila && fila.payload;
   if (!pk || !Array.isArray(pk.velas) || !pk.velas.length) return 'sin velas';
   const u = pk.velas[pk.velas.length - 1];
   const dur = { m1: 60, m5: 300, m15: 900, hora: 3600, dia: 16 * 3600 }[tf] || 900;   // día: cierre 16:00 NY
+  if (ext && tf !== 'dia') {
+    const vx = Array.isArray(pk.velas_ext) ? pk.velas_ext.filter(v => Array.isArray(v) && v.length >= 5) : [];
+    if (Array.isArray(pk.vela_viva_ext) && pk.vela_viva_ext.length >= 5 && haceCuanto(fila.actualizado_at).min <= 10) return 'vela extendida en curso';
+    const ux = vx.length ? vx[vx.length - 1] : null;
+    if (ux && Number(ux[0]) > Number(u[0])) return 'última vela (extendida) ' + haceCuanto((Number(ux[0]) + dur) * 1000).txt;
+    if (!vx.length) return 'extendido: sin datos aún';
+  }
   let s = 'última vela ' + haceCuanto((Number(u[0]) + dur) * 1000).txt;
   if (Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5) {
     const pub = haceCuanto(fila.actualizado_at);
@@ -674,12 +761,14 @@ function chartFrescoTxt(fila, tf) {
   }
   return s;
 }
-function chartInline(sym, fila, vista, tf, tg, grande) {
+// ext (v58): «Extendido» encendido; la cabecera solo dice «· extendido» cuando hay algo extendido publicado.
+function chartInline(sym, fila, vista, tf, tg, grande, ext) {
   const pk = fila && fila.payload;
-  const svg = chartSvg(pk, { vista, tf, h: grande ? 320 : 200, w: grande ? 720 : 400, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)' });   // v57: en grande, viewBox 720×320
+  const svg = chartSvg(pk, { vista, tf, h: grande ? 320 : 200, w: grande ? 720 : 400, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)', ext: ext === true });   // v57: en grande, viewBox 720×320
+  const hayExt = ext === true && tf !== 'dia' && !!pk && Array.isArray(pk.velas_ext) && (pk.velas_ext.length > 0 || (Array.isArray(pk.vela_viva_ext) && pk.vela_viva_ext.length >= 5));
   return `<div class="chart" role="button" onclick="MZ.chartAbrir('${esc(sym)}')">
-    <div class="fila"><span class="fresco">${esc(nombreTf(tf))} · ${esc(nombreVista(vista))}</span>
-      <span class="fresco">${esc(chartFrescoTxt(fila, tf))}</span></div>${svg}</div>`;
+    <div class="fila"><span class="fresco">${esc(nombreTf(tf))} · ${esc(nombreVista(vista))}${hayExt ? ' · extendido' : ''}</span>
+      <span class="fresco">${esc(chartFrescoTxt(fila, tf, ext === true))}</span></div>${svg}</div>`;
 }
 
 // ---- datos: velas (caché por symbol|tf, 50 s) y targets personales ----
@@ -830,13 +919,13 @@ async function cargarChart(forzar) {
 }
 function pintarChart(fila, tg) {
   if (!_ch || !$('#modalChart')) return;
-  const { vista, tf } = chartPrefs();
+  const { vista, tf, ext } = chartPrefs();
   if (fila === undefined) { const c = _velas.get(_ch.sym + '|' + tf); fila = c ? c.fila : null; tg = _targets.por[_ch.sym] || null; }
   const pk = fila && fila.payload, dec = decDe(_ch.sym);
   $('#chSel').innerHTML = chartSelectores(vista, tf, 'chartSelHoja');
-  $('#chFresco').textContent = chartFrescoTxt(fila, tf);
+  $('#chFresco').textContent = chartFrescoTxt(fila, tf, ext);
   const grande = anchoVista() >= GESTOR_ANCHO_TABLA;   // v57: la hoja del gráfico también crece en pantallas anchas (#modalChart .hoja 1000 px)
-  $('#chSvg').innerHTML = chartSvg(pk, { vista, tf, h: grande ? 380 : 300, w: grande ? 880 : 400, targets: tg, dec, fondo: 'var(--bg2)' });
+  $('#chSvg').innerHTML = chartSvg(pk, { vista, tf, h: grande ? 380 : 300, w: grande ? 880 : 400, targets: tg, dec, fondo: 'var(--bg2)', ext });
   $('#chLectura').innerHTML = lecturaChart(pk, tf, dec);
   $('#chHlines').innerHTML = hlinesLista(pk, tg, dec);
   // el editor de target se rellena también si los targets llegaron DESPUÉS de
@@ -853,8 +942,19 @@ function pintarChart(fila, tg) {
 function pintarSelectores() {
   const { vista, tf } = chartPrefs();
   ['chartSel', 'chartSelHoja'].forEach(id => {
-    const el = $('#' + id); if (el) el.outerHTML = chartSelectores(vista, tf, id);
+    const el = $('#' + id); if (el) el.outerHTML = chartSelectores(vista, tf, id, id === 'chartSel');   // v58: el editor de tickers solo en la pestaña
   });
+}
+// v58: interruptor «Extendido» (pre 4:00–9:30 y post 16:00–20:00 ET en 15 min y Hora). Mismo patrón que
+// chartVista: se guarda, se repintan los selectores AL TOQUE y se redibujan la hoja (si está abierta) y la
+// pestaña Tickers (si es la que se mira) con las velas ya cacheadas: no pide nada a la red.
+function chartExt() {
+  const ext = !chartPrefs().ext;
+  try { localStorage.setItem(CHART_EXT_K, ext ? '1' : '0'); } catch (_) {}
+  pintarSelectores();
+  _vistaTickersHtml = '';
+  if (_ch && $('#modalChart')) pintarChart();
+  if ((location.hash.replace('#/', '') || '') === 'tickers') vistaTickers();
 }
 function chartVista(v) {
   if (!CHART_VISTAS.some(x => x[0] === v)) return;
@@ -2083,7 +2183,7 @@ async function salir() {
 window.MZ = Object.assign(window.MZ, { abrirCuenta, cerrarCuenta, cambiarPass, salir, avisos: avisosToggle,
   planResumen: pintarResumenPlan, guardarPlan, elegirFoco });
 // Charts de Tickers (registrados AQUÍ, después de la asignación plana de window.MZ).
-window.MZ = Object.assign(window.MZ, { chartAbrir: abrirChart, chartCerrar: cerrarChart, chartVista, chartTf, chartGuardarTarget: guardarTarget });
+window.MZ = Object.assign(window.MZ, { chartAbrir: abrirChart, chartCerrar: cerrarChart, chartVista, chartTf, chartExt, chartGuardarTarget: guardarTarget });
 
 // ---------- Cuentas y diario (historial + resúmenes) ----------
 let _periodoSel = 'semana';   // dia | semana | mes | ytd (Andrés 2026-09-25: «aquí falta día»)
@@ -8696,7 +8796,8 @@ async function cancelarOrdenFuera(broker, orderId) {
 }
 
 // ---------- 8) TICKERS EDITABLES (tabla de MERCADO tickers) ----------
-const _tickers = { filas: null, ts: 0, err: null };
+// quitando (v58): símbolo cuya tarjeta de la pestaña Tickers está preguntando «¿Quitar X?» (null = ninguna).
+const _tickers = { filas: null, ts: 0, err: null, quitando: null };
 // La MISMA forma de símbolo que exige el worker (catalogo.SYMBOL_RE, acotada a 6): un «$SPX» o un «.»
 // que la app aceptara se insertaría en el catálogo, el worker lo descartaría en silencio y quedaría
 // para siempre en la lista (un ticker no se borra). El $ inicial de tasty/TOS se recorta antes.
@@ -8757,13 +8858,15 @@ function seccionTickersCuenta() {
       <input id="tkNom" placeholder="nombre"></div>
     <button class="btnsec" style="width:100%;margin-top:6px" onclick="MZ.tickerAgregar()">Agregar ticker</button>
     <div class="err" id="tkErr" style="text-align:left"></div>
-    <div class="fresco" style="margin-top:3px">El worker tarda hasta 10 min en empezar a vigilar un ticker nuevo, y una señal necesita historia de velas (el worker la baja solo: las primeras horas no habrá señales de ese ticker). Desactivar NO borra: sus señales y su estado se conservan, y un ticker mal escrito solo se puede desactivar (queda en la lista). Los tickers globales (MERCADO) no se tocan.</div>`;
+    <div class="fresco" style="margin-top:3px">El worker tarda hasta 2 min en empezar a vigilar un ticker nuevo (relee el catálogo cada 2 min desde el 0.1.8), y una señal necesita historia de velas (el worker la baja solo: las primeras horas no habrá señales de ese ticker). Desactivar NO borra: sus señales y su estado se conservan, y un ticker mal escrito solo se puede desactivar (queda en la lista). Los tickers globales (MERCADO) no se tocan.</div>`;
 }
 function pintarTickersCuenta() {
   const el = $('#tkLista'); if (el) el.innerHTML = listaTickersHtml(_tickers.filas);
 }
+// v58: el editor vive en DOS sitios con los mismos ids (⚙ Tu cuenta y la pestaña Tickers); con el cuadro de
+// la cuenta abierto encima de la pestaña manda el campo del cuadro (querySelector devolvería el de atrás).
 async function tickerEscribir(fn, ok) {
-  const err = $('#tkErr'); if (err) { err.style.color = ''; err.textContent = 'Guardando…'; }
+  const err = $('#modalCuenta #tkErr') || $('#tkErr'); if (err) { err.style.color = ''; err.textContent = 'Guardando…'; }
   try {
     const r = await fn();
     if (r && r.error) throw r.error;
@@ -8792,14 +8895,32 @@ function tickerMover(sym, dir) {
   }, null);
 }
 function tickerAgregar() {
-  const sym = simboloTicker(($('#tkSym') || {}).value), nom = String(($('#tkNom') || {}).value || '').trim();
-  const err = $('#tkErr');
+  const campo = (id) => $('#modalCuenta #' + id) || $('#' + id);   // v58: manda el cuadro de la cuenta si está abierto
+  const sym = simboloTicker((campo('tkSym') || {}).value), nom = String((campo('tkNom') || {}).value || '').trim();
+  const err = campo('tkErr');
   if (!TICKER_RE.test(sym)) { if (err) { err.style.color = 'var(--rojo)'; err.textContent = 'Símbolo inválido: 1 a 6 letras o números, empieza por letra (ej. META, BRK.B).'; } return; }
   const ya = (_tickers.filas || []).find(f => f && String(f.symbol).toUpperCase() === sym);
   if (ya) { if (err) { err.style.color = 'var(--rojo)'; err.textContent = `${sym} ya está en el catálogo${ya.activo === false ? ' (inactivo): actívalo en la lista' : ''}.`; } return; }
   const orden = Math.max(0, ...(_tickers.filas || []).map(f => Number(f.orden) || 0)) + 1;
   return tickerEscribir(() => sb.from('tickers').insert({ symbol: sym, nombre: nom || sym, rol: 'operable', activo: true, orden }),
-    `${sym} agregado: el worker empieza a vigilarlo en ≤10 min`);
+    `${sym} agregado: el worker empieza a vigilarlo en ≤2 min`);
+}
+// v58: quitar desde la tarjeta de la pestaña Tickers, en dos toques y sin confirm() nativo: el primero
+// (tickerQuitar) pone la tarjeta a preguntar y la redibuja; [Quitar] = activo false (no se borra: se
+// vuelve a activar desde los chips «inactivos» de la misma pestaña); [No] vuelve a la cabecera normal.
+function tickerQuitar(sym) {
+  _tickers.quitando = String(sym || '').toUpperCase() || null;
+  _vistaTickersHtml = '';
+  return vistaTickers();
+}
+function tickerQuitarSi(sym) {
+  _tickers.quitando = null;
+  return tickerActivo(sym, false);
+}
+function tickerQuitarNo() {
+  _tickers.quitando = null;
+  _vistaTickersHtml = '';
+  return vistaTickers();
 }
 
 window.MZ = Object.assign(window.MZ || {}, {
@@ -8843,6 +8964,7 @@ window.MZ = Object.assign(window.MZ || {}, {
   },
   cancelarOrdenFuera,
   tickerActivo, tickerMover, tickerAgregar,
+  tickerQuitar, tickerQuitarSi, tickerQuitarNo,   // v58: quitar desde la tarjeta (dos toques, sin confirm())
 });
 
 function vistaProx(tab) {

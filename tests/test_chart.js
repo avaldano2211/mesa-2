@@ -224,17 +224,18 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'techoPisoProximos',
     E = Object.assign({ almacen: {}, modal: false, hash: '#/tickers', ch: null }, E || {});
     const reg = { pintarChart: 0, cargarChart: [], vistaTickers: 0, sel: nodo({ outerHTML: '' }) };
     const ls = localStorageFalso(E.almacen);
-    const M = construir(['chartPrefs', 'chartSelectores', 'chartVista', 'chartTf', 'pintarSelectores'], {
-      localStorage: ls, $: (s) => (s === '#modalChart' ? (E.modal ? nodo() : null) : s === '#chartSel' ? reg.sel : null),
+    // v58: pintarSelectores pinta el editor de tickers en #chartSel (la pestaña) → editorTickersHtml y _tickers
+    const M = construir(['chartPrefs', 'chartSelectores', 'editorTickersHtml', 'chartVista', 'chartTf', 'pintarSelectores'], {
+      localStorage: ls, esc, _tickers: { filas: [] }, $: (s) => (s === '#modalChart' ? (E.modal ? nodo() : null) : s === '#chartSel' ? reg.sel : null),
       location: { hash: E.hash }, vistaTickers: () => reg.vistaTickers++, pintarChart: () => reg.pintarChart++, cargarChart: (f) => reg.cargarChart.push(f),
     }, { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS'], extras: ['CHART_TF_K', '__html'], prefijo: 'let _vistaTickersHtml = "algo"; let _ch = ' + JSON.stringify(E.ch) + ';', sufijo: 'function __html() { return _vistaTickersHtml; }' });
     return { M, reg, ls };
   }
   {
     const { M } = armarVista();
-    igual(M.chartPrefs(), { vista: 'bb', tf: 'm15' }, 'sin preferencias: Bollinger a 15 min');
-    igual(armarVista({ almacen: { mz_chart_vista: 'hl', mz_chart_tf: 'dia' } }).M.chartPrefs(), { vista: 'hl', tf: 'dia' }, 'las preferencias guardadas mandan');
-    igual(armarVista({ almacen: { mz_chart_vista: 'xx', mz_chart_tf: 'semana' } }).M.chartPrefs(), { vista: 'bb', tf: 'm15' }, 'valores desconocidos → los de por defecto');
+    igual(M.chartPrefs(), { vista: 'bb', tf: 'm15', ext: false }, 'sin preferencias: Bollinger a 15 min, sin extendido (v58)');
+    igual(armarVista({ almacen: { mz_chart_vista: 'hl', mz_chart_tf: 'dia' } }).M.chartPrefs(), { vista: 'hl', tf: 'dia', ext: false }, 'las preferencias guardadas mandan');
+    igual(armarVista({ almacen: { mz_chart_vista: 'xx', mz_chart_tf: 'semana' } }).M.chartPrefs(), { vista: 'bb', tf: 'm15', ext: false }, 'valores desconocidos → los de por defecto');
     const s = M.chartSelectores('hl', 'hora');
     assert(/id="chartSel"/.test(s) && /perbtn on" onclick="MZ\.chartVista\('hl'\)">Medias \+ H-lines/.test(s) && /perbtn on" onclick="MZ\.chartTf\('hora'\)">Hora/.test(s), 'los selectores marcan la vista y el marco elegidos', s);
     assert(/perbtn " onclick="MZ\.chartVista\('bb'\)">Bollinger/.test(s), 'y el otro sale apagado');
