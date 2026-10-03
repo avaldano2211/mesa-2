@@ -1289,6 +1289,11 @@ async function vistaCopiloto(hb) {
   // posiciones abiertas: el libro CASADO contra lo que dicen los brókeres (v50).
   // Nunca «no hay nada» cuando en realidad no se pudo preguntar (B7).
   gestorEstadoDelLatido(hb);                 // ¿el worker vigila los niveles del gestor? (detalle.gestor)
+  // v60: la fila m15 de cada subyacente abierto (ticker_velas, tabla de MERCADO: no toca la muralla) ANTES de pintar: es
+  // el peldaño (2) de spotDe («acción $X · strike a …» con el spot del worker) fuera de la ventana en vivo —pre-apertura,
+  // después de las 16:00, pausa por DELAYED—. Sin esta carga solo entraba el símbolo del chart, y la línea afirmaba
+  // «ni spot del worker» de algo que no había comprobado. Una sola consulta .in('symbol', …), caché de 50 s.
+  await cargarVelas([...new Set(abiertas.map(p => String((p && p.symbol) || '').toUpperCase()).filter(Boolean))], 'm15');
   h += seccionPosiciones(abiertas, _cart, plan, hoy);
   // v55: el gráfico del gestor («SPY · 5 min», strikes y líneas Sardiñas) debajo de la tabla
   h += seccionGrafico(abiertas, hoy);
@@ -4850,28 +4855,39 @@ function markDeCotizacion(bid, ask, last) {
 //   por_accion[SYM] = { last, bid, ask, estado, at }. Su estado NO entra en el del lote: si E*TRADE diera las
 //   acciones con retraso y las opciones en vivo, los contratos no perderían su cotización; la acción con
 //   retraso simplemente no se usa (cotizarVivo solo guarda las REALTIME).
+//   La casación POR POSICIÓN se hace contra las entradas que NO son acciones: desde que las acciones viajan en el mismo
+//   lote, q.length ya no es el largo de los contratos pedidos y el respaldo (que v56 dejó a propósito para una respuesta
+//   sin Product ni osiKey) quedaría mudo en silencio.
 function parsearCotizacionesEtrade(resp, pedidos) {
   const d = (resp && resp.data) || {}; const Q = d.QuoteResponse || d;
   let q = Q.QuoteData || Q.quoteData || []; if (!Array.isArray(q)) q = [q];
   const por = {}, por_accion = {}, estados = [];
-  q.forEach((x, i) => {
-    x = x || {};
+  // los bloques de una entrada (cotización, producto y tipo) y si es una ACCIÓN
+  const partes = (x) => {
     const a = x.All || x.Intraday || x.Option || x.all || x.intraday || x.option || {};
     const pr = x.Product || x.product || {};
-    const tipo = String(pr.securityType || '').toUpperCase();
-    if (!a.osiKey && pr.symbol && (tipo === 'EQ' || (!pr.callPut && tipo !== 'OPTN'))) {
+    return { a, pr, tipo: String(pr.securityType || '').toUpperCase() };
+  };
+  const esAccion = (p) => !p.a.osiKey && !!p.pr.symbol && (p.tipo === 'EQ' || (!p.pr.callPut && p.tipo !== 'OPTN'));
+  const nContratos = q.filter(x => !esAccion(partes(x || {}))).length;   // el largo que se compara con lo pedido
+  let pos = 0;                                                             // posición entre los CONTRATOS de la respuesta
+  q.forEach((x) => {
+    x = x || {};
+    const p = partes(x), a = p.a, pr = p.pr;
+    if (esAccion(p)) {
       const last = num2(a.lastTrade), utcA = Number(x.dateTimeUTC);
       if (last != null && last > 0) por_accion[String(pr.symbol).toUpperCase()] = { last, bid: num2(a.bid), ask: num2(a.ask),
         estado: String(x.quoteStatus || Q.quoteStatus || '').toUpperCase(), at: utcA > 0 ? (utcA < 1e11 ? utcA * 1000 : utcA) : null };
       return;
     }
+    const i = pos++;
     let clave = null;
     if (a.osiKey) { const c = desOsi(a.osiKey); if (c) clave = claveContrato(c); }   // detailFlag OPTIONS: el OSI es la clave más fiable
     if (!clave && pr.symbol && pr.callPut && pr.strikePrice != null && pr.expiryYear && pr.expiryMonth && pr.expiryDay) {
       const y0 = Number(pr.expiryYear), y = (y0 > 0 && y0 < 100) ? 2000 + y0 : y0;
       clave = claveContrato({ symbol: pr.symbol, direccion: String(pr.callPut).toUpperCase() === 'PUT' ? 'PUT' : 'CALL', strike: pr.strikePrice,
         expiracion: `${y}-${String(Number(pr.expiryMonth)).padStart(2, '0')}-${String(Number(pr.expiryDay)).padStart(2, '0')}` });
-    } else if (Array.isArray(pedidos) && pedidos.length === q.length && pedidos[i]) clave = pedidos[i].clave;
+    } else if (Array.isArray(pedidos) && pedidos.length === nContratos && pedidos[i]) clave = pedidos[i].clave;
     if (!clave) return;
     const estado = String(x.quoteStatus || Q.quoteStatus || '').toUpperCase();
     estados.push(estado);
@@ -4889,7 +4905,8 @@ function parsearCotizacionesEtrade(resp, pedidos) {
 }
 // Respuesta de Schwab (/marketdata/v1/quotes): { 'SPY   260928P00660000': { quote: { bidPrice, askPrice, lastPrice, mark }, realtime } }. PURA.
 //   v60: una clave que no es OSI (sin fecha ni C/P: «TSLA») es la ACCIÓN y va a por_accion por su símbolo, con su
-//   propio estado (realtime) y sin entrar en el estado del lote de contratos (mismo criterio que en E*TRADE).
+//   propio estado (realtime) y sin entrar en el estado del lote de contratos (mismo criterio que en E*TRADE). La raíz
+//   admite la barra («BRK/B»): es la notación de Schwab para las clases de acción.
 function parsearCotizacionesSchwab(resp) {
   const d = (resp && resp.data) || {};
   const por = {}, por_accion = {}, estados = [];
@@ -4898,7 +4915,7 @@ function parsearCotizacionesSchwab(resp) {
     const c = desOsi(osi);
     if (!c) {
       const sym = String(osi || '').trim().toUpperCase(), last = num2(info.quote.lastPrice);
-      if (/^[A-Z.$-]{1,6}$/.test(sym) && last != null && last > 0) por_accion[sym] = { last, bid: num2(info.quote.bidPrice), ask: num2(info.quote.askPrice), estado: info.realtime === true ? 'REALTIME' : 'DELAYED' };
+      if (/^[A-Z.$\/-]{1,7}$/.test(sym) && last != null && last > 0) por_accion[sym] = { last, bid: num2(info.quote.bidPrice), ask: num2(info.quote.askPrice), estado: info.realtime === true ? 'REALTIME' : 'DELAYED' };
       return;
     }
     const clave = claveContrato(c); if (!clave) return;
@@ -5128,22 +5145,38 @@ const LADO_DINERO = { fuera: 'fuera del dinero', dentro: 'dentro del dinero', en
 function pctEsp(v, dec) { return (v == null || !Number.isFinite(Number(v))) ? '—' : (Number(v) > 0 ? '+' : Number(v) < 0 ? '-' : '') + Math.abs(Number(v)).toFixed(dec == null ? 2 : dec) + ' %'; }
 // «+$1.80» / «-$0.40»: una distancia en dólares, con su signo siempre. PURA.
 function usdSigno(v) { return (v == null || !Number.isFinite(Number(v))) ? '—' : (Number(v) < 0 ? '-' : '+') + '$' + Math.abs(Number(v)).toFixed(2); }
+// La EDAD del spot del worker es la de su VELA, no la de la fila: niveles.spot es el cierre de la última vela de 15 min
+// REGULAR (la viva si la hay), pero la fila m15 se republica cada 2 min en sesión extendida (cambian velas_ext, no el
+// spot). A las 8:00 de la mañana «hace 1 min» vendería el cierre de ayer a las 16:00 como de ahora. El precio no es más
+// viejo que el CIERRE de su vela (t + 15 min) ni más fresco que la fila (una vela viva se refresca con ella). PURA.
+//   → «vela de 15 min de las 15:45 · hace 16 h»; sin vela en el payload, la edad de la fila, dicha como tal.
+function edadSpotWorker(pk, actualizadoAt) {
+  const viva = (Array.isArray(pk && pk.vela_viva) && pk.vela_viva.length >= 5) ? pk.vela_viva : null;
+  const ult = (!viva && Array.isArray(pk && pk.velas) && pk.velas.length) ? pk.velas[pk.velas.length - 1] : null;
+  const t = Number((viva || ult || [])[0]);
+  if (!(t > 0)) return `fila de ${haceCuanto(actualizadoAt).txt}`;
+  const filaMs = Date.parse(actualizadoAt || '');
+  const precioMs = Math.min((t + 900) * 1000, Number.isFinite(filaMs) ? filaMs : Infinity);
+  return `vela de 15 min de las ${horaNY(t * 1000)} · ${haceCuanto(new Date(precioMs).toISOString()).txt}`;
+}
 // El spot de AHORA de una acción, en este orden y DICHO: (1) la cotización en vivo (≤ VIVO_FRESCA_MS); (2) el spot de
-// la fila m15 de ticker_velas si está en la caché _velas (el worker lo refresca cada minuto en sesión; su edad va a la
-// vista); (3) nada, y se dice. Lee _vivo y _velas (no es pura); lo que pinta con ella sí lo es (lineaDistanciaHtml).
+// la fila m15 de ticker_velas si está en la caché _velas (el worker lo refresca cada minuto en sesión; la edad de SU
+// VELA va a la vista: edadSpotWorker); (3) nada, y se dice. Lee _vivo y _velas (no es pura); lo que pinta con ella sí
+// lo es (lineaDistanciaHtml).
 function spotDe(sym) {
   const s = String(sym || '').toUpperCase();
   const vivo = _vivo.spot(s);
   if (vivo != null) return { spot: vivo, fuente: 'vivo', txt: 'en vivo' };
   const c = _velas.get(s + '|m15');
-  const fila = c && c.fila, nv = fila && fila.payload && fila.payload.niveles;
-  if (nv && Number(nv.spot) > 0) return { spot: Number(nv.spot), fuente: 'worker', txt: `worker, ${haceCuanto(fila.actualizado_at).txt}` };
+  const fila = c && c.fila, pk = fila && fila.payload, nv = pk && pk.niveles;
+  if (nv && Number(nv.spot) > 0) return { spot: Number(nv.spot), fuente: 'worker', txt: `worker, ${edadSpotWorker(pk, fila.actualizado_at)}` };
   return { spot: null, fuente: null, txt: 'sin dato' };
 }
-// La línea «acción $370.70 · strike a +$1.80 (+0.5 %) fuera del dinero (worker, hace 3 min)» de una ficha, con la
-// fuente del spot siempre a la vista. Nunca «$—» sin explicación. PURA sobre (p, s), con s = spotDe(p.symbol).
+// La línea «acción $370.70 · strike a +$1.80 (+0.5 %) fuera del dinero (worker, vela de 15 min de las 10:30 · hace 2 min)»
+// de una ficha, con la fuente del spot siempre a la vista. Nunca «$—» sin explicación; sin spot se dice lo que la app
+// COMPROBÓ (ni cotización viva ni fila del worker en caché), no lo que el worker tiene. PURA sobre (p, s), con s = spotDe(p.symbol).
 function lineaDistanciaHtml(p, s) {
-  if (!s || !(Number(s.spot) > 0)) return '<span class="fresco">acción: sin dato (ni cotización en vivo ni spot del worker)</span>';
+  if (!s || !(Number(s.spot) > 0)) return '<span class="fresco">acción: sin dato (sin cotización en vivo ni spot del worker en caché)</span>';
   const fuente = ` <span class="fresco">(${esc(s.txt)})</span>`;
   const d = distanciaStrike(p && p.direccion, p && p.strike, s.spot);
   if (!d) return `acción <b>${dineroD(s.spot)}</b>${fuente} · <span class="fresco">strike: sin dato</span>`;
@@ -7876,6 +7909,12 @@ const BROKER_CORTO = { etrade: 'E*TRADE', schwab: 'Schwab', tasty: 'tasty', moom
 // momento, m15 = vela de 15 min, dia = cierre del día, manual). La app solo LEE. Calidad de mejor a peor:
 const FUENTES_SPOT = ['m1', 'm15', 'dia', 'manual'];
 const FUENTE_SPOT_TXT = { m15: '15 min', dia: 'cierre del día', manual: 'a mano' };   // m1 no lleva sufijo: es el instante
+// Un fill de E*TRADE trae FECHA sin hora (ejecutado_at a las 00:00Z; el viaje lleva sin_hora): el worker no encuentra una
+// vela que contenga ese instante y toma el OPEN de la primera vela del día (la de las 4:00 ET con la extendida), etiquetada
+// m1 o m15 como si fuera el momento del fill. No lo es, y la tarjeta lo dice (doctrina b: un dato aproximado jamás se
+// presenta como exacto). Con fuente «dia» o «manual» el sufijo de siempre ya dice lo que es.
+const SIN_HORA_TXT = 'E*TRADE no da la hora: precio del inicio del día, no del fill';
+const SIN_HORA_CORTO = 'inicio del día';
 // El spot de un fill, o null si no lo tiene (0, vacío o basura no son precios); la fuente solo si es una conocida. PURA.
 function spotDeFill(f) {
   const s = Number(f && f.spot);
@@ -8414,18 +8453,23 @@ function fechaHoraD(iso, sinHora) {
 // movimiento), «contrato vs acción» (los DOS porcentajes, sin inventar un multiplicador: con la acción quieta —menos
 // del 0,05 %— solo «acción plana») y «strike al entrar» (distancia y lado del dinero). La fuente del spot va a la
 // vista cuando no es la vela del minuto; sin spot se dice que el worker lo completa. Una vencida sale igual, con la
-// salida «venció» (su spot de salida es null salvo que exista). PURA.
+// salida «venció» (su spot de salida es null salvo que exista); vencida EN PARTE y sin el spot de la venta todavía,
+// «venció en parte · sin dato» (la fila de arriba ya dice «venció en parte»: aquí no se afirma lo que no fue). Con un
+// viaje de E*TRADE (sin_hora) y fuente m1/m15 las tres filas avisan de que el spot es el inicio del día, no el fill. PURA.
 function filaAccionDiario(c) {
   const e = Number(c.spot_entrada) > 0 ? Number(c.spot_entrada) : null, s = Number(c.spot_salida) > 0 ? Number(c.spot_salida) : null;
   const mov = (e != null && s != null) ? (s - e) / e * 100 : null;
-  const fuente = FUENTE_SPOT_TXT[c.spot_fuente] ? ` <span class="fresco">(${esc(FUENTE_SPOT_TXT[c.spot_fuente])})</span>` : '';
-  const salida = s != null ? dineroD(s) : (c.vencido ? 'venció' : 'sin dato');
+  const sinHora = !!c.sin_hora && !['dia', 'manual'].includes(c.spot_fuente);
+  const fuenteTxt = sinHora ? SIN_HORA_TXT : FUENTE_SPOT_TXT[c.spot_fuente];
+  const fuente = fuenteTxt ? ` <span class="fresco">(${esc(fuenteTxt)})</span>` : '';
+  const aprox = sinHora ? ` <span class="fresco">(${SIN_HORA_CORTO})</span>` : '';   // el recordatorio corto en las otras dos filas
+  const salida = s != null ? dineroD(s) : (c.vencido ? (c.vencido_total === false ? 'venció en parte · sin dato' : 'venció') : 'sin dato');
   const accion = (e == null && s == null) ? '<span class="fresco">sin dato aún (el worker lo completa)</span>'
     : `${e != null ? dineroD(e) : 'sin dato'} → ${salida}${mov != null ? ` (${pctEsp(mov, 2)})` : ''}${fuente}`;
   const vs = mov == null ? `${pctEsp(c.pct, 1)} · <span class="fresco">acción: sin dato</span>`
-    : Math.abs(mov) < 0.05 ? `${pctEsp(c.pct, 1)} · acción plana` : `${pctEsp(c.pct, 1)} con la acción ${pctEsp(mov, 2)}`;
+    : Math.abs(mov) < 0.05 ? `${pctEsp(c.pct, 1)} · acción plana${aprox}` : `${pctEsp(c.pct, 1)} con la acción ${pctEsp(mov, 2)}${aprox}`;
   const d = distanciaStrike(c.direccion, c.strike, e);
-  const strike = d ? `${esc(c.strike)}: ${usdSigno(d.usd)} (${pctEsp(d.pct, 2)}) ${LADO_DINERO[d.lado]}` : '<span class="fresco">sin dato</span>';
+  const strike = d ? `${esc(c.strike)}: ${usdSigno(d.usd)} (${pctEsp(d.pct, 2)}) ${LADO_DINERO[d.lado]}${aprox}` : '<span class="fresco">sin dato</span>';
   return `<div class="hist">
         <div><span>acción</span><b class="mono">${accion}</b></div>
         <div><span>contrato vs acción</span><b class="mono">${vs}</b></div>
