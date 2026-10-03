@@ -17,12 +17,13 @@ const PUROS = ['claveContrato', 'claveCartera', 'itemsCartera', 'simboloOpcionEt
   'parsearCotizacionesEtrade', 'parsearCotizacionesSchwab', 'desOsi', 'osiDe', 'aplicarCotizacion', 'claveSlug', 'celdaMarkHtml',
   'celdaPnlHtml', 'lineaValorBroker', 'cifrasFila', 'markGestor', 'brokerCuadraConFicha', 'fmtPrima', 'totalesGestor', 'carteraToca',
   'etError', 'swMensajeError', 'haceCuantoSeg', 'esVivo', 'itemSinVivo', 'fotoFilaDe', 'casarCarteraLibro', 'brokersLeidos',
-  'carteraLeidaAt', 'gananciaTotalesHtml', 'comisionesTotalesHtml', 'sublineaTotalesHtml'];
+  'carteraLeidaAt', 'gananciaTotalesHtml', 'comisionesTotalesHtml', 'sublineaTotalesHtml',
+  'distanciaStrike', 'pctEsp', 'usdSigno', 'spotDe', 'lineaDistanciaHtml', 'celdaDistHtml'];   // v60: la acción detrás del contrato (se prueba en test_spot.js)
 const VIVOS = ['aplicarVivoLista', 'aplicarVivo', 'vivoToca', 'vivoFuente', 'cotizarVivo', 'tickVivo', 'fotoBrokerCambio', 'pintarVivoEnSitio',
   'textoVivoEstado', 'pintarVivoEstado', 'armarFilasGestor', 'carteraParaCache'];
 const CONSTS = ['VIVO_MS', 'VIVO_CARTERA_MS', 'VIVO_FRESCA_MS', 'VIVO_MAX_SIMBOLOS', 'VIVO_FALLOS_PAUSA', 'ETIQUETA_DEL_BROKER', '_vivo',
   'CART_BROKERS', 'BROKERS_WORKER', 'CART_TTL_ABIERTO', 'CART_MIN_MS', 'CART_MIN_FORZAR_MS', 'CART_TTL_EXTENDIDO', 'CART_FRESCO_MS',
-  'num2', 'dineroD', 'enCopilotoAhora'];
+  'num2', 'dineroD', 'enCopilotoAhora', '_velas', 'LADO_DINERO', 'VIVAS_ACCION'];
 
 // Un módulo con TODO lo de EN VIVO y un mundo de juguete controlable (E = escenario).
 function armar(E) {
@@ -111,7 +112,7 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
     const r6 = M.parsearCotizacionesEtrade(RT({ QuoteResponse: { QuoteData: [q('SPY', 'PUT', 2026, 10, 2, 662.5, 3.1, 3.3, 3.25, 'CLOSING'), q('NVDA', 'CALL', 2026, 9, 28, 235, 0.31, 0.35, 0.34)] } }), pedidos);
     igual([r6.estado, r6.n], ['CLOSING', 2], 'con una CLOSING (el cierre, no un precio de ahora) el lote no es REALTIME: se dice cuál');
     igual(M.parsearCotizacionesEtrade(RT({ QuoteResponse: { QuoteData: [q('NVDA', 'CALL', 2026, 9, 28, 235, 0.31, 0.35, 0.34, 'INDICATIVE_REALTIME')] } }), pedidos).estado, 'REALTIME', 'INDICATIVE_REALTIME cuenta como en vivo');
-    igual(M.parsearCotizacionesEtrade(RT({ QuoteResponse: { Messages: { Message: [{ description: 'x' }] } } }), pedidos), { por: {}, estado: 'VACIA', n: 0 }, 'solo Messages: vacía');
+    igual(M.parsearCotizacionesEtrade(RT({ QuoteResponse: { Messages: { Message: [{ description: 'x' }] } } }), pedidos), { por: {}, estado: 'VACIA', n: 0, por_accion: {} }, 'solo Messages: vacía (v60: también sin acciones)');
     igual(M.parsearCotizacionesEtrade({ status: 200, data: null }, pedidos).n, 0, 'sin data: no revienta');
   }
   // ════════════════ 4. respuesta de Schwab ════════════════
@@ -197,7 +198,7 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
     A._gestor.filas = [{ id: 7, ...NV, broker: 'etrade', estado: 'abierta', contratos: 2, prima_fill: 4.5, mark: 5 }];
     const r = await A.M.cotizarVivo();
     igual(A.reg.lecturas.length, 1, 'UNA petición para todos los contratos');
-    igual(A.reg.lecturas[0].path, '/v1/market/quote/NVDA:2026:9:28:CALL:235,SPY:2026:10:2:PUT:662.5.json', 'la ruta de E*TRADE con los símbolos de opción separados por coma (lista blanca /v1/market del proxy)');
+    igual(A.reg.lecturas[0].path, '/v1/market/quote/NVDA:2026:9:28:CALL:235,SPY:2026:10:2:PUT:662.5,NVDA,SPY.json', 'la ruta de E*TRADE con los símbolos de opción separados por coma (lista blanca /v1/market del proxy) y, detrás, las ACCIONES de cada subyacente (v60)');
     igual(A.reg.lecturas[0].query, { detailFlag: 'OPTIONS' }, 'detailFlag OPTIONS (bloque Option: bid, ask, lastTrade, osiKey)');
     igual([r.n, A.M._vivo.fuente, A.M._vivo.estado, A.M._vivo.n, A.M._vivo.fallos], [2, 'etrade', 'REALTIME', 2, 0], 'dos cotizaciones aplicadas');
     igual([br.mark, br.valor_actual, br.pnl_usd, br.pnl_pct], [6, 1200, 295, 32.6], 'la cartera de E*TRADE lleva el mark vivo y su P&L neto recalculado (1200 − 905)');
@@ -280,7 +281,7 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
     const brS = itemBroker({ ...NV, broker: 'moomoo', contratos: 30, prima_fill: 0.3, mark: 0.2, valor_actual: 600, invertido: 900, pnl_usd: -300 });
     S._cart.moomoo = { estado: 'ok', ts: Date.now(), items: [brS] };
     const rs = await S.M.cotizarVivo();
-    igual([S.reg.swLecturas[0].path, S.reg.swLecturas[0].query], ['/marketdata/v1/quotes', { symbols: 'NVDA  260928C00235000' }], 'sin E*TRADE: Schwab con el OSI');
+    igual([S.reg.swLecturas[0].path, S.reg.swLecturas[0].query], ['/marketdata/v1/quotes', { symbols: 'NVDA  260928C00235000,NVDA' }], 'sin E*TRADE: Schwab con el OSI y, detrás, la acción (v60)');
     igual([rs.n, S.M._vivo.fuente, brS.mark], [1, 'schwab', 6], 'y la foto de moomoo lleva el mark de Schwab');
     const N = armar({ creds: null }); N.reg.nodos['#g_vivo_estado'] = nodo();
     N._cart.moomoo = { estado: 'ok', ts: Date.now(), items: [itemBroker({ ...NV, broker: 'moomoo', contratos: 1 })] };

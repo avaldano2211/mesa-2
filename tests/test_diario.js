@@ -185,9 +185,10 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 2. EL CONTABLE: emparejarFillsFIFO ════════════════
   const claveContrato = construir(['claveContrato']).claveContrato;
+  // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
   const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
-    'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos'],
-    { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
+    'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot'],
+    { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
   const FILLS = [
     // E*TRADE: compra 2, venta 1 y venta 1 (parciales) con comisiones prorrateadas
@@ -336,7 +337,7 @@ function sbGrabador(respuestas) {
   const V = construir(['seccionPeriodoDiario', 'tarjetasResumenDiario', 'seccionCoberturaDiario', 'seccionDiaADia', 'seccionResumenesDiario', 'seccionOperacionesDiario', 'seccionAbiertosDiario',
     'seccionEjecucionesDiario', 'seccionNotasDiario', 'selectorCuentas', 'textoDuracionOp', 'fechaHoraD', 'periodoDiarioNormalizar', 'lunesDe', 'viernesDe', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'tituloPeriodoDiario', 'diasEntre', 'claveFill',
     'rangoPeriodoDiario', 'subtituloPeriodoDiario'],
-    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, ymdNY, fmtFechaNY, durTxt, claveContrato,
+    { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, ymdNY, fmtFechaNY, durTxt, claveContrato, filaAccionDiario: () => '',   // v60: la fila de la acción se prueba en test_spot.js
       MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C'), BROKER_CORTO: constante('BROKER_CORTO'),
       dineroD: constante('dineroD'), dineroS: constante('dineroS'), pctD: constante('pctD'), pctD2: constante('pctD2'), colD: constante('colD'), nOps: constante('nOps') });
   const dineroD = constante('dineroD'), pctD2 = constante('pctD2');
@@ -624,7 +625,7 @@ function sbGrabador(respuestas) {
     assert(pasos.length === 1 && /foto del worker de tastytrade es de hace 26 h: no se adopta/.test(pasos[0]), 'v53: adoptar() con la foto vieja frena con un toast antes de abrir el cuadro (aunque `ts` sea de ahora)');
     assert(/if \(lec && lec\.vieja\) \{/.test(extraer('adoptarConfirmar')) && /no se adopta hasta que la refresque/.test(extraer('adoptarConfirmar')), 'v53: la misma puerta en adoptarConfirmar (el cuadro pudo quedarse abierto)');
   }
-  const P = construir(['tarjetaPosicion', 'avisoCorteHtml', 'pnlVivo', 'corteTocado', 'corteDe', 'gtcDePosicion', 'gtcLimite', 'fmtPrima', 'preSalida', 'lineasCartera', 'margenHasta', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'planDePct', 'esVivo'], { VIVO_FRESCA_MS: 15000,  esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto, PLANES, PLAN_PCT: 35, bloqueGestor: () => '' });   // v55: el bloque del gestor se prueba en test_gestor_app.js
+  const P = construir(['tarjetaPosicion', 'avisoCorteHtml', 'pnlVivo', 'corteTocado', 'corteDe', 'gtcDePosicion', 'gtcLimite', 'fmtPrima', 'preSalida', 'lineasCartera', 'margenHasta', 'diasAlVencimiento', 'textoVencimiento', 'durTxt', 'planDePct', 'esVivo'], { VIVO_FRESCA_MS: 15000,  esc, usd, colUtil, BROKER_NOMBRE, hoyNY, haceCuanto, PLANES, PLAN_PCT: 35, bloqueGestor: () => '', celdaDistHtml: () => '' });   // v55: el bloque del gestor se prueba en test_gestor_app.js; v60: la línea de la acción en test_spot.js
   const posTasty = { id: 7, estado: 'abierta', broker: 'tasty', symbol: 'META', direccion: 'PUT', strike: 700, expiracion: '2026-10-16', contratos: 1, prima_fill: 5, gtc_limite: 5.52, plan_pct: 10, stop_pct: 20, mark: 4.9, mark_at: new Date().toISOString() };
   const hPT = P.tarjetaPosicion(posTasty, nb.items[1], HOY, null);
   assert(/vende en tu bróker/.test(hPT) && !/MZ\.cortarPosicion/.test(hPT) && !/MZ\.abrirOrden/.test(hPT), 'tarjeta de una posición de tasty: dice «vende en tu bróker» donde v50 pone Cortar y NO ofrece órdenes');
@@ -780,8 +781,8 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════
   // v54: 31184c9 (v53) ya está publicado; sin subir el número la Mesa instalada no se actualiza sola
-  assert(/config\.js\?v=59/.test(INDEX) && /app\/main\.js\?v=59/.test(INDEX), 'index.html carga config.js?v=59 y app/main.js?v=59 (v58: tickers de la semana y sesión extendida)');
-  assert(/const VER = 'mesa2-v48';/.test(SW), 'sw.js VER mesa2-v48');
+  assert(/config\.js\?v=60/.test(INDEX) && /app\/main\.js\?v=60/.test(INDEX), 'index.html carga config.js?v=60 y app/main.js?v=60 (v60: la acción detrás del contrato)');
+  assert(/const VER = 'mesa2-v49';/.test(SW), 'sw.js VER mesa2-v49');
   // v55: el CSS del Diario (envoltorio ancho solo con el Diario, rejilla de tarjetas, historial en línea/apilado por @container)
   assert(/@media \(min-width:900px\)\{#app\.ancho\{max-width:1180px\}/.test(INDEX) && /\.diario\{[^}]*container-type:inline-size/.test(INDEX) && /@container \(min-width:860px\)\{/.test(INDEX), 'v55 CSS: #app.ancho a 1180 px desde 900 px y .diario como contenedor de @container (min-width:860px)');
   assert(/\.dcards\{display:grid;grid-template-columns:1fr 1fr/.test(INDEX) && /\.dcards\{grid-template-columns:repeat\(auto-fill,minmax\(168px,1fr\)\)\}/.test(INDEX) && /\.dcard \.vl\{font-family:var\(--mono\)/.test(INDEX), 'v55 CSS: tarjetas a dos columnas en el iPhone, en filas en el Mac, número monoespaciado');
@@ -829,7 +830,7 @@ function sbGrabador(respuestas) {
     addEventListener() {}, location: { hash: '#/copiloto', reload() {} }, Intl, Date, Math, JSON, Promise,
     setTimeout, setInterval: () => 0, clearInterval() {}, console, fetch: () => Promise.reject(new Error('sin red')),
     navigator: { serviceWorker: { register: () => Promise.resolve(), addEventListener() {} } },
-    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=59' } } };
+    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=60' } } };
   win.window = win;
   vm.createContext(win);
   let cargo = true;
