@@ -407,6 +407,11 @@ const itemBroker = (base, extra) => Object.assign({ ...base, clave: base.broker 
   {
     assert(/sb\.channel\('mesa2-broker'\)\s*\.on\('postgres_changes', \{ event: 'INSERT', schema: 'public', table: 'posiciones_broker' \}, fotoBrokerCambio\)\s*\.on\('postgres_changes', \{ event: 'UPDATE', schema: 'public', table: 'posiciones_broker' \}, fotoBrokerCambio\)/.test(FUENTE), 'posiciones_broker se suscribe en su PROPIO canal y solo a INSERT/UPDATE (los DELETE no pasan por RLS)');
     assert(!/event: '\*', schema: 'public', table: 'posiciones_broker'/.test(FUENTE), 'nada se suscribe a los DELETE de posiciones_broker');
+    // v59 (muralla con un segundo usuario): ninguna tabla PERSONAL se suscribe con event '*' (los DELETE no pasan por RLS)
+    ['posiciones', 'senales_ocultas', 'posiciones_broker', 'cuenta_snapshots', 'broker_trades', 'ordenes', 'fills', 'notas'].forEach(tb =>
+      assert(!new RegExp("event: '\\*', schema: 'public', table: '" + tb + "'").test(FUENTE), 'tabla personal ' + tb + ' sin suscripción a DELETE'));
+    assert(/event: 'INSERT', schema: 'public', table: 'posiciones' \}/.test(FUENTE) && /event: 'UPDATE', schema: 'public', table: 'posiciones' \}/.test(FUENTE), 'posiciones: INSERT y UPDATE (los marks del worker llegan por UPDATE)');
+    assert(/event: 'INSERT', schema: 'public', table: 'senales_ocultas' \}/.test(FUENTE), 'senales_ocultas: INSERT (quitar llega al instante; restaurar por el respaldo de 60 s)');
     assert(/window\._mzTimerVivo = setInterval\(\(\) => \{ try \{ tickVivo\(\); \} catch \(_\) \{\} \}, VIVO_MS\)/.test(FUENTE), 'el timer en vivo arranca con la sesión');
     assert(/try \{ aplicarVivo\(\); \} catch \(_\) \{\}\s*\/\/ v56/.test(FUENTE) && FUENTE.indexOf('try { aplicarVivo(); }') < FUENTE.indexOf('try { await fotoDispositivoSincronizar(abierto === true); }'), 'tras cada relectura de la cartera la cotización fresca vuelve a mandar, y la foto sube después (con las cifras del bróker y «vivo» solo en la regular)');
     assert(/JSON\.stringify\(carteraParaCache\(\)\)/.test(FUENTE), 'la caché local se escribe sin la cotización viva');

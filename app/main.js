@@ -151,14 +151,19 @@ function suscribir() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'senales' }, ruta)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'ticker_estado' }, ruta)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'worker_heartbeat' }, ruta)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'posiciones' }, rutaSalvoDiario) // marks del worker
+    // v59 (muralla, 2026-10-03: hay un segundo usuario desde el 14-sep): en las tablas PERSONALES solo INSERT y UPDATE.
+    // Los DELETE de Realtime no pasan por RLS y viajan con la clave primaria a todo suscriptor autenticado; la app no
+    // los necesita (una posición se cierra por UPDATE).
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posiciones' }, rutaSalvoDiario)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'posiciones' }, rutaSalvoDiario) // marks del worker
     .subscribe();
   // Señales quitadas en otro equipo (senales_ocultas, 0013) → redibujar. En su PROPIO
   // canal: Realtime da de alta todas las tablas de un canal en una sola transacción y,
   // si una no está en la publicación (0013 sin aplicar), no entra ninguna; la campanada
   // de senales no puede caerse por esto.
   sb.channel('mesa2-ocultas')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'senales_ocultas' }, ruta)
+    // v59: solo INSERT (quitar). Restaurar es un DELETE que ya no viaja: el otro equipo lo ve en el respaldo de 60 s.
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'senales_ocultas' }, ruta)
     .subscribe();
   // v56: la foto del worker (moomoo/tasty en posiciones_broker, 0019) llega al instante en vez de esperar la
   // relectura de 20 s. En su PROPIO canal, como senales_ocultas: si 0019 no está aplicada, el resto no se cae.
