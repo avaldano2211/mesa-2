@@ -320,9 +320,9 @@ const HOY = '2026-10-03';
     assert(!/por_accion\[[^\]]*\]\s*=.*(user_id|posicion_id)/.test(FUENTE), 'muralla: nada personal viaja con la cotización de una acción');
     const raiz = path.join(path.dirname(process.argv[2]), '..');
     const html = fs.readFileSync(path.join(raiz, 'index.html'), 'utf8'), sw = fs.readFileSync(path.join(raiz, 'sw.js'), 'utf8');
-    assert(/config\.js\?v=60/.test(html) && /app\/main\.js\?v=60/.test(html), 'index.html carga config.js?v=60 y app/main.js?v=60');
-    assert(/const VER = 'mesa2-v49';/.test(sw), 'sw.js VER mesa2-v49');
-    const mod = C.cargarModuloEntero({ src: './app/main.js?v=60' });
+    assert(/config\.js\?v=61/.test(html) && /app\/main\.js\?v=61/.test(html), 'index.html carga config.js?v=61 y app/main.js?v=61');
+    assert(/const VER = 'mesa2-v50';/.test(sw), 'sw.js VER mesa2-v50');
+    const mod = C.cargarModuloEntero({ src: './app/main.js?v=61' });
     assert(mod.cargo, 'main.js entero carga en el DOM de juguete', mod.error);
     if (mod.cargo) igual(mod.ev('typeof distanciaStrike + typeof filaAccionDiario + typeof celdaDistHtml + typeof _vivo.spot + typeof edadSpotWorker'), 'functionfunctionfunctionfunctionfunction', 'dentro del módulo REAL están las funciones nuevas, _vivo.spot y edadSpotWorker');
     // rev60: el Copiloto carga la fila m15 de cada subyacente abierto ANTES de pintar las posiciones (peldaño 2 de spotDe)
@@ -344,7 +344,7 @@ const HOY = '2026-10-03';
       return { data: [], error: null };
     });
     const canal = (nombre) => { const c = { nombre, on() { return c; }, subscribe() { return c; } }; return c; };
-    const mod = C.cargarModuloEntero({ src: './app/main.js?v=60', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
+    const mod = C.cargarModuloEntero({ src: './app/main.js?v=61', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
     assert(mod.cargo, 'main.js carga con el supabase de juguete', mod.error);
     if (mod.cargo) {
       mod.ev("sesionActiva = { user: { id: 'u' } }; _hbUltimo = null;");

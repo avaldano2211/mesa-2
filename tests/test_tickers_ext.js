@@ -39,7 +39,7 @@ function armarSel(E) {
   E = Object.assign({ almacen: {}, modal: false, hash: '#/tickers', ch: null, filas: [] }, E || {});
   const reg = { pintarChart: 0, vistaTickers: 0, sel: nodo({ outerHTML: '' }) };
   const ls = localStorageFalso(E.almacen);
-  const M = construir(['chartPrefs', 'chartSelectores', 'editorTickersHtml', 'chartExt', 'pintarSelectores', 'editorTickersCapturar', 'editorTickersRestaurar'], {
+  const M = construir(['chartPrefs', 'chartSelectores', 'editorTickersHtml', 'chartExt', 'pintarSelectores', 'editorTickersCapturar', 'editorTickersRestaurar'], { esAdmin: () => true,
     localStorage: ls, esc, _tickers: { filas: E.filas },
     $: (s) => (s === '#modalChart' ? (E.modal ? nodo() : null) : s === '#chartSel' ? reg.sel : null),
     location: { hash: E.hash }, vistaTickers: (f) => { reg.vistaTickers++; reg.forzado = f; }, pintarChart: () => reg.pintarChart++,
@@ -109,7 +109,7 @@ function armarSel(E) {
   const nuevo = { inp: mkInp(''), err: { textContent: '', style: {} } };
   nuevo.querySelector = (s) => (s === '#tkSym' ? nuevo.inp : s === '#tkErr' ? nuevo.err : null);
   const doc = { activeElement: viejo.inp };
-  const M = construir(['chartPrefs', 'chartSelectores', 'editorTickersHtml', 'pintarSelectores', 'editorTickersCapturar', 'editorTickersRestaurar'], {
+  const M = construir(['chartPrefs', 'chartSelectores', 'editorTickersHtml', 'pintarSelectores', 'editorTickersCapturar', 'editorTickersRestaurar'], { esAdmin: () => true,
     localStorage: localStorageFalso({}), esc, _tickers: { filas: [] }, document: doc,
     $: (s) => (s === '#chartSel' ? (reemplazado ? nuevo : viejo) : null),
   }, { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS'] });
@@ -277,7 +277,7 @@ function armarSel(E) {
     const reg = { activo: [], charts: [], toast: [] };
     const sb = sbFalso((tabla) => (tabla === 'ticker_estado' ? { data: E.estados, error: null } : { data: [], error: null }));
     const M = construir(['vistaTickers', 'tarjetaTicker', 'cabeceraTicker', 'chartPrefs', 'chartSelectores', 'editorTickersHtml', 'tickerQuitar', 'tickerQuitarSi', 'tickerQuitarNo', 'tickersGrande',
-      'tickerEnCatalogo', 'tickerQuitarAviso', 'tickersEnUso', 'editorTickersCapturar', 'editorTickersRestaurar', 'pintarTickersConservando'], {
+      'tickerEnCatalogo', 'tickerQuitarAviso', 'tickersEnUso', 'editorTickersCapturar', 'editorTickersRestaurar', 'pintarTickersConservando'], { esAdmin: () => true,
       sb, esc, haceCuanto, localStorage: localStorageFalso(E.almacen || {}), TICKERS: ['AAPL', 'TSLA'],
       cargarVelas: async () => ({}), cargarTargets: async () => ({}),
       chartInline: (sym, fila, vista, tf, tg, grande, ext) => { reg.charts.push([sym, tf, ext]); return `<div class="chart">chart ${sym}</div>`; },
@@ -405,7 +405,7 @@ function armarSel(E) {
     const armarQ = (respuestaUpdate) => {
       const errTab = { style: {}, textContent: '' }, reg = { ruta: 0, vt: 0, forzado: null, toast: [] };
       const sb = sbFalso((tabla, cadena) => (cadena.some(c => c[0] === 'update') ? respuestaUpdate : { data: [], error: null }));
-      const M = construir(['tickerQuitarSi', 'tickerQuitar', 'tickerQuitarNo', 'tickerEnCatalogo', 'tickerQuitarAviso', 'tickerActivo', 'tickerEscribir', 'textoErrorTickers'], {
+      const M = construir(['tickerQuitarSi', 'tickerQuitar', 'tickerQuitarNo', 'tickerEnCatalogo', 'tickerQuitarAviso', 'tickerActivo', 'tickerEscribir', 'textoErrorTickers'], { esAdmin: () => true,
         sb, esc, $: (s) => (s === '#tkErr' ? errTab : null), cargarTickers: async () => true, pintarTickersCuenta() {},
         toast: (m) => reg.toast.push(m), ruta: () => reg.ruta++, vistaTickers: (f) => { reg.vt++; reg.forzado = f; return Promise.resolve(); }, location: { hash: '#/tickers' },
       }, { consts: ['_tickers'], extras: ['__html'], prefijo: 'let _vistaTickersHtml = "x";', sufijo: 'function __html() { return _vistaTickersHtml; }' });
@@ -437,7 +437,7 @@ function armarSel(E) {
     // ── v58 rev: ✕ sobre un ticker de la lista de RESPALDO (catálogo sin leer o vacío): un update a 0 filas que
     // PostgREST contesta sin error NO es un éxito; se avisa y no se escribe ──
     const errTab = { style: {}, textContent: '' }, reg = { toast: [], vt: 0, activo: [] };
-    const M = construir(['tickerQuitar', 'tickerQuitarSi', 'tickerQuitarNo', 'tickerEnCatalogo', 'tickerQuitarAviso', 'cabeceraTicker'], {
+    const M = construir(['tickerQuitar', 'tickerQuitarSi', 'tickerQuitarNo', 'tickerEnCatalogo', 'tickerQuitarAviso', 'cabeceraTicker'], { esAdmin: () => true,
       esc, $: (s) => (s === '#tkErr' ? errTab : null), toast: (m) => reg.toast.push(m), vistaTickers: () => { reg.vt++; return Promise.resolve(); },
       tickerActivo: (sym, on) => { reg.activo.push([sym, on]); return Promise.resolve(true); }, location: { hash: '#/tickers' },
     }, { consts: ['_tickers'], prefijo: 'let _vistaTickersHtml = "x";' });
@@ -474,7 +474,7 @@ function armarSel(E) {
       tickerEscribir: () => Promise.resolve(false), sb: null }, { consts: ['TICKER_RE'] });
     igual([await TAf.tickerAgregar(), inpTab.value], [false, 'nvda'], 'si la escritura falla el campo conserva lo escrito (para corregir y reintentar)');
     assert(!/10 min/.test(extraer('tickerAgregar')) && !/10 min/.test(extraer('seccionTickersCuenta')), 'ya no queda ningún «10 min» en tickerAgregar ni en seccionTickersCuenta');
-    const cta = construir(['seccionTickersCuenta', 'listaTickersHtml'], { esc, TICKERS: ['AAPL'], _tickers: { filas: [] } }).seccionTickersCuenta();
+    const cta = construir(['seccionTickersCuenta', 'listaTickersHtml'], { esAdmin: () => true, esc, TICKERS: ['AAPL'], _tickers: { filas: [] } }).seccionTickersCuenta();
     assert(/hasta 2 min/.test(cta) && /id="tkSym"/.test(cta) && /MZ\.tickerAgregar\(\)/.test(cta), '⚙ Tu cuenta: «hasta 2 min», y su editor sigue igual');
     // con el cuadro de la cuenta abierto ENCIMA de la pestaña hay dos #tkSym: manda el del cuadro
     const sb = sbFalso(() => ({ data: null, error: null }));
@@ -513,6 +513,23 @@ function armarSel(E) {
       igual(mod.ev('_tickers.quitando'), null, 'el estado quitando nace vacío');
       igual(mod.ev('chartPrefs().ext'), false, 'y el extendido nace apagado en el módulo real');
     }
+  }
+  // ════════════════ v61: un usuario que NO es administrador no ve el editor ni la ✕ ════════════════
+  {
+    const NA = construir(['chartSelectores', 'editorTickersHtml', 'cabeceraTicker', 'seccionTickersCuenta', 'listaTickersHtml', 'tickerQuitar'],
+      { esc, esAdmin: () => false, chartPrefs: () => ({ vista: 'bb', tf: 'm15', ext: false }), TICKERS: ['AAPL'], _tickers: { filas: [{ symbol: 'META', rol: 'operable', activo: false }], quitando: null },
+        vistaTickers: () => { throw new Error('no debe redibujar'); } },
+      { consts: ['CHART_VISTAS', 'CHART_TFS'] });
+    const sel = NA.chartSelectores('bb', 'm15', 'chartSel', true);
+    assert(!/id="tkSym"/.test(sel) && !/META ↺/.test(sel) && /administra el dueño de la Mesa/.test(sel), 'sin admin: la pestaña no lleva el editor y dice quién administra el catálogo');
+    assert(!/tkquitar/.test(NA.cabeceraTicker('AAPL', false, '<i>x</i>')), 'sin admin: la tarjeta no lleva la ✕');
+    const cta = NA.seccionTickersCuenta();
+    assert(!/tkSym/.test(cta) && !/Agregar ticker/.test(cta) && /es el mismo para todos/.test(cta), 'sin admin: en Cuentas solo la lista, sin botones');
+    let ok = true; try { NA.tickerQuitar('AAPL'); } catch (_) { ok = false; }
+    assert(ok && NA.chartSelectores('bb', 'm15', 'chartSel', true).indexOf('tkSym') < 0, 'sin admin: tickerQuitar no hace nada (ni redibuja)');
+    const SI = construir(['chartSelectores', 'editorTickersHtml', 'cabeceraTicker'], { esc, esAdmin: () => true, chartPrefs: () => ({ vista: 'bb', tf: 'm15', ext: false }), _tickers: { filas: [], quitando: null } }, { consts: ['CHART_VISTAS', 'CHART_TFS'] });
+    assert(/id="tkSym"/.test(SI.chartSelectores('bb', 'm15', 'chartSel', true)) && /tkquitar/.test(SI.cabeceraTicker('AAPL', false, '')), 'con admin: editor y ✕ como siempre');
+    assert(/from\('usuarios_permitidos'\)\.select\('es_admin,activo'\)\.eq\('user_id', uid\)\.maybeSingle\(\)/.test(C.FUENTE), 'la cuenta se lee de la propia fila de usuarios_permitidos (wl_sel_propia)');
   }
   C.resumen();
 })().catch(e => { console.log('FALLA: excepción inesperada → ' + (e && e.stack || e)); process.exit(1); });

@@ -225,7 +225,7 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'techoPisoProximos',
     const reg = { pintarChart: 0, cargarChart: [], vistaTickers: 0, sel: nodo({ outerHTML: '' }) };
     const ls = localStorageFalso(E.almacen);
     // v58: pintarSelectores pinta el editor de tickers en #chartSel (la pestaña) → editorTickersHtml y _tickers
-    const M = construir(['chartPrefs', 'chartSelectores', 'editorTickersHtml', 'chartVista', 'chartTf', 'pintarSelectores', 'editorTickersCapturar', 'editorTickersRestaurar'], {   // v58 rev: el repintado conserva #tkSym
+    const M = construir(['chartPrefs', 'chartSelectores', 'editorTickersHtml', 'chartVista', 'chartTf', 'pintarSelectores', 'editorTickersCapturar', 'editorTickersRestaurar'], { esAdmin: () => true,   // v58 rev: el repintado conserva #tkSym
       localStorage: ls, esc, _tickers: { filas: [] }, $: (s) => (s === '#modalChart' ? (E.modal ? nodo() : null) : s === '#chartSel' ? reg.sel : null),
       location: { hash: E.hash }, vistaTickers: () => reg.vistaTickers++, pintarChart: () => reg.pintarChart++, cargarChart: (f) => reg.cargarChart.push(f),
     }, { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS'], extras: ['CHART_TF_K', '__html'], prefijo: 'let _vistaTickersHtml = "algo"; let _ch = ' + JSON.stringify(E.ch) + ';', sufijo: 'function __html() { return _vistaTickersHtml; }' });
@@ -267,7 +267,7 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'techoPisoProximos',
     let velasResp = { AAPL: { payload: pk, actualizado_at: new Date().toISOString() } }, esperarVelas = null;
     const reg = { cargasVelas: [] };
     const P = construir(['pintarChart', 'cargarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista',
-      'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart'], { anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
+      'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
       $: (s) => nodos[s] || null, localStorage: localStorageFalso({}), esc, haceCuanto, document: { activeElement: nodos['#tgT'] },
       cargarVelas: async (syms, tf, forzar) => { reg.cargasVelas.push([syms, tf, forzar]); if (esperarVelas) await esperarVelas.promesa; return velasResp; },
       cargarTargets: async () => ({ AAPL: { target: 260, target_alto: 280, target_bajo: 240, fecha: '2026-09-21', fuente: 'finviz' } }),

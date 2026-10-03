@@ -65,6 +65,21 @@ sb.auth.getSession().then(({ data }) => arrancar(data.session));
 
 let sesionActiva = null, timer = null, canal = null;
 let _hbUltimo = null;   // v56: el último latido que leyó ruta(); el ritmo en vivo decide con él si el mercado está abierto
+// v61 (2026-10-03, llegan los amigos: Luca, Xavier…): ¿este usuario es ADMINISTRADOR? Lo dice su propia fila de
+// usuarios_permitidos (política wl_sel_propia). Solo el admin edita el catálogo de tickers (0017: adm_ins/adm_upd),
+// así que a los demás no se les enseña el editor ni la ✕ (antes verían un error de la base al tocar).
+const _cuenta = { esAdmin: null, ts: 0 };
+function esAdmin() { return _cuenta.esAdmin === true; }
+async function cargarCuenta() {
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id; if (!uid) return false;
+  try {
+    const { data, error } = await sb.from('usuarios_permitidos').select('es_admin,activo').eq('user_id', uid).maybeSingle();
+    if (error) return false;
+    const antes = _cuenta.esAdmin;
+    _cuenta.esAdmin = !!(data && data.es_admin && data.activo !== false); _cuenta.ts = Date.now();
+    return antes !== _cuenta.esAdmin;
+  } catch (_) { return false; }
+}
 function arrancar(session) {
   sesionActiva = session;
   const entrado = !!session;
@@ -83,6 +98,8 @@ function arrancar(session) {
     setTimeout(reanudarLoginEtrade, 400);   // login de E*TRADE a medias (PWA recargada durante el 2FA)
     // v52: catálogo de tickers de la base (respaldo: TICKERS_RESPALDO); si cambia, se redibuja
     cargarTickers().then(c => { if (c) ruta(); }).catch(() => {});
+    // v61: la cuenta (¿admin?) decide si se enseña el editor de tickers; si cambia, se repinta la pestaña
+    cargarCuenta().then(c => { if (c) { _vistaTickersHtml = ''; ruta(); } }).catch(() => {});
     if (!window._mzTimerTickers) window._mzTimerTickers = setInterval(() => { cargarTickers().then(c => { if (c) ruta(); }).catch(() => {}); }, 10 * 60000);
     // v56: ritmo EN VIVO del gestor (cotización cada 5 s y cartera cada 20 s, solo con el mercado abierto y el Copiloto a la vista)
     if (!window._mzTimerVivo) window._mzTimerVivo = setInterval(() => { try { tickVivo(); } catch (_) {} }, VIVO_MS);
@@ -311,8 +328,9 @@ function cabeceraTicker(sym, compacto, derecha) {
       ${derecha}</div>`;
   if (_tickers.quitando === sym) return `<div class="tkconf"><div class="mut">¿Quitar ${esc(sym)}? El worker deja de vigilarlo y sus señales no suenan; se puede volver a activar aquí.</div>
       <div class="fila" style="margin-top:8px"><button class="btnsec" style="color:var(--rojo);border-color:rgba(242,109,95,.45)" onclick="MZ.tickerQuitarSi('${esc(sym)}')">Quitar</button><button class="btnsec" onclick="MZ.tickerQuitarNo()">No</button></div></div>`;
+  const quitar = esAdmin() ? `<button class="tkquitar" title="Quitar de la Mesa (no se borra)" onclick="MZ.tickerQuitar('${esc(sym)}')">✕</button>` : '';   // v61: solo el admin
   return `<div class="fila"><h3>${esc(sym)}</h3>
-      <span class="tkder">${derecha}<button class="tkquitar" title="Quitar de la Mesa (no se borra)" onclick="MZ.tickerQuitar('${esc(sym)}')">✕</button></span></div>`;
+      <span class="tkder">${derecha}${quitar}</span></div>`;
 }
 // Línea «Rango óptimo del día» de la tarjeta: manda el método de la academia, luego
 // la tabla, luego el rango por delta (componerRango). Un rango con lo > hi (el
@@ -483,10 +501,12 @@ function chartPrefs() {
 // volver a 15 min u Hora sigue como estaba, sin sorpresas).
 function chartSelectores(vista, tf, id, conEditor) {
   const ext = chartPrefs().ext, enDia = tf === 'dia';
+  const editor = conEditor && esAdmin();                 // v61: solo el administrador edita el catálogo (común a toda la Mesa)
+  const nota = conEditor && !editor ? `<div class="fresco tknota" style="padding:2px 4px">Los tickers del catálogo los administra el dueño de la Mesa y son los mismos para todos.</div>` : '';
   return `<div id="${id || 'chartSel'}"><div class="periodos">${CHART_VISTAS.map(([k, l]) =>
       `<button class="perbtn ${vista === k ? 'on' : ''}" onclick="MZ.chartVista('${k}')">${l}</button>`).join('')}</div>
     <div class="periodos">${CHART_TFS.map(([k, l]) =>
-      `<button class="perbtn ${tf === k ? 'on' : ''}" onclick="MZ.chartTf('${k}')">${l}</button>`).join('')}<button class="perbtn ${ext ? 'on' : ''}"${enDia ? ' disabled title="solo 15 min y Hora"' : ''} onclick="MZ.chartExt()">Extendido</button></div>${conEditor ? editorTickersHtml(_tickers.filas) : ''}</div>`;
+      `<button class="perbtn ${tf === k ? 'on' : ''}" onclick="MZ.chartTf('${k}')">${l}</button>`).join('')}<button class="perbtn ${ext ? 'on' : ''}"${enDia ? ' disabled title="solo 15 min y Hora"' : ''} onclick="MZ.chartExt()">Extendido</button></div>${editor ? editorTickersHtml(_tickers.filas) : nota}</div>`;
 }
 // Fila de edición de tickers EN la pestaña (v58, Andrés 2026-10-02: «agregar y remover tickers que vaya
 // usando, dependiendo de la semana»): un campo + Agregar, y los operables INACTIVOS como chips «META ↺»
@@ -9103,6 +9123,9 @@ function listaTickersHtml(filas) {
     </div>`).join('');
 }
 function seccionTickersCuenta() {
+  if (!esAdmin()) return `<div class="sec" style="margin-top:14px">TICKERS</div>
+    <div class="mut">Los que vigila la Mesa: ${esc(TICKERS.join(', '))}.</div>
+    <div class="fresco" style="margin-top:3px">El catálogo lo administra el dueño de la Mesa y es el mismo para todos los usuarios.</div>`;   // v61
   return `<div class="sec" style="margin-top:14px">TICKERS</div>
     <div class="mut">Los que vigila la Mesa (rol operable): ${esc(TICKERS.join(', '))}.</div>
     <div id="tkLista">${listaTickersHtml(_tickers.filas)}</div>
@@ -9199,6 +9222,7 @@ function tickerQuitarAviso(sym) {
   toast(m);
 }
 function tickerQuitar(sym) {
+  if (!esAdmin()) return;                       // v61: el catálogo lo edita solo el administrador
   const s = String(sym || '').toUpperCase() || null;
   if (s && !tickerEnCatalogo(s)) { tickerQuitarAviso(s); return Promise.resolve(); }
   _tickers.quitando = s;
