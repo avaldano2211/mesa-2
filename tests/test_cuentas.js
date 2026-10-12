@@ -784,6 +784,12 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     assert(/unirOperaciones\(posR\.data \|\| \[\], btR\.data \|\| \[\], fillsR\.error \? null : fillsR\.filas\)/.test(extraer('vistaCuentasSaldos')), 'vistaCuentasSaldos: unirOperaciones con el libro de fills (null si la lectura falló)');
     assert(/unirOperaciones\(posic, btR\.data \|\| \[\], fillsR\.error \? null : fills\)/.test(extraer('vistaDiario')), 'vistaDiario: «¿coincide con Cuentas?» con el mismo libro');
   }
+// v62 rev4: TODAS las pantallas que suman operaciones pasan el libro (mismas cifras en Cuentas, Disciplina y los cupos)
+{
+  const llamadas = (C.FUENTE.match(/unirOperaciones\([^)]*\)/g) || []).filter(x => !/^unirOperaciones\(posic, trades, fills\)$/.test(x));
+  C.assert(llamadas.length >= 5 && llamadas.every(x => /,\s*[^,()]+\)$/.test(x) && x.split(',').length >= 3), 'cada llamada a unirOperaciones pasa el libro como tercer argumento: ' + llamadas.join(' | '));
+  C.assert(/async function libroParaUnir\(\)/.test(C.FUENTE), 'un solo lector del libro para unir (caché de 60 s; null si falla)');
+}
 
   C.resumen();
 })().catch(e => { console.log('FALLA: excepción inesperada → ' + (e && e.stack || e)); C.resumen(); });

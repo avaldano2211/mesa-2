@@ -1274,6 +1274,7 @@ async function vistaCopiloto(hb) {
     cargarPlanUsuario(),
     cargarOcultas(senP),
   ]);
+  const libroCop = await libroParaUnir();   // v62 rev4: caché de 60 s compartida con el Diario y Cuentas
   const senales = sen.data || [];
   const posic = pos.data || [];
   const abiertas = posic.filter(p => p.estado === 'abierta');
@@ -1285,7 +1286,7 @@ async function vistaCopiloto(hb) {
   abiertas.forEach(p => { p._gtcPendiente = pendIds.has(p.id); p._gtcAutoVeto = vetoGtc.has(String(p.id)); });
   // Mismo cupo que Disciplina: manual + bróker, deduplicado.
   const plan = planActivo();
-  const unidas = unirOperaciones(posic, bt.data || []).ops;
+  const unidas = unirOperaciones(posic, bt.data || [], libroCop).ops;
   let h = '';
 
   if (plan.periodo === 'dia') {
@@ -7235,12 +7236,13 @@ async function cargarCtxOrden() {
     sb.from('cuenta_snapshots').select('broker,saldo_neto'),
     cargarPlanUsuario(),
   ]);
+  const libroOrd = await libroParaUnir();   // v62 rev4
   const est = te.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
   const rangos = {};
   est.forEach(e => { const p = e.payload || {}; rangos[e.symbol] = componerRango(p.rango_vivo || null, p.rango_academia || null, RANGOS_TABLA[e.symbol] || null); });
   const lun = lunesNY(), hoy = hoyNY();
-  const unidas = unirOperaciones(pos.data || [], bt.data || []).ops;
+  const unidas = unirOperaciones(pos.data || [], bt.data || [], libroOrd).ops;
   const opsSemana = unidas.filter(p => (p.abierta_fecha_ny || '') >= lun).length;
   const opsHoy = unidas.filter(p => (p.abierta_fecha_ny || '') === hoy).length;
   // saldo por bróker (una fila por bróker en cuenta_snapshots) + total
@@ -8368,10 +8370,11 @@ async function vistaDisciplina() {
     sb.from('ordenes').select('posicion_id').eq('proposito', 'salida_corte').eq('estado', 'ejecutada'),
     cargarPlanUsuario(),
   ]);
+  const libroDis = await libroParaUnir();   // v62 rev4: lo mismo que Cuentas
   const plan = planActivo();
   const conCorte = new Set(((corR && corR.data) || []).map(o => String(o.posicion_id)));
   const posic = (posR.data || []).map(p => conCorte.has(String(p.id)) ? { ...p, _salida_corte: true } : p);
-  const { ops, fusionadas, fuentes } = unirOperaciones(posic, btR.data || []);
+  const { ops, fusionadas, fuentes } = unirOperaciones(posic, btR.data || [], libroDis);
   const snaps = csR.data || [];
   const saldo = snaps.reduce((s, c) => s + (Number(c.saldo_neto) || 0), 0);
   const haySaldo = snaps.length > 0 && saldo > 0;
@@ -8632,6 +8635,13 @@ async function guardarFills(filas, uid) {
 const _libro = { filas: null, ts: 0 };
 const LIBRO_TTL_MS = 60000;
 function libroInvalidar() { _libro.ts = 0; }
+// v62 rev4: el libro de fills para unirOperaciones (quita las filas de E*TRADE sustituidas: filasEtradeVigentes) en
+// TODAS las pantallas que suman operaciones, para que Cuentas, Disciplina, el cupo del Copiloto y el de la hoja de
+// orden cuenten lo mismo (la lección de v50: «las dos pantallas volvían a contradecirse»). null si no se pudo leer:
+// entonces todo como siempre.
+async function libroParaUnir() {
+  try { const r = await leerFillsTodos(); return r && !r.error ? r.filas : null; } catch (_) { return null; }
+}
 async function leerFillsTodos(forzar) {
   if (!forzar && _libro.filas && Date.now() - _libro.ts < LIBRO_TTL_MS) return { filas: _libro.filas, error: null };
   const filas = []; let desde = 0; const PAG = 1000; let error = null;

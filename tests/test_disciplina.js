@@ -80,7 +80,7 @@ function armarVista(E) {
   E = Object.assign({ plan: 'PLAN_35', posiciones: [], trades: [], snaps: [], cortes: [] }, E || {});
   const vista = nodo();
   const sb = sbFalso((tabla) => ({ posiciones: { data: E.posiciones }, broker_trades: { data: E.trades }, cuenta_snapshots: { data: E.snaps }, ordenes: { data: E.cortes } }[tabla] || { data: [] }));
-  const M = construir(['vistaDisciplina', 'unirOperaciones', 'cerradasDesde', 'reglasRotas', 'planDePct', 'fmtFechaNY', 'planActivo', 'planFilaCache', 'planUid'], {
+  const M = construir(['vistaDisciplina', 'unirOperaciones', 'cerradasDesde', 'reglasRotas', 'planDePct', 'fmtFechaNY', 'planActivo', 'planFilaCache', 'planUid'], { libroParaUnir: async () => null,
     sb, $: () => vista, cargarPlanUsuario: async () => null, sesionActiva: { user: { id: 'u1' } },
     localStorage: { getItem: () => (E.plan === 'PLAN_10' ? JSON.stringify({ user_id: 'u1', plan: 'PLAN_10' }) : null), setItem() {}, removeItem() {} },
     inicioPeriodo: () => MES, lunesNY: () => LUNES, hoyNY, nombreMesNY: () => 'septiembre', BROKER_NOMBRE, usd, esc, ymdNY,
