@@ -197,7 +197,8 @@ module.exports = function casa(RUTA, nombreSuite) {
     const from = (tabla) => {
       const cadena = [];
       const q = {};
-      ['select', 'eq', 'in', 'not', 'like', 'order', 'limit', 'insert', 'update', 'upsert', 'delete', 'is', 'gte', 'lte'].forEach(m => {
+      // v62: también range (las lecturas paginadas del libro de fills y de las señales de Cuentas)
+      ['select', 'eq', 'in', 'not', 'like', 'order', 'limit', 'range', 'insert', 'update', 'upsert', 'delete', 'is', 'gte', 'lte'].forEach(m => {
         q[m] = (...args) => { cadena.push([m, args]); return q; };
       });
       const consulta = () => { llamadas.push({ tabla, cadena: cadena.slice() }); return Promise.resolve().then(() => enrutar(tabla, cadena)); };

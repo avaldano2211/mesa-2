@@ -107,7 +107,8 @@ function arrancar(session) {
 }
 window.addEventListener('hashchange', ruta);
 // v55: al cambiar el ancho (Mac: ventana; iPhone: giro) el gestor pasa de tabla a tarjetas o al revés
-(() => { let t = null; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => { if (sesionActiva && ['copiloto', 'tickers'].includes(location.hash.replace('#/', '') || 'informe')) ruta(); }, 250); }); })();   // v57: Tickers también (viewBox del gráfico según el ancho)
+// v62: Cuentas también, pero solo su vista «Cuentas» y solo si cruza los 900 px (tabla ↔ tarjetas: ctaCambiaFormato)
+(() => { let t = null; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => { if (!sesionActiva) return; const tab = location.hash.replace('#/', '') || 'informe'; if (['copiloto', 'tickers'].includes(tab) || (tab === 'cuentas' && ctaCambiaFormato())) ruta(); }, 250); }); })();   // v57: Tickers también (viewBox del gráfico según el ancho)
 // Al volver del fondo (iOS congela la PWA y corta los fetch en vuelo): si estuvo
 // oculta más de 30 s se redibuja la vista y, si hay un formulario de orden
 // abierto, se recarga la cadena.
@@ -241,6 +242,7 @@ async function ruta() {
   const tab = (location.hash.replace('#/', '') || 'informe');
   if (tab !== 'cuentas' && typeof _diario === 'object' && _diario) _diario.notaPre = null;   // v53: «Nota» del Copiloto solo vale para la visita que abre
   if (tab !== 'cuentas' && typeof diarioAncho === 'function') diarioAncho(false);              // v55: el envoltorio ancho es solo del Diario
+  if (tab !== 'cuentas' && typeof cuentasAncho === 'function') cuentasAncho(false);            // v62: …y de la vista Cuentas (su .cta)
   if (typeof tickersAncho === 'function') tickersAncho(tab === 'tickers');                       // v57: Tickers en GRANDE en pantallas anchas (rejilla)
   if (tab !== 'tickers' && typeof _tickers === 'object' && _tickers) _tickers.quitando = null;   // v58: la pregunta «¿Quitar X?» no sobrevive a un cambio de pestaña
   if (tab === 'copiloto' && typeof copilotoAncho === 'function') copilotoAncho(true);           // v55: …y del Copiloto (la tabla del gestor), en el mismo tick: sin salto de ancho
@@ -4357,13 +4359,408 @@ function resumenPeriodo(ops, desde) {
     mejor: res.length ? Math.max(...res) : null, peor: res.length ? Math.min(...res) : null };
 }
 
-// v52: la pestaña Cuentas tiene dos vistas (Diario · Cuentas); esta es la de siempre, intacta.
+// ---------- v62 · CUENTAS CON TODO EL DETALLE Y A PANTALLA COMPLETA (Andrés 2026-10-11, desde el laptop, viendo la
+// vista «Cuentas» en la columna de 440 px: «dame más detalles y completa la pantalla en la computadora») ----------
+// Cada operación decía compra, venta, duración, costo, venta y ×N. Ahora: (A) se leen además el libro de fills (el
+// precio de la acción que el worker escribe en cada ejecución) y las señales del mercado; (B) cada operación dice su
+// contrato con expiración y DTE, la entrada y la salida con hora y prima, la comisión, el P&L neto (y el bruto), la acción
+// entrada → salida, el strike frente a la acción, la señal que HABÍA antes de entrar y, si hubo varias idas y vueltas,
+// su desglose; (C) en la computadora (≥ 900 px) la vista usa el ancho: brókeres en rejilla, fila de métricas, «por
+// activo» y «por bróker» lado a lado y el historial como TABLA. Todo es LECTURA: nada escribe en la base ni manda
+// órdenes, y fills sigue con su RLS (cada amigo ve lo suyo).
+const CTA_PASO = 200;                // C3: el historial se pinta de 200 en 200 («ver más»): ~600 operaciones colgaban la vista
+const CTA_MARGEN_MS = 2 * 60000;     // A3: holgura de la ventana de un fill alrededor de la entrada y la salida del grupo
+// Estado en memoria de la vista: lo último leído (para que «ver más» no relea nada) y cuántas filas se enseñan.
+const _cta = { tope: CTA_PASO, cerradas: [], ctx: null, formato: null };
+// C2: las 15 columnas del historial en la computadora — [título, subtítulo, alineada a la izquierda]
+const CTA_COLS = [['Fecha', '', 1], ['Contrato', 'exp · DTE', 1], ['Bróker', '', 1], ['×', '', 0], ['Entrada', 'hora · prima', 0], ['Salida', 'hora · prima', 0],
+  ['Duración', '', 0], ['Costo', '', 0], ['Venta', '', 0], ['Comisión', '', 0], ['P&L $', 'neto', 0], ['%', '', 0],
+  ['Acción', 'entrada → salida · %', 1], ['Strike vs acción', 'al entrar', 1], ['Señal', 'antes de entrar', 1]];
+
+// ¿El instante es una FECHA sin hora? E*TRADE manda transactionDate a medianoche ET (o, raro, a medianoche UTC exacta:
+// fechaNyTransaccion). Las opciones no se negocian a esas horas: un 00:00 es «no sé la hora», no un fill de madrugada,
+// y se pinta solo la fecha (como el Diario con sus viajes sin_hora). PURA.
+function sinHoraIso(iso) {
+  const ms = Date.parse(iso || '');
+  if (!Number.isFinite(ms)) return false;
+  const d = new Date(ms);
+  if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0) return true;
+  return horaNY(ms) === '00:00';
+}
+// A3 · El precio de la ACCIÓN al entrar y al salir de una operación de Cuentas, sacado del libro de fills (el worker
+// escribe `spot` y `spot_fuente` en cada fill, 0020). Ámbito = el del grupo de unirOperaciones: mismo bróker y mismo
+// contrato (claveContrato). ENTRADA = media ponderada por contratos del spot de las COMPRAS del día NY de apertura del
+// grupo hechas hasta el cierre (+2 min); SALIDA = idem con las VENTAS entre la apertura (−2 min) y el cierre (+2 min).
+// La fuente es la PEOR de las que intervienen (m1 < m15 < dia < manual): un dato aproximado jamás se vende como exacto.
+// Un fill de E*TRADE no trae hora (FECHA a medianoche, como en el Diario): su ventana va por DÍA (compra el día de
+// apertura; venta entre el día de apertura y el de cierre) y el resultado lleva sin_hora para que la vista diga
+// «inicio del día». Los fills sin spot no cuentan; sin ninguno, null (la vista dice «sin dato aún»). PURA.
+//   → { entrada, salida, fuente_entrada, fuente_salida, sin_hora }
+function spotDeOperacion(op, fills) {
+  const nada = { entrada: null, salida: null, fuente_entrada: null, fuente_salida: null, sin_hora: false };
+  const k = claveContrato(op);
+  if (!k) return nada;
+  const br = op.broker || 'etrade';     // como claveCartera: una ficha a mano sin bróker es de E*TRADE
+  const ms = (iso) => { const n = Date.parse(iso || ''); return Number.isFinite(n) ? n : null; };
+  const dia = op.abierta_fecha_ny || (op.abierta_at ? ymdNY(op.abierta_at) : '');
+  const tA = ms(op.abierta_at), tC = ms(op.cerrada_at), diaC = op.cerrada_at ? ymdNY(op.cerrada_at) : '';
+  const ent = [], sal = [];
+  for (const f of (Array.isArray(fills) ? fills : [])) {
+    if (!f || f.broker !== br || claveContrato(f) !== k) continue;
+    const s = spotDeFill(f), c = Number(f.contratos);
+    if (s.spot == null || !(c > 0)) continue;
+    const fd = String(f.fecha_ny || '').slice(0, 10) || ymdNY(f.ejecutado_at);
+    const tf = ms(f.ejecutado_at), sh = f.broker === 'etrade';
+    if (f.lado === 'compra') {
+      if (!dia || fd !== dia) continue;
+      if (!sh && tC != null && (tf == null || tf > tC + CTA_MARGEN_MS)) continue;   // una compra de DESPUÉS es otro viaje
+      ent.push({ s, c, sh });
+    } else if (f.lado === 'venta') {
+      if (sh) { if (!dia || !diaC || fd < dia || fd > diaC) continue; }
+      else if (tA == null || tC == null || tf == null || tf < tA - CTA_MARGEN_MS || tf > tC + CTA_MARGEN_MS) continue;
+      sal.push({ s, c, sh });
+    }
+  }
+  const pond = (xs) => { const n = xs.reduce((a, x) => a + x.c, 0); return n > 0 ? Math.round(xs.reduce((a, x) => a + x.s.spot * x.c, 0) / n * 10000) / 10000 : null; };
+  return { entrada: pond(ent), salida: pond(sal),
+    fuente_entrada: ent.length ? peorFuenteSpot(ent.map(x => x.s.fuente)) : null,
+    fuente_salida: sal.length ? peorFuenteSpot(sal.map(x => x.s.fuente)) : null,
+    sin_hora: ent.concat(sal).some(x => x.sh) };
+}
+// A3 · La señal que HABÍA antes de entrar: del MISMO símbolo, del MISMO día NY de apertura, creada antes de la entrada
+// (creado_at ≤ abierta_at) y, si la señal trae dirección, la MISMA que la operación; de varias, la más reciente antes
+// de entrar. Es un HECHO («había señal E5 a las 09:31»), no la causa de la entrada, y la vista lo dice así. Si la
+// entrada no trae hora (E*TRADE a medianoche: sinHoraIso) «antes de entrar» no se puede comprobar: vale la más reciente
+// de ese día y va con sin_hora para decirlo. PURA.   → { estrategia_id, hora (HH:MM NY), direccion, sin_hora } | null
+function senalDeOperacion(op, senales) {
+  if (!op || !op.symbol || !op.abierta_at) return null;
+  const tA = Date.parse(op.abierta_at);
+  if (!Number.isFinite(tA)) return null;
+  const sym = String(op.symbol).toUpperCase(), dir = String(op.direccion || '').toUpperCase();
+  const dia = op.abierta_fecha_ny || ymdNY(op.abierta_at);
+  const sinHora = sinHoraIso(op.abierta_at);
+  let mejor = null, tMejor = -Infinity;
+  for (const s of (Array.isArray(senales) ? senales : [])) {
+    if (!s || String(s.symbol || '').toUpperCase() !== sym) continue;
+    const ts = Date.parse(s.creado_at || '');
+    if (!Number.isFinite(ts)) continue;
+    if ((String(s.fecha_ny || '').slice(0, 10) || ymdNY(s.creado_at)) !== dia) continue;
+    if (!sinHora && ts > tA) continue;
+    if (s.direccion && dir && String(s.direccion).toUpperCase() !== dir) continue;
+    if (ts > tMejor) { tMejor = ts; mejor = s; }
+  }
+  return mejor ? { estrategia_id: mejor.estrategia_id || null, hora: horaNY(tMejor), direccion: mejor.direccion || null, sin_hora: sinHora } : null;
+}
+// A3 · Días naturales del día de apertura a la expiración (0 = 0DTE). null si falta un dato o no cuadra: una
+// expiración anterior a la entrada no es un DTE y no se inventa. PURA.
+function dteEntrada(op) {
+  if (!op) return null;
+  const d = diasEntre(op.abierta_fecha_ny || (op.abierta_at ? ymdNY(op.abierta_at) : ''), op.expiracion);
+  return d == null || d < 0 ? null : d;
+}
+// A3 · Las métricas de la fila de tiles y de «por activo» / «por bróker», PURAS, sobre las operaciones del período (las
+// de resumenPeriodo, con el MISMO `desde`). Cada operación aporta lo que cerró EN el período (cerradasDesde: por tramos y
+// por fecha de cierre en NY), igual que resumenPeriodo, así que utilidad, n, % de aciertos y mejor/peor coinciden con la
+// tarjeta de siempre (test_cuentas.js lo comprueba). Ganancia y pérdida «brutas» = la suma de las ganadoras y la de las
+// perdedoras (nada que ver con el «bruto» de comisiones de cada operación). Capital usado = Σ prima × contratos × 100 de
+// lo cerrado; rentabilidad = utilidad ÷ capital. Comisiones = Σ fees (null si ninguna operación las trae: «sin dato» no
+// es $0). Racha = ganadoras o perdedoras SEGUIDAS hasta la última por fecha de cierre (un $0 la corta).
+function metricasCuentas(ops, desde) {
+  const d0 = String(desde || '');
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const xs = [];
+  for (const op of (ops || [])) {
+    if (!op) continue;
+    const filas = cerradasDesde([op], d0);
+    if (!filas.length) continue;
+    const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
+    const fees = filas.map(f => num(f.fees)).filter(v => v != null);
+    xs.push({ op, res: vs.length ? r2(vs.reduce((a, b) => a + b, 0)) : null,
+      capital: filas.reduce((s, f) => s + (num(f.prima_fill) || 0) * (num(f.contratos) || 0) * 100, 0),
+      fees: fees.length ? fees.reduce((a, b) => a + b, 0) : null,
+      cierre: filas.map(f => f.cerrada_at || '').sort().pop() || '' });
+  }
+  const agregar = (lista) => {
+    const res = lista.map(x => x.res).filter(v => v != null);
+    const util = r2(res.reduce((a, b) => a + b, 0)), capital = r2(lista.reduce((s, x) => s + x.capital, 0));
+    const gan = res.filter(v => v > 0), per = res.filter(v => v < 0);
+    return { ops: lista.length, con_resultado: res.length, ganadoras: gan.length, perdedoras: per.length,
+      aciertos: res.length ? Math.round(100 * gan.length / res.length) : null, utilidad: util, capital,
+      rentabilidad: capital > 0 ? Math.round(util / capital * 10000) / 100 : null, res, gan, per };
+  };
+  const T = agregar(xs);
+  const gb = r2(T.gan.reduce((a, b) => a + b, 0)), pb = r2(T.per.reduce((a, b) => a + b, 0));
+  const coms = xs.map(x => x.fees).filter(v => v != null);
+  const orden = xs.filter(x => x.res != null).sort((a, b) => a.cierre.localeCompare(b.cierre));
+  let racha = { tipo: null, n: 0 };
+  for (let i = orden.length - 1; i >= 0; i--) {
+    const t = orden[i].res > 0 ? 'ganadoras' : orden[i].res < 0 ? 'perdedoras' : null;
+    if (!t || (racha.tipo && t !== racha.tipo)) break;
+    racha = { tipo: t, n: racha.n + 1 };
+  }
+  const grupos = (clave) => {
+    const m = {};
+    xs.forEach(x => { const k = clave(x.op); (m[k] = m[k] || []).push(x); });
+    return Object.keys(m).map(k => {
+      const a = agregar(m[k]);
+      return { clave: k, ops: a.ops, con_resultado: a.con_resultado, ganadoras: a.ganadoras, aciertos: a.aciertos, utilidad: a.utilidad, capital: a.capital, rentabilidad: a.rentabilidad };
+    }).sort((a, b) => (b.utilidad - a.utilidad) || a.clave.localeCompare(b.clave));
+  };
+  return { util: T.utilidad, n: T.ops, con_resultado: T.con_resultado, ganadoras: T.ganadoras, perdedoras: T.perdedoras,
+    winrate: T.aciertos == null ? 0 : T.aciertos,      // como resumenPeriodo: sin resultados, 0 %
+    ganancia_bruta: gb, perdida_bruta: pb,
+    gan_media: T.ganadoras ? r2(gb / T.ganadoras) : null, perd_media: T.perdedoras ? r2(pb / T.perdedoras) : null,
+    factor: pb < 0 ? Math.round(gb / -pb * 100) / 100 : null,
+    capital: T.capital, rentabilidad: T.rentabilidad, comisiones: coms.length ? r2(coms.reduce((a, b) => a + b, 0)) : null,
+    mejor: T.res.length ? Math.max(...T.res) : null, peor: T.res.length ? Math.min(...T.res) : null, racha,
+    por_activo: grupos(op => String(op.symbol || '?').toUpperCase()), por_broker: grupos(op => op.broker || 'manual') };
+}
+
+// B · Todo lo que se dice de UNA operación (grupo de unirOperaciones o tramo cobrado de una abierta), PURO: lo pintan
+// igual la tarjeta (teléfono) y la fila de la tabla (computadora). ctx = { fills, senales, errFills, errSen } de la
+// lectura de vistaCuentasSaldos: una lectura fallida se dice («acción: sin dato» / «señal: no se pudo leer»).
+function detalleOpCuentas(p, ctx) {
+  ctx = ctx || {};
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const c = num(p.contratos) || 1;
+  const pe = num(p.prima_fill), ps = num(p.prima_salida);
+  const costo = pe != null ? r2(pe * c * 100) : null, venta = ps != null ? r2(ps * c * 100) : null;
+  const neto = num(p.resultado_usd) != null ? num(p.resultado_usd) : (venta != null && costo != null ? r2(venta - costo) : null);
+  const fees = num(p.fees);
+  const com = fees != null && fees > 0 ? r2(fees) : null;       // Schwab y moomoo mandan 0: no hay comisión que enseñar
+  const dia = p.abierta_fecha_ny || (p.abierta_at ? ymdNY(p.abierta_at) : '');
+  const senal = ctx.errSen ? null : senalDeOperacion(p, ctx.senales);
+  // Sin señal ANTES de entrar, ¿la hubo DESPUÉS ese día? «sin señal ese día» sería falso: se dice cuál y que fue después.
+  const tA = Date.parse(p.abierta_at || '');
+  const despues = (!senal && !ctx.errSen && dia && Number.isFinite(tA))
+    ? senalDeOperacion({ ...p, abierta_fecha_ny: dia, abierta_at: new Date(tA + 86400000).toISOString() }, ctx.senales) : null;
+  const tramos = (Array.isArray(p._partes_filas) && p._partes_filas.length > 1) ? { filas: p._partes_filas, tipo: 'viajes' }
+    : (Array.isArray(p._filas) && p._filas.length > 1) ? { filas: p._filas, tipo: 'tramos' } : null;
+  return { c, pe, ps, costo, venta, neto, com, bruto: (com != null && neto != null) ? r2(neto + com) : null,
+    pct: (neto != null && costo > 0) ? Math.round(neto / costo * 1000) / 10 : null,
+    dia, dte: dteEntrada(p), sinHora: sinHoraIso(p.abierta_at), expirada: p.estado === 'expirada',
+    spot: ctx.errFills ? null : spotDeOperacion(p, ctx.fills), senal, senalDespues: despues,
+    errFills: !!ctx.errFills, errSen: !!ctx.errSen, tramos };
+}
+// «10:57» si es el mismo día NY que diaRef, «13 oct 10:57» si no; sin hora (E*TRADE), solo la fecha. PURA.
+function horaOpCuentas(iso, diaRef) {
+  if (!iso) return '—';
+  const dia = ymdNY(iso);
+  if (sinHoraIso(iso)) return fechaCorta(dia);
+  const h = horaNY(Date.parse(iso));
+  return dia === diaRef ? h : `${fechaCorta(dia)} ${h}`;
+}
+function contratoOpCuentas(p, d) {
+  const dte = d.dte == null ? '' : d.dte === 0 ? ' · 0DTE' : ` · ${d.dte} DTE`;
+  return { titulo: `${esc(p.symbol)} ${esc(p.direccion)}${p.strike != null && p.strike !== '' ? ' ' + esc(p.strike) : ''}`,
+    sub: (p.expiracion ? `exp ${esc(fechaCorta(p.expiracion))}` : 'exp sin dato') + dte };
+}
+// Entrada: «6 oct 10:57 · $2.10» en la tarjeta; en la tabla la hora y debajo la prima (la fecha va en su columna, y en
+// dos líneas la tabla de 15 columnas cabe en el ancho de la computadora). Sin hora (E*TRADE): solo la fecha / «sin hora».
+function entradaOpCuentas(p, d, enTabla) {
+  const prima = d.pe != null ? `$${d.pe.toFixed(2)}` : '';
+  const hora = d.sinHora ? (enTabla ? '<span class="fresco">sin hora</span>' : '') : esc(p.abierta_at ? horaNY(Date.parse(p.abierta_at)) : '—');
+  if (enTabla) return `${hora}${prima ? `<span class="csub">${prima}</span>` : ''}`;
+  return `${esc(fechaCorta(d.dia))}${hora ? ' ' + hora : ''}${prima ? ' · ' + prima : ''}`;
+}
+function salidaOpCuentas(p, d, enTabla) {
+  if (d.expirada) return '<span style="color:var(--oro)">expiró</span>';
+  const h = esc(horaOpCuentas(p.cerrada_at, d.dia)), prima = d.ps != null ? `$${d.ps.toFixed(2)}` : '';
+  if (enTabla) return `${h}${prima ? `<span class="csub">${prima}</span>` : ''}`;
+  return `${h}${prima ? ' · ' + prima : ''}`;
+}
+function duracionOpCuentas(p, d) {
+  if (!p.abierta_at || !p.cerrada_at) return '—';
+  if (d.sinHora || sinHoraIso(p.cerrada_at)) { const n = diasEntre(d.dia, ymdNY(p.cerrada_at)); return n == null ? '—' : n === 0 ? 'mismo día' : `${n} d`; }
+  return durTxt(p.abierta_at, p.cerrada_at);
+}
+// B · La ACCIÓN detrás del contrato, con los textos del Diario (filaAccionDiario): entrada → salida y su %, «contrato vs
+// acción» (los dos porcentajes; con la acción quieta —menos del 0,05 %— solo «acción plana») y el strike frente a la
+// acción al entrar. La fuente siempre a la vista (sufijo «(15 min)» / «(cierre del día)»; con fills de E*TRADE, «inicio
+// del día»). Sin spot se dice que el worker lo completa; con la lectura del libro caída, «acción: sin dato». PURA.
+function accionOpCuentas(p, d) {
+  const vsSin = `${pctEsp(d.pct, 1)} · <span class="fresco">acción: sin dato</span>`;
+  if (d.errFills) return { accion: '<span class="fresco">sin dato (no se pudo leer el libro de fills)</span>', vs: vsSin, strike: '<span class="fresco">sin dato</span>', mov: null };
+  const sp = d.spot || {};
+  const e = Number(sp.entrada) > 0 ? Number(sp.entrada) : null, s = Number(sp.salida) > 0 ? Number(sp.salida) : null;
+  const mov = (e != null && s != null) ? (s - e) / e * 100 : null;
+  const fte = peorFuenteSpot([sp.fuente_entrada, sp.fuente_salida]);
+  const sinHora = !!sp.sin_hora && !['dia', 'manual'].includes(fte);
+  const fuenteTxt = sinHora ? SIN_HORA_TXT : FUENTE_SPOT_TXT[fte];
+  const fuente = fuenteTxt ? ` <span class="fresco">(${esc(fuenteTxt)})</span>` : '';
+  const aprox = sinHora ? ` <span class="fresco">(${SIN_HORA_CORTO})</span>` : '';
+  const salida = s != null ? dineroD(s) : (d.expirada ? 'expiró' : 'sin dato');
+  const accion = (e == null && s == null) ? '<span class="fresco">sin dato aún (el worker lo completa)</span>'
+    : `${e != null ? dineroD(e) : 'sin dato'} → ${salida}${mov != null ? ` (${pctEsp(mov, 2)})` : ''}${fuente}`;
+  const vs = mov == null ? vsSin
+    : Math.abs(mov) < 0.05 ? `${pctEsp(d.pct, 1)} · acción plana${aprox}` : `${pctEsp(d.pct, 1)} con la acción ${pctEsp(mov, 2)}${aprox}`;
+  const ds = distanciaStrike(p.direccion, p.strike, e);
+  const strike = ds ? `${esc(p.strike)}: ${usdSigno(ds.usd)} (${pctEsp(ds.pct, 2)}) ${LADO_DINERO[ds.lado]}${aprox}` : '<span class="fresco">sin dato</span>';
+  return { accion, vs, strike, mov };
+}
+function senalOpCuentasHtml(d) {
+  if (d.errSen) return '<span class="fresco">señal: no se pudo leer</span>';
+  const s = d.senal;
+  if (!s) {
+    const x = d.senalDespues;
+    return x ? `<span class="fresco">sin señal antes de entrar (hubo ${esc(x.estrategia_id || 'una')} a las ${esc(x.hora)}, después)</span>`
+      : '<span class="fresco">sin señal ese día</span>';
+  }
+  return `señal ${esc(s.estrategia_id || '¿?')} · ${esc(s.hora)}${s.sin_hora ? ' <span class="fresco">(ese día; la entrada no trae hora)</span>' : ''}`;
+}
+// B · El desglose de las idas y vueltas del grupo (o de los tramos de un cierre parcial), plegable sin JS
+// (details/summary nativo). Cada fila: hora entrada → salida, ×contratos, prima → prima y su P&L.
+function tramosOpCuentasHtml(p, d) {
+  if (!d.tramos) return '';
+  const n = d.tramos.filas.length;
+  const filas = d.tramos.filas.map(t => {
+    const pe = t.prima_fill != null && t.prima_fill !== '' ? Number(t.prima_fill) : null;
+    const ps = t.prima_salida != null && t.prima_salida !== '' ? Number(t.prima_salida) : null;
+    const res = t.resultado_usd != null && t.resultado_usd !== '' && Number.isFinite(Number(t.resultado_usd)) ? Number(t.resultado_usd) : null;
+    const sal = t.estado === 'expirada' ? 'expiró' : t.estado === 'abierta' ? 'sigue abierta' : horaOpCuentas(t.cerrada_at, d.dia);
+    return `<div class="ctramo"><span>${esc(horaOpCuentas(t.abierta_at, d.dia))} → ${esc(sal)}</span><span>×${esc(Number(t.contratos) || 0)}</span>`
+      + `<span class="mono">${pe != null && Number.isFinite(pe) ? '$' + pe.toFixed(2) : '—'} → ${ps != null && Number.isFinite(ps) ? '$' + ps.toFixed(2) : '—'}</span>`
+      + `<b class="mono" style="color:${colUtil(res)}">${res != null ? dineroD(res) : '—'}</b></div>`;
+  }).join('');
+  return `<details class="ctram"><summary>${n} ${d.tramos.tipo === 'viajes' ? 'idas y vueltas' : 'tramos'} · ver el desglose</summary>${filas}</details>`;
+}
+// B · La TARJETA de una operación (teléfono, < 900 px). Antes: compra, venta, duración, costo, venta y ×N bróker.
+function tarjetaHistorial(p, ctx) {
+  const d = detalleOpCuentas(p, ctx), k = contratoOpCuentas(p, d), A = accionOpCuentas(p, d);
+  return `<div class="card">
+    <div class="fila"><h3>${k.titulo} <span class="fresco">${k.sub}</span></h3>
+      <span class="mono" style="font-weight:700;color:${colUtil(d.neto)};white-space:nowrap">${dineroD(d.neto)}${d.pct != null ? ` · ${pctD(d.pct)}` : ''}</span></div>
+    ${d.com != null ? `<div class="fresco" style="text-align:right">neto · bruto ${dineroD(d.bruto)} − comisión ${dineroD(d.com)}</div>` : ''}
+    <div class="hist">
+      <div><span>entrada</span><b>${entradaOpCuentas(p, d, false)}</b></div>
+      <div><span>salida</span><b>${salidaOpCuentas(p, d)}</b></div>
+      <div><span>duración</span><b>${esc(duracionOpCuentas(p, d))}</b></div>
+    </div>
+    <div class="hist">
+      <div><span>costo</span><b class="mono">${dineroD(d.costo)}</b></div>
+      <div><span>venta</span><b class="mono">${dineroD(d.venta)}</b></div>
+      <div><span>×${esc(d.c)}</span><b>${esc(BROKER_CORTO[p.broker] || p.broker || '—')}</b></div>
+    </div>
+    <div class="hist">
+      <div><span>acción</span><b class="mono">${A.accion}</b></div>
+      <div><span>contrato vs acción</span><b class="mono">${A.vs}</b></div>
+      <div><span>strike al entrar</span><b class="mono">${A.strike}</b></div>
+    </div>
+    <div class="ctasen"><span>señal</span>${senalOpCuentasHtml(d)}</div>
+    ${tramosOpCuentasHtml(p, d)}
+    ${p._tramoAbierta ? `<div class="fresco" style="margin-top:4px">tramo cobrado · la posición sigue abierta con el resto</div>` : ''}
+  </div>`;
+}
+// C2 · La FILA de la tabla del historial (computadora, ≥ 900 px): las 15 columnas de CTA_COLS y, debajo, una fila de
+// detalle con el desglose plegable (solo si hay más de una ida y vuelta, o si es el tramo cobrado de una abierta).
+function filaHistorialCuentas(p, ctx) {
+  const d = detalleOpCuentas(p, ctx), k = contratoOpCuentas(p, d), A = accionOpCuentas(p, d);
+  const det = tramosOpCuentasHtml(p, d) + (p._tramoAbierta ? `<div class="fresco">tramo cobrado · la posición sigue abierta con el resto</div>` : '');
+  return `<tr class="crow">
+    <td>${esc(fechaCorta(d.dia) || '—')}</td>
+    <td class="ctxt"><b>${k.titulo}</b><span class="csub">${k.sub}</span></td>
+    <td>${esc(BROKER_CORTO[p.broker] || p.broker || '—')}</td>
+    <td>${esc(d.c)}</td>
+    <td>${entradaOpCuentas(p, d, true)}</td>
+    <td>${salidaOpCuentas(p, d, true)}</td>
+    <td>${esc(duracionOpCuentas(p, d))}</td>
+    <td>${dineroD(d.costo)}</td>
+    <td>${dineroD(d.venta)}</td>
+    <td>${d.com != null ? dineroD(d.com) : '<span class="fresco">—</span>'}</td>
+    <td style="color:${colUtil(d.neto)}"><b>${dineroD(d.neto)}</b>${d.com != null ? `<span class="csub">bruto ${dineroD(d.bruto)}</span>` : ''}</td>
+    <td style="color:${colUtil(d.neto)}">${pctD(d.pct)}</td>
+    <td class="ctxt">${A.accion}<span class="csub">contrato ${A.vs}</span></td>
+    <td class="ctxt">${A.strike}</td>
+    <td class="ctxt">${senalOpCuentasHtml(d)}</td>
+  </tr>${det ? `<tr class="cdet"><td colspan="${CTA_COLS.length}">${det}</td></tr>` : ''}`;
+}
+// C2 · La fila de TILES de métricas (las .dcards del Diario: 2 columnas en el teléfono, en una fila en la computadora).
+function tilesCuentasHtml(M, periodo) {
+  const t = (lbl, val, sub, col, chico) => `<div class="dcard"><div class="lb">${esc(lbl)}</div><div class="vl${chico ? ' vl2' : ''}" style="color:${col || 'var(--tx)'}">${val}</div><div class="sb">${sub || ''}</div></div>`;
+  const tit = ({ dia: 'HOY' })[periodo] || String(periodo || '').toUpperCase();
+  const r = M.racha || { tipo: null, n: 0 };
+  return `<div class="dcards">
+    ${t(`UTILIDAD · ${tit}`, usd(M.util), M.comisiones ? 'neta: comisiones ya descontadas' : 'lo que bajó cada bróker', colUtil(M.util))}
+    ${t('OPERACIONES Y ACIERTOS', `${M.n} ops`, `${M.winrate}% aciertos · ${M.ganadoras} en verde, ${M.perdedoras} en rojo`)}
+    ${t('GANANCIA / PÉRDIDA MEDIA', `<span style="color:${colUtil(M.gan_media)}">${usd(M.gan_media)}</span> / <span style="color:${colUtil(M.perd_media)}">${usd(M.perd_media)}</span>`, 'por ganadora · por perdedora', null, true)}
+    ${t('FACTOR DE BENEFICIO', M.factor != null ? M.factor.toFixed(2) : '—', M.factor != null ? `ganado ${usd(M.ganancia_bruta)} ÷ perdido ${usd(-M.perdida_bruta)}` : M.ganadoras ? 'sin pérdidas en el período' : 'sin operaciones con resultado', M.factor == null ? null : M.factor >= 1 ? 'var(--verde)' : 'var(--rojo)')}
+    ${t('CAPITAL Y RENTABILIDAD', pctD2(M.rentabilidad), `${usd(M.util)} sobre ${usd(M.capital)} de capital usado`, colUtil(M.rentabilidad))}
+    ${t('COMISIONES', M.comisiones != null ? dineroD(M.comisiones) : '—', M.comisiones ? 'ya descontadas del neto · las reporta E*TRADE (Schwab y moomoo no)' : 'ningún bróker las reportó en el período')}
+    ${t('MEJOR / PEOR', `<span style="color:${colUtil(M.mejor)}">${usd(M.mejor)}</span> / <span style="color:${colUtil(M.peor)}">${usd(M.peor)}</span>`, 'la mejor y la peor operación (neto)', null, true)}
+    ${t('RACHA', r.n ? String(r.n) : '—', r.n ? `${r.n === 1 ? r.tipo.replace(/s$/, '') + ' seguida' : r.tipo + ' seguidas'} hasta la última cerrada` : 'sin racha (la última quedó en $0 o no hay)', r.tipo === 'ganadoras' ? 'var(--verde)' : r.tipo === 'perdedoras' ? 'var(--rojo)' : null)}
+  </div>`;
+}
+// C2 · «Por activo» y «Por bróker», dos tablas lado a lado en la computadora y apiladas en el teléfono.
+function tablasDesgloseCuentasHtml(M) {
+  const tabla = (titulo, filas, nombre, nom) => `<div class="card cdesg"><div class="sec" style="margin:0 0 4px">${titulo}</div>
+    ${(filas || []).length ? `<table class="tbl"><thead><tr><th>${nombre}</th><th>Ops</th><th>Aciertos</th><th>Utilidad</th><th>Rentab.</th></tr></thead><tbody>
+    ${filas.map(x => `<tr><td><b>${esc(nom(x.clave))}</b></td><td>${x.ops}</td><td>${x.aciertos == null ? '—' : x.aciertos + '%'}</td><td style="color:${colUtil(x.utilidad)}">${dineroD(x.utilidad)}</td><td style="color:${colUtil(x.rentabilidad)}">${pctD2(x.rentabilidad)}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="vacio">Sin operaciones cerradas en el período.</div>'}</div>`;
+  return `<div class="ctados">${tabla('POR ACTIVO', M.por_activo, 'Activo', (k) => k)}${tabla('POR BRÓKER', M.por_broker, 'Bróker', (k) => BROKER_NOMBRE[k] || (k === 'manual' ? 'a mano' : k))}</div>`;
+}
+// C2/C3 · El HISTORIAL: TABLA de 15 columnas en la computadora o tarjetas en el teléfono, de CTA_PASO en CTA_PASO
+// («ver más» añade sin releer: los datos viven en _cta). PURA sobre sus argumentos.
+function seccionHistorialCuentas(cerradas, ctx, tope, formato) {
+  const todas = cerradas || [], n = todas.length;
+  const ver = todas.slice(0, Math.max(CTA_PASO, Number(tope) || 0));
+  let h = `<div class="sec">HISTORIAL DE OPERACIONES${n ? ` · ${n}` : ''}</div>`;
+  if (!n) return h + `<div class="card vacio">Aún no hay operaciones cerradas.<br>Cuando cierres una posición en el Copiloto, aparece aquí.</div>`;
+  if (formato === 'tabla') {
+    h += `<div class="card ctabla"><table class="ctbl"><thead><tr>${CTA_COLS.map(([t, s, izq]) => `<th${izq ? ' class="l"' : ''}>${esc(t)}${s ? `<small>${esc(s)}</small>` : ''}</th>`).join('')}</tr></thead>
+      <tbody>${ver.map(p => filaHistorialCuentas(p, ctx)).join('')}</tbody></table></div>`;
+  } else h += ver.map(p => tarjetaHistorial(p, ctx)).join('');
+  if (n > ver.length) h += `<div class="fila" style="justify-content:center"><span class="fresco">Se muestran ${ver.length} de ${n}</span>`
+    + `<button class="btnsec" style="flex:none;padding:8px 14px" onclick="MZ.ctaVerMas()">ver más (${Math.min(CTA_PASO, n - ver.length)})</button></div>`;
+  const x = ctx || {}, notas = [];
+  if (x.errFills) notas.push(`No se pudo leer el libro de fills (${esc(x.errFills)}): la acción sale «sin dato».`);
+  if (x.errSen) notas.push(`No se pudieron leer las señales (${esc(x.errSen)}).`);
+  notas.push('Acción = el precio de la acción al entrar y al salir (lo anota el worker en cada ejecución). Señal = la que HABÍA de ese ticker ese día antes de tu entrada: un hecho, no la causa.');
+  return h + `<div class="fresco" style="padding:0 4px">${notas.join(' ')}</div>`;
+}
+// C3 · «ver más»: 200 filas más, sin releer nada (los datos de la última lectura están en _cta).
+function ctaVerMas() {
+  _cta.tope += CTA_PASO;
+  const el = $('#ctaHist');
+  if (el) el.innerHTML = seccionHistorialCuentas(_cta.cerradas, _cta.ctx, _cta.tope, _cta.formato);
+}
+// C1 · Al cambiar el ancho de la ventana solo se redibuja la vista Cuentas si cruza los 900 px (tabla ↔ tarjetas): lo
+// demás lo hace el CSS solo. El Diario no se toca (su CSS ya se adapta).
+function ctaCambiaFormato() {
+  return _cuentasVista === 'cuentas' && _cta.formato != null && gestorFormato(anchoVista()) !== _cta.formato;
+}
+// A2 · Las señales (tabla de MERCADO, común a todos) de los símbolos del historial desde el día de la operación más
+// antigua, solo las columnas que hacen falta (y el id, para paginar estable: PostgREST corta en 1000). → { filas, error }
+async function leerSenalesCuentas(posic, trades) {
+  const base = [].concat(posic || [], trades || []).filter(x => x && x.abierta_at && x.symbol);
+  if (!base.length) return { filas: [], error: null };
+  const desde = base.map(x => ymdNY(x.abierta_at)).filter(Boolean).sort()[0];
+  const syms = [...new Set(base.map(x => String(x.symbol).toUpperCase()))];
+  const filas = []; const PAG = 1000;
+  for (let v = 0; v < 30; v++) {
+    const r = await sb.from('senales').select('id,symbol,estrategia_id,direccion,fecha_ny,creado_at').gte('fecha_ny', desde).in('symbol', syms)
+      .order('creado_at', { ascending: true }).order('id', { ascending: true }).range(v * PAG, v * PAG + PAG - 1);
+    if (r.error) return { filas, error: textoErrorTabla(r.error, 'senales') };
+    const d = r.data || []; filas.push(...d);
+    if (d.length < PAG) break;
+  }
+  return { filas, error: null };
+}
+
+// v52: la pestaña Cuentas tiene dos vistas (Diario · Cuentas); esta es la de siempre (saldos, utilidad, historial),
+// v62: con todo el detalle y, en la computadora, a lo ancho.
 async function vistaCuentasSaldos() {
-  const [posR, btR, csR] = await Promise.all([
-    sb.from('posiciones').select('*'),
-    sb.from('broker_trades').select('*'),
-    sb.from('cuenta_snapshots').select('*'),
-  ]);
+  // UNA vez cada consulta (el builder de supabase-js la lanza en cada then): posiciones y broker_trades las usa también
+  // la lectura de señales (A2) para saber desde qué día y de qué símbolos pedir.
+  const posP = Promise.resolve(sb.from('posiciones').select('*'));
+  const btP = Promise.resolve(sb.from('broker_trades').select('*'));
+  // A2 (v62): el libro de fills (la misma caché de 60 s del Diario) y las señales, en el mismo Promise.all. Si una
+  // lectura falla, la vista sale igual y cada tarjeta lo dice; nunca se rompe por esto.
+  const fallo = (e) => ({ filas: [], error: String((e && e.message) || e || 'error') });
+  const fillsP = Promise.resolve().then(() => leerFillsTodos()).catch(fallo);
+  const senP = Promise.all([posP, btP]).then(([p, b]) => leerSenalesCuentas((p && p.data) || [], (b && b.data) || [])).catch(fallo);
+  const [posR, btR, csR, fillsR, senR] = await Promise.all([posP, btP, sb.from('cuenta_snapshots').select('*'), fillsP, senP]);
   // A1 (v50): el mismo conjunto DEDUPLICADO que Disciplina. Antes se concatenaba
   // manual + bróker a pelo y una operación registrada a mano Y traída del bróker
   // contaba DOS veces: la utilidad, el número de operaciones, los aciertos y el
@@ -4396,6 +4793,9 @@ async function vistaCuentasSaldos() {
     const i = saldos.findIndex(x => x.broker === 'schwab');
     if (i >= 0) saldos[i] = swSnap; else saldos.push(swSnap);
   }
+  // v62: con las lecturas nuevas la carga tarda más; si en el camino se cambió de pestaña o al Diario, no se pinta
+  // encima de lo que hay ahora.
+  if ((location.hash.replace('#/', '') || 'informe') !== 'cuentas' || _cuentasVista !== 'cuentas') return;
   // Historial E*TRADE: se muestra el resumen cacheado y se sincroniza en segundo
   // plano; se re-dibuja al terminar (el tope de 10 min evita bucles).
   let etHist = null, swHist = null;
@@ -4417,9 +4817,9 @@ async function vistaCuentasSaldos() {
   }
   let h = selectorCuentas('cuentas');
 
-  // ---- saldos de brókeres ----
+  // ---- saldos de brókeres (v62: en rejilla en la computadora, .ctabrk) ----
   const total = saldos.reduce((s, c) => s + (Number(c.saldo_neto) || 0), 0);
-  h += `<div class="card">
+  h += `<div class="ctabrk"><div class="card ctatot">
     <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">SALDO TOTAL</div>
     <div class="mono" style="font-size:28px;font-weight:700;margin:2px 0">${saldos.length ? usd(total) : '—'}</div>
     ${saldos.length ? `<span class="fresco">${saldos.length} de ${BROKERS.length} brókeres conectados</span>` : ''}</div>`;
@@ -4455,6 +4855,7 @@ async function vistaCuentasSaldos() {
         <div class="fresco">${sub}</div></div>
       ${btn}</div></div>`;
   }).join('');
+  h += `</div>`;
 
   // selector de período
   h += `<div class="periodos">
@@ -4467,51 +4868,27 @@ async function vistaCuentasSaldos() {
   // parcial deja la operación abierta y su dinero YA cobrado tiene que verse en la
   // semana en que se cobró (es lo que hace Disciplina con cerradasDesde).
   const R = resumenPeriodo(todas, desde);
-  const enP = R.ops, util = R.util, winrate = R.winrate, mejor = R.mejor, peor = R.peor;
-  h += `<div class="card">
-    <div class="mut" style="font-size:10.5px;font-weight:700;letter-spacing:.1em">UTILIDAD · ${({ dia: 'HOY' })[_periodoSel] || _periodoSel.toUpperCase()}</div>
-    <div class="mono" style="font-size:30px;font-weight:700;margin:3px 0;color:${colUtil(util)}">${usd(util)}</div>
-    <div class="fila" style="margin-top:4px">
-      <span class="mut">${enP.length} ops · ${winrate}% aciertos</span>
-      <span class="mut">mejor ${usd(mejor)} · peor ${usd(peor)}</span></div></div>`;
+  // v62: la tarjeta UTILIDAD pasa a ser la fila de tiles (C2) con las métricas del MISMO período y las MISMAS
+  // operaciones (metricasCuentas cuadra con resumenPeriodo: utilidad, n, aciertos, mejor y peor), y debajo «por
+  // activo» y «por bróker».
+  const M = metricasCuentas(R.ops, desde);
+  h += tilesCuentasHtml(M, _periodoSel);
+  h += tablasDesgloseCuentasHtml(M);
 
-  // historial completo
-  h += `<div class="sec">HISTORIAL DE OPERACIONES</div>`;
-  if (cerradas.length) {
-    h += cerradas.map(tarjetaHistorial).join('');
-  } else {
-    h += `<div class="card vacio">Aún no hay operaciones cerradas.<br>Cuando cierres una posición en el Copiloto, aparece aquí.</div>`;
-  }
+  // historial completo (v62: tabla en la computadora, tarjetas en el teléfono; de 200 en 200)
+  const formato = gestorFormato(anchoVista());
+  const ctx = { fills: (fillsR && !fillsR.error && fillsR.filas) || [], senales: (senR && !senR.error && senR.filas) || [],
+    errFills: (fillsR && fillsR.error) || null, errSen: (senR && senR.error) || null };
+  _cta.cerradas = cerradas; _cta.ctx = ctx; _cta.formato = formato;
+  h += `<div id="ctaHist" class="ctav">${seccionHistorialCuentas(cerradas, ctx, _cta.tope, formato)}</div>`;
 
   // nota de brókeres (llega después)
   h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">tastytrade en vivo 24/7 · E*TRADE en vivo desde este equipo (login diario) · Charles Schwab se activa en cuanto Schwab apruebe tu app.</div>`;
-  $('#vista').innerHTML = h;
-}
-
-function tarjetaHistorial(p) {
-  const c = Number(p.contratos) || 1;
-  const costo = Number(p.prima_fill) * c * 100;
-  const venta = p.prima_salida != null ? Number(p.prima_salida) * c * 100 : null;
-  const util = p.resultado_usd != null ? Number(p.resultado_usd) : (venta != null ? venta - costo : null);
-  const pct = costo ? (util / costo * 100) : null;
-  return `<div class="card">
-    <div class="fila"><h3>${esc(p.symbol)} ${esc(p.direccion)}${p.strike ? ' ' + esc(p.strike) : ''}</h3>
-      <span class="mono" style="font-weight:700;color:${colUtil(util)}">${usd(util)}${pct!=null?` · ${pct>0?'+':''}${pct.toFixed(0)}%`:''}</span></div>
-    <div class="hist">
-      <div><span>compra</span><b>${fmtFechaNY(p.abierta_at, true)}</b></div>
-      <div><span>venta</span><b>${p.estado==='expirada'?'expiró':fmtFechaNY(p.cerrada_at, true)}</b></div>
-      <div><span>duración</span><b>${durTxt(p.abierta_at, p.cerrada_at)}</b></div>
-    </div>
-    <div class="hist">
-      <div><span>costo</span><b class="mono">${usd(costo)}</b></div>
-      <div><span>venta</span><b class="mono">${usd(venta)}</b></div>
-      <div><span>×${esc(c)}</span><b>${esc(p.broker || '—')}</b></div>
-    </div>
-    ${p._tramoAbierta ? `<div class="fresco" style="margin-top:4px">tramo cobrado · la posición sigue abierta con el resto</div>` : ''}
-  </div>`;
+  $('#vista').innerHTML = `<div class="ctav">${h}</div>`;
 }
 window.MZ = Object.assign(window.MZ || {}, {
   periodo: (k) => { _periodoSel = k; vistaCuentas(); },
+  ctaVerMas,   // v62: el historial de Cuentas, 200 filas más (sin releer nada)
   conectar: (b) => {
     if (b === 'tasty') { toast('tastytrade ya está conectada (en vivo)'); return; }
     if (b === 'etrade') { conectarEtrade(); return; }
@@ -7503,9 +7880,15 @@ function unirOperaciones(posic, trades) {
       abierta_fecha_ny: dia, abierta_at: t.abierta_at || null, cerrada_at: t.cerrada_at || null,
       contratos: 0, _costo: 0, resultado_usd: 0, estado: 'cerrada', broker: t.broker,
       _fuente: t.broker, fuera_de_rango: false, entrada_semaforo: null, _partes: 0, _salida: 0, _salidaN: 0,
+      fees: null, _partes_filas: [],
     });
     const c = num(t.contratos) || 0;
     g.contratos += c; g._costo += (num(t.prima_fill) || 0) * c; g.resultado_usd += num(t.resultado_usd) || 0;
+    // v62: las comisiones del grupo (null si NINGUNA fila las trae: «sin dato» no es $0) y sus filas originales,
+    // para el detalle de Cuentas (desglose de tramos y «bruto»). Solo se AÑADEN campos: Disciplina y el Copiloto
+    // leen los de siempre y no cambian.
+    if (numN(t.fees) != null) g.fees = (g.fees || 0) + numN(t.fees);
+    g._partes_filas.push(t);
     if (t.prima_salida != null && num(t.prima_salida) != null) { g._salida += num(t.prima_salida) * c; g._salidaN += c; }
     if (t.abierta_at && (!g.abierta_at || t.abierta_at < g.abierta_at)) g.abierta_at = t.abierta_at;
     if (t.cerrada_at && (!g.cerrada_at || t.cerrada_at > g.cerrada_at)) g.cerrada_at = t.cerrada_at;
@@ -7514,7 +7897,9 @@ function unirOperaciones(posic, trades) {
   const delBroker = Object.values(grupos).map(g => ({ ...g,
     prima_fill: g.contratos ? Math.round(g._costo / g.contratos * 10000) / 10000 : null,
     prima_salida: g._salidaN ? Math.round(g._salida / g._salidaN * 10000) / 10000 : null,   // 0 = se fue a cero
-    resultado_usd: r2(g.resultado_usd) }));
+    resultado_usd: r2(g.resultado_usd),
+    fees: g.fees == null ? null : r2(g.fees),
+    _partes_filas: g._partes_filas.slice().sort((a, b) => String(a.abierta_at || '').localeCompare(String(b.abierta_at || ''))) }));
   const usados = new Set(); let fusionadas = 0; const manual = [];
   for (const p of manualesAgrupadas.map(unirTramos)) {
     const dia = p.abierta_fecha_ny || ymdNY(p.abierta_at);
@@ -8776,9 +9161,19 @@ function diarioAncho(on) {
   const app = $('#app');
   if (app && app.classList) app.classList.toggle('ancho', !!on);
 }
+// v62 (C1): la vista «Cuentas» también a lo ancho en la computadora: #app.ancho (hasta 1180 px, como el Diario) y su
+// clase propia #app.cta para su CSS (el patrón de #app.tk de Tickers). Apagarla solo quita .cta: el ancho lo gobierna
+// diarioAncho, y ruta() apaga las dos al salir de la pestaña.
+function cuentasAncho(on) {
+  const app = $('#app');
+  if (!app || !app.classList) return;
+  app.classList.toggle('cta', !!on);
+  if (on) app.classList.add('ancho');
+}
 // Cuentas = dos vistas con un selector arriba: Diario (por defecto) y Cuentas (la de siempre).
 async function vistaCuentas() {
   diarioAncho(_cuentasVista === 'diario');
+  cuentasAncho(_cuentasVista === 'cuentas');   // v62: la vista Cuentas también ocupa la pantalla en la computadora
   if (_cuentasVista === 'cuentas') return vistaCuentasSaldos();
   return vistaDiario();
 }
@@ -9248,7 +9643,7 @@ function tickerQuitarNo() {
 }
 
 window.MZ = Object.assign(window.MZ || {}, {
-  cuentasVista: (v) => { _cuentasVista = v === 'cuentas' ? 'cuentas' : 'diario'; try { localStorage.setItem(CUENTAS_VISTA_K, _cuentasVista); } catch (_) {} diarioAncho(_cuentasVista === 'diario'); if (_cuentasVista === 'diario') vistaDiario(true); else vistaCuentas(); },
+  cuentasVista: (v) => { _cuentasVista = v === 'cuentas' ? 'cuentas' : 'diario'; try { localStorage.setItem(CUENTAS_VISTA_K, _cuentasVista); } catch (_) {} diarioAncho(_cuentasVista === 'diario'); if (_cuentasVista === 'diario') vistaDiario(true); else vistaCuentas(); cuentasAncho(_cuentasVista === 'cuentas'); },
   diarioPeriodo: (tipo, val, solo) => {
     const sel = tipo === 'todo' ? { modo: 'todo' } : periodoDiarioToggle(periodoDiarioSel(), tipo, val, !!solo);
     periodoDiarioGuardar(sel); _diario.masEjec = false; _diario.rangoTmp = null; vistaDiario(true);
