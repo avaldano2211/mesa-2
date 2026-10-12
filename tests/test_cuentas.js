@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const C = require(path.join(__dirname, 'casa_pruebas.js'))(process.argv[2], 'test_cuentas.js');
-const { FUENTE, assert, igual, construir, extraer, ymdNY, nodo, respirar } = C;
+const { FUENTE, assert, igual, cerca, construir, extraer, ymdNY, nodo, respirar } = C;
 const RAIZ = path.join(path.dirname(process.argv[2]), '..');
 const INDEX = fs.readFileSync(path.join(RAIZ, 'index.html'), 'utf8');
 
@@ -23,8 +23,11 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   'contratoOpCuentas', 'entradaOpCuentas', 'salidaOpCuentas', 'duracionOpCuentas', 'accionOpCuentas', 'senalOpCuentasHtml', 'tramosOpCuentasHtml',
   'tarjetaHistorial', 'filaHistorialCuentas', 'tilesCuentasHtml', 'tablasDesgloseCuentasHtml', 'seccionHistorialCuentas', 'ctaVerMas', 'ctaCambiaFormato',
   'cuentasAncho', 'unirOperaciones', 'resumenPeriodo', 'cerradasDesde', 'claveContrato', 'spotDeFill', 'peorFuenteSpot', 'distanciaStrike', 'pctEsp',
-  'usdSigno', 'horaNY', 'fechaCorta', 'durTxt', 'diasEntre', 'gestorFormato'];
-const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
+  'usdSigno', 'horaNY', 'fechaCorta', 'durTxt', 'diasEntre', 'gestorFormato',
+  // v62 rev
+  'diaOpNY', 'diaAperturaOp', 'partesOpCuentas', 'comisionDelBroker', 'filaVencioCuentas', 'filaPresuntaCuentas', 'indiceCuentas', 'accionParteCuentas',
+  'claveDetalleCuentas', 'ctaPaginaHtml', 'ctaEstadoGuardar', 'ctaEstadoRestaurar', 'fechaNyTransaccion'];
+const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'BROKERS_CON_COMISION', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
   'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA'];
 function cuentas(op) {
   op = op || {};
@@ -79,39 +82,53 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     assert(!/(?<![a-z])_filas: g\./.test(extraer('unirOperaciones')) && /_partes_filas: g\._partes_filas\.slice\(\)/.test(extraer('unirOperaciones')), 'las filas del bróker NO se llaman _filas: cerradasDesde las abriría como tramos y cambiaría Disciplina');
   }
 
-  // ════════════════ 2. A3 · spotDeOperacion ════════════════
+  // ════════════════ 2. A3 · spotDeOperacion (v62 rev: anclada a las idas y vueltas del PROPIO grupo) ════════════════
   {
-    const OP = { symbol: 'TSLA', direccion: 'CALL', strike: 392.5, expiracion: '2026-10-09', broker: 'schwab', abierta_fecha_ny: '2026-10-06', abierta_at: '2026-10-06T14:57:00Z', cerrada_at: '2026-10-06T15:05:00Z' };
+    const ROW = { broker: 'schwab', symbol: 'TSLA', direccion: 'CALL', strike: 392.5, expiracion: '2026-10-09', contratos: 4, prima_fill: 2, prima_salida: 2.5,
+      abierta_at: '2026-10-06T14:57:00Z', cerrada_at: '2026-10-06T15:05:00Z', resultado_usd: 200, clave_ext: 's1' };
+    const OP = K.unirOperaciones([], [ROW]).ops[0];
     const F = (o) => Object.assign({ broker: 'schwab', symbol: 'TSLA', direccion: 'CALL', strike: 392.5, expiracion: '2026-10-09', lado: 'compra', contratos: 1, fecha_ny: '2026-10-06', spot_fuente: 'm1' }, o);
     const fills = [
       F({ ejecutado_at: '2026-10-06T14:57:05Z', spot: 430 }),
-      F({ ejecutado_at: '2026-10-06T14:59:00Z', spot: 431, contratos: 3, spot_fuente: 'm15' }),
-      F({ ejecutado_at: '2026-10-06T15:06:30Z', spot: 432 }),                                     // dentro de los +2 min del cierre
-      F({ ejecutado_at: '2026-10-06T15:30:00Z', spot: 440, contratos: 2 }),                        // otra compra DESPUÉS del cierre: otro viaje
-      F({ ejecutado_at: '2026-10-07T14:00:00Z', fecha_ny: '2026-10-07', spot: 450 }),               // otro día
-      F({ ejecutado_at: '2026-10-06T14:58:00Z', spot: null }),                                     // sin spot: no cuenta
+      F({ ejecutado_at: '2026-10-06T14:58:30Z', spot: 431, contratos: 3, spot_fuente: 'm15' }),     // a ±2 min de la apertura
+      F({ ejecutado_at: '2026-10-06T15:00:00Z', spot: 432 }),                                     // 3 min después de abrir: OTRO lote
+      F({ ejecutado_at: '2026-10-06T15:30:00Z', spot: 440, contratos: 2 }),                        // otra compra DESPUÉS del cierre
+      F({ ejecutado_at: '2026-10-07T14:57:00Z', fecha_ny: '2026-10-07', spot: 450 }),               // otro día, a la misma hora
+      F({ ejecutado_at: '2026-10-06T14:58:00Z', spot: null }),                                     // sin spot: no entra en la media (sí en n_fills)
       F({ ejecutado_at: '2026-10-06T14:58:00Z', spot: 500, broker: 'moomoo' }),                    // otro bróker
       F({ ejecutado_at: '2026-10-06T14:58:00Z', spot: 500, strike: 395 }),                         // otro contrato
-      F({ lado: 'venta', ejecutado_at: '2026-10-06T15:02:00Z', spot: 432.5 }),
+      F({ lado: 'venta', ejecutado_at: '2026-10-06T15:04:00Z', spot: 432.5 }),
       F({ lado: 'venta', ejecutado_at: '2026-10-06T15:05:00Z', spot: 433, contratos: 3, spot_fuente: 'dia' }),
-      F({ lado: 'venta', ejecutado_at: '2026-10-06T14:54:00Z', spot: 400 }),                       // antes de la apertura −2 min
-      F({ lado: 'venta', ejecutado_at: '2026-10-06T15:08:00Z', spot: 400 }),                       // después del cierre +2 min
-      F({ lado: 'vencimiento', ejecutado_at: '2026-10-06T15:03:00Z', spot: 400 }),                 // solo ventas dan la salida
+      F({ lado: 'venta', ejecutado_at: '2026-10-06T15:02:00Z', spot: 400 }),                       // 3 min antes del cierre
+      F({ lado: 'venta', ejecutado_at: '2026-10-06T15:08:00Z', spot: 400 }),                       // 3 min después del cierre
+      F({ lado: 'vencimiento', ejecutado_at: '2026-10-06T15:05:00Z', spot: 400 }),                 // solo ventas dan la salida
     ];
-    igual(K.spotDeOperacion(OP, fills), { entrada: 431, salida: 432.875, fuente_entrada: 'm15', fuente_salida: 'dia', sin_hora: false },
-      'entrada = media ponderada por contratos (430×1 + 431×3 + 432×1) / 5 = 431; salida (432.5×1 + 433×3) / 4 = 432.875; la fuente es la PEOR de cada lado');
-    igual(K.spotDeOperacion(OP, fills.filter(f => f.spot !== 431 && f.spot !== 432 && f.spot !== 433)), { entrada: 430, salida: 432.5, fuente_entrada: 'm1', fuente_salida: 'm1', sin_hora: false }, 'con un solo fill por lado, su spot y su fuente');
-    igual(K.spotDeOperacion(OP, fills.map(f => ({ ...f, spot: null }))), { entrada: null, salida: null, fuente_entrada: null, fuente_salida: null, sin_hora: false }, 'sin ningún fill con spot: todo null («sin dato aún»)');
-    igual(K.spotDeOperacion(OP, []).entrada, null, 'sin fills: null');
-    igual(K.spotDeOperacion(OP, fills.filter(f => f.broker === 'moomoo' || f.strike === 395)).entrada, null, 'los fills de OTRO bróker u OTRO contrato no entran');
-    igual(K.spotDeOperacion(OP, fills.filter(f => f.lado === 'venta' && (f.spot === 400))).salida, null, 'una venta fuera de la ventana (antes de la apertura −2 min o después del cierre +2 min) no entra');
+    const base = (x) => ({ entrada: x.entrada, salida: x.salida, fuente_entrada: x.fuente_entrada, fuente_salida: x.fuente_salida, sin_hora: x.sin_hora });
+    const r = K.spotDeOperacion(OP, fills);
+    igual(base(r), { entrada: 430.75, salida: 432.875, fuente_entrada: 'm15', fuente_salida: 'dia', sin_hora: false },
+      'ANCLADA: entrada = media ponderada de las compras a ±2 min de la apertura (430×1 + 431×3) / 4 = 430.75 (la de 3 min después es otro lote); salida (432.5×1 + 433×3) / 4 = 432.875; la fuente es la PEOR de cada lado');
+    igual([r.n_fills, r.por_ventana, r.partes.length], [5, false, 1], 'n_fills = 5 fills que casan (3 compras, una aún sin spot, y 2 ventas); sin respaldo de ventana; una sola ida y vuelta');
+    cerca(r.mov, (432.875 - 430.75) / 430.75 * 100, 'mov = el movimiento de la acción de su ida y vuelta (+0.49 %)', 1e-3);
+    const sinSpot = K.spotDeOperacion(OP, fills.map(f => ({ ...f, spot: null })));
+    igual([sinSpot.entrada, sinSpot.salida, sinSpot.mov, sinSpot.n_fills], [null, null, null, 5], 'sin ningún fill con spot: todo null, y n_fills = 5 (hay fills que el worker completará)');
+    igual([K.spotDeOperacion(OP, []).entrada, K.spotDeOperacion(OP, []).n_fills], [null, 0], 'sin fills: null y n_fills 0');
+    const otros = K.spotDeOperacion(OP, fills.filter(f => f.broker === 'moomoo' || f.strike === 395));
+    igual([otros.entrada, otros.n_fills], [null, 0], 'los fills de OTRO bróker u OTRO contrato no entran ni cuentan');
+    igual(K.spotDeOperacion(OP, fills.filter(f => f.lado === 'venta' && f.spot === 400)).salida, null, 'una venta a más de 2 min del cierre (antes o después) no entra');
+    igual(K.spotDeOperacion(OP, fills.filter(f => f.spot === 432 || f.spot === 440)).entrada, null, 'una compra a más de 2 min de la apertura (otro lote, o después del cierre) no entra');
     igual(K.spotDeOperacion({ ...OP, strike: null }, fills).entrada, null, 'una operación sin strike no tiene contrato: null');
-    // E*TRADE: los fills son FECHAS (medianoche ET); la ventana va por día y se avisa
-    const OPE = { ...OP, broker: 'etrade', cerrada_at: '2026-10-07T15:05:00Z' };
+    // ficha A MANO cuya hora no casa con ningún fill (registrada 5 min tarde): la ventana de antes como respaldo, y se dice
+    const MAN = { symbol: 'TSLA', direccion: 'CALL', strike: 392.5, expiracion: '2026-10-09', broker: 'schwab', contratos: 1, abierta_fecha_ny: '2026-10-06', abierta_at: '2026-10-06T15:02:00Z', cerrada_at: '2026-10-06T15:20:00Z' };
+    const rm = K.spotDeOperacion(MAN, [F({ ejecutado_at: '2026-10-06T14:57:00Z', spot: 430 }), F({ lado: 'venta', ejecutado_at: '2026-10-06T15:20:00Z', spot: 435 })]);
+    igual([rm.entrada, rm.salida, rm.por_ventana, rm.n_fills], [430, 435, true, 2], 'ficha a mano registrada tarde: la compra sale por la ventana del día (respaldo) con por_ventana; la venta casa con su cierre');
+    igual(K.spotDeOperacion(OP, [F({ ejecutado_at: '2026-10-06T14:50:00Z', spot: 430 })]).por_ventana, false, 'un grupo del BRÓKER nunca usa la ventana');
+    // E*TRADE: los fills son FECHAS (medianoche ET); se anclan por DÍA y se avisa
+    const ROWE = { ...ROW, broker: 'etrade', abierta_at: '2026-10-06T04:00:00Z', cerrada_at: '2026-10-07T04:00:00Z', clave_ext: 'e1' };
+    const OPE = K.unirOperaciones([], [ROWE]).ops[0];
     const FE = (o) => F(Object.assign({ broker: 'etrade', ejecutado_at: '2026-10-06T04:00:00Z' }, o));
-    igual(K.spotDeOperacion(OPE, [FE({ spot: 429.1 }), FE({ lado: 'venta', spot: 429.1 }), FE({ lado: 'venta', fecha_ny: '2026-10-07', ejecutado_at: '2026-10-07T04:00:00Z', spot: 433 }), FE({ lado: 'venta', fecha_ny: '2026-10-08', ejecutado_at: '2026-10-08T04:00:00Z', spot: 999 })]),
-      { entrada: 429.1, salida: 431.05, fuente_entrada: 'm1', fuente_salida: 'm1', sin_hora: true }, 'E*TRADE (sin hora): compra el día de apertura; ventas entre el día de apertura y el de cierre (la del 8 no); sin_hora para decir «inicio del día»');
-    igual(K.spotDeOperacion({ ...OPE, broker: null }, [FE({ spot: 429.1 })]).entrada, 429.1, 'una ficha a mano sin bróker se lee como de E*TRADE (como claveCartera)');
+    const re = K.spotDeOperacion(OPE, [FE({ spot: 429.1 }), FE({ lado: 'venta', spot: 429.1 }), FE({ lado: 'venta', fecha_ny: '2026-10-07', ejecutado_at: '2026-10-07T04:00:00Z', spot: 433 }), FE({ lado: 'venta', fecha_ny: '2026-10-08', ejecutado_at: '2026-10-08T04:00:00Z', spot: 999 })]);
+    igual(base(re), { entrada: 429.1, salida: 433, fuente_entrada: 'm1', fuente_salida: 'm1', sin_hora: true }, 'E*TRADE (sin hora): compra el día de apertura; venta SOLO el día de cierre (ni la del día de apertura, de otro viaje, ni la del 8); sin_hora para decir «inicio del día»');
+    igual(K.spotDeOperacion({ symbol: 'TSLA', direccion: 'CALL', strike: 392.5, expiracion: '2026-10-09', broker: null, abierta_at: '2026-10-06T04:00:00Z', cerrada_at: '2026-10-07T04:00:00Z' }, [FE({ spot: 429.1 })]).entrada, 429.1, 'una ficha a mano sin bróker se lee como de E*TRADE (como claveCartera)');
   }
 
   // ════════════════ 3. A3 · senalDeOperacion ════════════════
@@ -195,7 +212,7 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
       ['comisión', /\$2\.60/], ['bruto (hay comisión)', /bruto \$70\.00/], ['costo', /\$420\.00/], ['venta', /\$490\.00/],
       ['acción entrada → salida y su %', /\$430\.50 → \$432\.00 \(\+0\.35 %\)/], ['contrato vs acción', /\+16\.0 % con la acción \+0\.35 %/],
       ['strike vs acción al entrar', /432\.5: \+\$2\.00 \(\+0\.46 %\) fuera del dinero/], ['señal', /señal E5 · 09:31/],
-      ['desglose plegable', /<details class="ctram"><summary>2 idas y vueltas · ver el desglose<\/summary>/], ['tramo 1', /10:57 → 11:02[\s\S]*?\$2\.00 → \$2\.30[\s\S]*?\$28\.70/],
+      ['desglose plegable (con su clave estable data-k)', /<details class="ctram" data-k="tasty\|TSLA\|CALL\|432\.5\|2026-10-09\|2026-10-06\|\d+"><summary>2 idas y vueltas · ver el desglose<\/summary>/], ['tramo 1', /10:57 → 11:02[\s\S]*?\$2\.00 → \$2\.30[\s\S]*?\$28\.70/],
       ['tramo 2', /10:59 → 11:05[\s\S]*?\$2\.20 → \$2\.60[\s\S]*?\$38\.70/],
     ];
     datos.forEach(([q, re]) => assert(re.test(t), 'TARJETA: ' + q, (t.match(re) ? '' : t.replace(/\s+/g, ' ').slice(0, 300))));
@@ -210,8 +227,8 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const t2 = K.tarjetaHistorial(sola, { fills: [], senales: [] }), f2 = K.filaHistorialCuentas(sola, { fills: [], senales: [] });
     [t2, f2].forEach((h, i) => {
       const q = i ? 'FILA' : 'TARJETA';
-      assert(/sin dato aún \(el worker lo completa\)/.test(h), q + ': sin spot, «sin dato aún (el worker lo completa)»');
-      assert(/sin señal ese día/.test(h), q + ': sin señal, «sin señal ese día»');
+      assert(/sin fills en el libro para esta operación/.test(h) && !/el worker lo completa/.test(h), q + ': sin NINGÚN fill en el libro, «sin fills en el libro para esta operación» (v62 rev: no se promete lo que el worker no puede completar)');
+      assert(/sin señal CALL ese día/.test(h), q + ': sin señal, «sin señal CALL ese día» (con la dirección)');
       assert(!/bruto/.test(h), q + ': sin comisión (Schwab manda 0), NO se dice «bruto»');
       assert(!/<details/.test(h), q + ': una sola ida y vuelta: sin desglose');
     });
@@ -288,7 +305,7 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const vc = extraer('vistaCuentas');
     assert(/diarioAncho\(_cuentasVista === 'diario'\);\s*cuentasAncho\(_cuentasVista === 'cuentas'\);/.test(vc), 'vistaCuentas enciende el ancho también en la vista Cuentas');
     assert(/if \(tab !== 'cuentas' && typeof cuentasAncho === 'function'\) cuentasAncho\(false\);/.test(extraer('ruta')), 'ruta() quita .cta al salir de la pestaña');
-    assert(/else vistaCuentas\(\); cuentasAncho\(_cuentasVista === 'cuentas'\); \}/.test(FUENTE), 'MZ.cuentasVista: al pasar al Diario se quita .cta');
+    assert(/if \(_cuentasVista === 'diario'\) vistaDiario\(true\); else vistaCuentas\(\); \},/.test(FUENTE) && !/cuentasVista: \(v\) => \{[^\n]*cuentasAncho\(/.test(FUENTE), 'MZ.cuentasVista (v62 rev): al pasar al Diario NO quita .cta (la vista Cuentas sigue en pantalla mientras el Diario lee; sin salto)');
     assert(/\(tab === 'cuentas' && ctaCambiaFormato\(\)\)\) ruta\(\);/.test(FUENTE), 'el handler de resize redibuja Cuentas si cambia de formato');
     assert(/ctaVerMas,/.test(FUENTE.slice(FUENTE.indexOf("periodo: (k) => { _periodoSel = k; vistaCuentas(); },"))), 'MZ.ctaVerMas cuelga de window.MZ');
     assert(/@media \(min-width:900px\)\{\s*#app\.cta \.ctabrk\{grid-template-columns:repeat\(auto-fit,minmax\(240px,1fr\)\)\}/.test(INDEX), 'CSS: brókeres en rejilla auto-fit minmax(240px,1fr) desde 900 px');
@@ -321,8 +338,9 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
       if (!mod.cargo) return { error: mod.error };
       mod.win.innerWidth = ancho;
       let html = '';
-      const hist = nodo();
-      mod.win.document.querySelector = (s) => { if (s === '#ctaHist') return hist; const n = nodo(); if (s === '#vista') Object.defineProperty(n, 'innerHTML', { set(v) { html = v; }, get() { return html; } }); return n; };
+      // op.panel: el panel .ctabla de #ctaHist; pintar #vista lo «crea de nuevo» (scroll a 0), como el navegador
+      const hist = op.panel ? nodo({ querySelector: (s) => (s === '.ctabla' ? op.panel : null), querySelectorAll: () => [] }) : nodo();
+      mod.win.document.querySelector = (s) => { if (s === '#ctaHist') return hist; const n = nodo(); if (s === '#vista') Object.defineProperty(n, 'innerHTML', { set(v) { html = v; if (op.panel) { op.panel.scrollTop = 0; op.panel.scrollLeft = 0; } }, get() { return html; } }); return n; };
       mod.ev("location.hash = '#/cuentas'; _cuentasVista = 'cuentas'; _periodoSel = 'semana';");
       let revento = null;
       try { await mod.ev('vistaCuentasSaldos()'); } catch (e) { revento = String((e && e.stack) || e); }
@@ -359,6 +377,257 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     Z.mod.win.document.querySelector = (s) => { const n = nodo(); if (s === '#vista') Object.defineProperty(n, 'innerHTML', { set() { pintado = true; }, get() { return ''; } }); return n; };
     await Z.mod.ev('vistaCuentasSaldos()');
     assert(!pintado, 'si mientras cargaba se cambió de pestaña, no pinta encima de lo que hay ahora');
+    // v62 rev (arreglo 9) con el módulo real: el repintado devuelve el scroll del panel de la tabla
+    const panel = { scrollTop: 8000, scrollLeft: 25 };
+    const P = await correr(1400, { panel });
+    igual([P.revento, panel.scrollTop, panel.scrollLeft], [null, 8000, 25], '(arreglo 9) vistaCuentasSaldos real: tras reemplazar #vista el panel vuelve a la fila donde estaba Andrés (8000 px), no a la 1');
+    // v62 rev (arreglo 13) al pasar al Diario no se quita .cta en el mismo tick; (arreglo 12) el tope vuelve a 200 solo al ENTRAR
+    {
+      const M2 = W.mod;
+      const clases = new Set(['ancho', 'cta']);
+      const app = nodo({ classList: { toggle: (c, on) => { if (on) clases.add(c); else clases.delete(c); }, add: (c) => clases.add(c), remove: (c) => clases.delete(c), contains: (c) => clases.has(c) } });
+      M2.win.document.querySelector = (s) => (s === '#app' ? app : nodo());
+      M2.ev("location.hash = '#/cuentas'; _cuentasVista = 'cuentas'; window.__diario = 0; window.__saldos = 0; vistaDiario = () => { window.__diario++; return Promise.resolve(); }; vistaCuentasSaldos = () => { window.__saldos++; return Promise.resolve(); };");
+      M2.ev("MZ.cuentasVista('diario')");
+      assert(clases.has('cta') && clases.has('ancho') && M2.ev('window.__diario') === 1, '(arreglo 13) MZ.cuentasVista(«diario»): .cta se queda mientras el Diario lee (la vista Cuentas no salta de rejilla a columna)');
+      M2.ev('vistaCuentas()');
+      assert(!clases.has('cta') && clases.has('ancho') && M2.ev('window.__diario') === 2, '(arreglo 13) la quita el siguiente vistaCuentas, con el Diario a la vista (donde .cta no toca nada)');
+      M2.ev("_cta.tope = 600; MZ.cuentasVista('cuentas')");
+      igual([M2.ev('_cta.tope'), M2.ev('_cta.dentro'), clases.has('cta'), M2.ev('window.__saldos')], [200, true, true, 1], '(arreglo 12) al ENTRAR en la vista Cuentas el historial vuelve a las primeras 200');
+      M2.ev("_cta.tope = 600; vistaCuentas(); MZ.periodo('mes');");
+      igual([M2.ev('_cta.tope'), M2.ev('window.__saldos')], [600, 3], '(arreglo 12) el repintado automático y el cambio de período conservan las 600 que Andrés abrió');
+      M2.ev("_cta.dentro = false; vistaCuentas();");
+      igual(M2.ev('_cta.tope'), 200, '(arreglo 12) tras salir de la pestaña (ruta pone dentro = false) y volver: 200');
+      assert(/if \(tab !== 'cuentas' && typeof _cta === 'object' && _cta\) _cta\.dentro = false;/.test(extraer('ruta')), '(arreglo 12) ruta() marca la salida de la pestaña');
+    }
+  }
+
+  // ════════════════ 10. v62 rev · los arreglos de la revisión, con las funciones REALES ════════════════
+  // (arreglo 1) spotDeOperacion ya no mezcla fills de OTRAS operaciones: casos (1) a (4) de la revisión
+  {
+    const base = { broker: 'tasty', symbol: 'TSLA', direccion: 'CALL', strike: 440, expiracion: '2026-10-16' };
+    const F = (lado, at, spot, o) => Object.assign({ ...base, lado, contratos: 1, ejecutado_at: at, fecha_ny: ymdNY(at), spot, spot_fuente: 'm1' }, o);
+    // (1) un viaje de un día para otro (lun 15:00 ET → mar 14:00 ET) y otro viaje el martes (10:00 → 10:30) del mismo contrato
+    const BT = [
+      { ...base, contratos: 1, prima_fill: 3.00, prima_salida: 4.00, abierta_at: '2026-10-05T19:00:00Z', cerrada_at: '2026-10-06T18:00:00Z', resultado_usd: 98.7, fees: 1.3, clave_ext: 'A' },
+      { ...base, contratos: 1, prima_fill: 5.00, prima_salida: 6.00, abierta_at: '2026-10-06T14:00:00Z', cerrada_at: '2026-10-06T14:30:00Z', resultado_usd: 98.7, fees: 1.3, clave_ext: 'B' },
+    ];
+    const FILLS = [F('compra', '2026-10-05T19:00:00Z', 430), F('venta', '2026-10-06T18:00:00Z', 450), F('compra', '2026-10-06T14:00:00Z', 440), F('venta', '2026-10-06T14:30:00Z', 400)];
+    const ops = K.unirOperaciones([], BT).ops;
+    const A = ops.find(o => o.abierta_fecha_ny === '2026-10-05'), B = ops.find(o => o.abierta_fecha_ny === '2026-10-06');
+    const sA = K.spotDeOperacion(A, FILLS), sB = K.spotDeOperacion(B, FILLS);
+    igual([sA.entrada, sA.salida, sB.entrada, sB.salida], [430, 450, 440, 400], '(1) de un día para otro: A = 430 → 450 (la venta de B a 400 ya no entra en A); B = 440 → 400');
+    const accA = K.accionOpCuentas(A, K.detalleOpCuentas(A, { fills: FILLS, senales: [] }));
+    assert(/\$430\.00 → \$450\.00 \(\+4\.65 %\)/.test(accA.accion) && /\+32\.9 % con la acción \+4\.65 %/.test(accA.vs), '(1) la tarjeta dice que la acción SUBIÓ +4.65 % (antes «-1.16 %», con el signo cambiado)', accA.accion + ' | ' + accA.vs);
+    // (2) los tramos cobrados de una abierta ×3: ×1 vendido a las 10:30 (665) y ×1 a las 11:00 (650)
+    const b2 = { broker: 'tasty', symbol: 'SPY', direccion: 'PUT', strike: 660, expiracion: '2026-10-16', abierta_at: '2026-10-06T14:00:00Z', abierta_fecha_ny: '2026-10-06', prima_fill: 1 };
+    const pos = [{ ...b2, id: 1, contratos: 1, estado: 'abierta' }, { ...b2, id: 2, contratos: 1, estado: 'cerrada', cerrada_at: '2026-10-06T14:30:00Z', prima_salida: 1.5, resultado_usd: 50 },
+      { ...b2, id: 3, contratos: 1, estado: 'cerrada', cerrada_at: '2026-10-06T15:00:00Z', prima_salida: 2, resultado_usd: 100 }];
+    const F2 = (lado, at, spot, c) => ({ ...b2, lado, contratos: c, ejecutado_at: at, fecha_ny: ymdNY(at), spot, spot_fuente: 'm1' });
+    const fills2 = [F2('compra', '2026-10-06T14:00:00Z', 670, 3), F2('venta', '2026-10-06T14:30:00Z', 665, 1), F2('venta', '2026-10-06T15:00:00Z', 650, 1)];
+    const tramos = K.unirOperaciones(pos, []).ops.filter(p => p.estado === 'abierta').flatMap(p => p._filas.filter(f => f.estado === 'cerrada').map(f => ({ ...f, _tramoAbierta: true })));
+    igual(tramos.map(t => [t.id, K.spotDeOperacion(t, fills2).entrada, K.spotDeOperacion(t, fills2).salida]), [[2, 670, 665], [3, 670, 650]], '(2) cada tramo cobrado con SU venta: 665 y 650 (antes el 2.º daba 657.5)');
+    // (3) un lote del mismo día comprado después y que sigue abierto
+    const op3 = K.unirOperaciones([], [{ ...base, contratos: 1, prima_fill: 3, prima_salida: 4, abierta_at: '2026-10-07T14:00:00Z', cerrada_at: '2026-10-07T16:00:00Z', resultado_usd: 100 }]).ops[0];
+    igual(K.spotDeOperacion(op3, [F('compra', '2026-10-07T14:00:00Z', 430), F('compra', '2026-10-07T15:00:00Z', 470), F('venta', '2026-10-07T16:00:00Z', 440)]).entrada, 430,
+      '(3) la entrada es la compra de SU apertura (430), no la media con el lote de las 11:00 que sigue abierto (450)');
+    // (4) E*TRADE de lunes a miércoles con otro viaje el martes
+    const be = { ...base, broker: 'etrade' };
+    const ops4 = K.unirOperaciones([], [{ ...be, contratos: 1, prima_fill: 3, prima_salida: 4, abierta_at: '2026-10-05T04:00:00Z', cerrada_at: '2026-10-07T04:00:00Z', resultado_usd: 98, fees: 2 },
+      { ...be, contratos: 1, prima_fill: 3, prima_salida: 4, abierta_at: '2026-10-06T04:00:00Z', cerrada_at: '2026-10-06T04:00:00Z', resultado_usd: 98, fees: 2 }]).ops;
+    const FE = (lado, d, spot) => ({ ...be, lado, contratos: 1, ejecutado_at: d + 'T04:00:00Z', fecha_ny: d, spot, spot_fuente: 'm1' });
+    const fills4 = [FE('compra', '2026-10-05', 430), FE('compra', '2026-10-06', 440), FE('venta', '2026-10-06', 440), FE('venta', '2026-10-07', 460)];
+    const s4 = K.spotDeOperacion(ops4.find(o => o.abierta_fecha_ny === '2026-10-05'), fills4), s4b = K.spotDeOperacion(ops4.find(o => o.abierta_fecha_ny === '2026-10-06'), fills4);
+    igual([s4.entrada, s4.salida, s4.sin_hora, s4b.entrada, s4b.salida], [430, 460, true, 440, 440], '(4) E*TRADE lunes → miércoles: salida = la venta del MIÉRCOLES (460), no la media con la del martes, que es del otro viaje');
+  }
+  // (arreglo 2) «sin dato aún (el worker lo completa)» solo si hay fills que completar
+  {
+    const vieja = K.unirOperaciones([], [{ broker: 'tasty', symbol: 'SPY', direccion: 'PUT', strike: 600, expiracion: '2026-07-10', contratos: 1, prima_fill: 1, prima_salida: 2, abierta_at: '2026-07-08T14:00:00Z', cerrada_at: '2026-07-08T15:00:00Z', resultado_usd: 98.7, fees: 1.3 }]).ops[0];
+    const a1 = K.accionOpCuentas(vieja, K.detalleOpCuentas(vieja, { fills: [], senales: [] })).accion;
+    assert(/sin fills en el libro para esta operación/.test(a1) && !/worker/.test(a1), '(arreglo 2) una operación anterior al libro (ningún fill): «sin fills en el libro para esta operación», sin prometer lo que el worker no completará');
+    const FV = (lado, at) => ({ broker: 'tasty', symbol: 'SPY', direccion: 'PUT', strike: 600, expiracion: '2026-07-10', lado, contratos: 1, ejecutado_at: at, fecha_ny: '2026-07-08', spot: null });
+    const a2 = K.accionOpCuentas(vieja, K.detalleOpCuentas(vieja, { fills: [FV('compra', '2026-07-08T14:00:00Z'), FV('venta', '2026-07-08T15:00:00Z')], senales: [] })).accion;
+    assert(/sin dato aún \(el worker lo completa\)/.test(a2), '(arreglo 2) con fills que casan pero aún sin spot: «sin dato aún (el worker lo completa)»');
+  }
+  // (arreglo 3) E*TRADE del mismo día: el movimiento intradía no se puede medir
+  {
+    const be = { broker: 'etrade', symbol: 'TSLA', direccion: 'CALL', strike: 440, expiracion: '2026-10-09' };
+    const op = K.unirOperaciones([], [{ ...be, contratos: 2, prima_fill: 2.0, prima_salida: 3.0, abierta_at: '2026-10-06T04:00:00.000Z', cerrada_at: '2026-10-06T04:00:00.000Z', resultado_usd: 197.4, fees: 2.6 }]).ops[0];
+    const FD = (lado) => ({ ...be, lado, contratos: 2, ejecutado_at: '2026-10-06T04:00:00.000Z', fecha_ny: '2026-10-06', spot: 436.12, spot_fuente: 'dia' });
+    const A = K.accionOpCuentas(op, K.detalleOpCuentas(op, { fills: [FD('compra'), FD('venta')], senales: [] }));
+    assert(A.mov === null && /movimiento intradía no medible \(E\*TRADE no da la hora\)/.test(A.vs) && !/acción plana/.test(A.vs), '(arreglo 3) E*TRADE del mismo día: «movimiento intradía no medible (E*TRADE no da la hora)», nunca «acción plana»', A.vs);
+    assert(/\$436\.12 → \$436\.12 <span class="fresco">\(cierre del día\)<\/span>/.test(A.accion) && !/0\.00 %/.test(A.accion), '(arreglo 3) la acción sin un 0.00 % inventado y con su fuente', A.accion);
+    assert(/440: \+\$3\.88 \(\+0\.89 %\) fuera del dinero <span class="fresco">\(cierre del día\)<\/span>/.test(A.strike), '(arreglo 3) el strike «al entrar» dice que es el cierre del día', A.strike);
+    const FM = (lado) => ({ ...FD(lado), spot: 429, spot_fuente: 'm1' });
+    const AM = K.accionOpCuentas(op, K.detalleOpCuentas(op, { fills: [FM('compra'), FM('venta')], senales: [] }));
+    assert(/movimiento intradía no medible/.test(AM.vs) && /\(inicio del día\)<\/span>$/.test(AM.strike), '(arreglo 3) con el worker anterior (m1 sin hora): igual de no medible, y el strike con «(inicio del día)»', AM.strike);
+    const opN = K.unirOperaciones([], [{ ...be, contratos: 1, prima_fill: 2, prima_salida: 3, abierta_at: '2026-10-05T04:00:00Z', cerrada_at: '2026-10-07T04:00:00Z', resultado_usd: 98, fees: 2 }]).ops[0];
+    const FN = (lado, d, spot) => ({ ...be, lado, contratos: 1, ejecutado_at: d + 'T04:00:00Z', fecha_ny: d, spot, spot_fuente: 'm1' });
+    const AN = K.accionOpCuentas(opN, K.detalleOpCuentas(opN, { fills: [FN('compra', '2026-10-05', 430), FN('venta', '2026-10-07', 440)], senales: [] }));
+    assert(/con la acción \+2\.33 %/.test(AN.vs) && /\(inicio del día\)/.test(AN.vs), 'E*TRADE de un día para otro: el movimiento SÍ se mide (de inicio de día a inicio de día) y lo dice', AN.vs);
+  }
+  // (arreglo 4) varias idas y vueltas: el movimiento es la media de los de cada viaje, dicho como media, y cada viaje el suyo
+  {
+    const b = { broker: 'tasty', symbol: 'TSLA', direccion: 'CALL', strike: 440, expiracion: '2026-10-09' };
+    const BT = [{ ...b, contratos: 1, prima_fill: 2, prima_salida: 2.5, abierta_at: '2026-10-06T14:00:00Z', cerrada_at: '2026-10-06T14:20:00Z', resultado_usd: 48.7, fees: 1.3 },
+      { ...b, contratos: 1, prima_fill: 7, prima_salida: 6, abierta_at: '2026-10-06T18:00:00Z', cerrada_at: '2026-10-06T18:20:00Z', resultado_usd: -101.3, fees: 1.3 }];
+    const F = (lado, at, spot) => ({ ...b, lado, contratos: 1, ejecutado_at: at, fecha_ny: ymdNY(at), spot, spot_fuente: 'm1' });
+    const fills = [F('compra', '2026-10-06T14:00:00Z', 430), F('venta', '2026-10-06T14:20:00Z', 432), F('compra', '2026-10-06T18:00:00Z', 445), F('venta', '2026-10-06T18:20:00Z', 443)];
+    const op = K.unirOperaciones([], BT).ops[0];
+    const sp = K.spotDeOperacion(op, fills);
+    igual(sp.partes.map(x => [x.entrada, x.salida]), [[430, 432], [445, 443]], '(arreglo 4) cada ida y vuelta con SU acción: 430 → 432 y 445 → 443');
+    cerca(sp.mov, ((2 / 430) + (-2 / 445)) / 2 * 100, '(arreglo 4) mov = la media ponderada de los movimientos de cada viaje (+0.47 % y -0.45 %), no la diferencia de las medias', 1e-3);
+    const d = K.detalleOpCuentas(op, { fills, senales: [] }), A = K.accionOpCuentas(op, d);
+    assert(/\(media de 2 idas y vueltas\)/.test(A.accion) && /\(media de 2 idas y vueltas\)/.test(A.vs) && /\(media de 2 idas y vueltas\)/.test(A.strike), '(arreglo 4) acción, contrato vs acción y strike dicen que son la MEDIA de 2 idas y vueltas', A.vs);
+    const des = K.tramosOpCuentasHtml(op, d);
+    assert(/acción \$430\.00 → \$432\.00 \(\+0\.47 %\)/.test(des) && /acción \$445\.00 → \$443\.00 \(-0\.45 %\)/.test(des), '(arreglo 4) el desglose da la acción de CADA ida y vuelta', des);
+    const d1 = K.detalleOpCuentas(op, { fills: fills.slice(0, 2), senales: [] });
+    assert(/\(media de 1 de 2 idas y vueltas, las que tienen dato\)/.test(K.accionOpCuentas(op, d1).vs), 'si solo una ida y vuelta tiene dato, se dice «1 de 2»');
+    assert(!/ctspot/.test(K.tramosOpCuentasHtml(op, K.detalleOpCuentas(op, { fills: [], senales: [] }))), 'sin ningún dato de la acción, el desglose no repite «sin dato» en cada fila');
+  }
+  // (arreglo 5) neto y bruto bien dichos: moomoo y Schwab no mandan comisión
+  {
+    const b = { symbol: 'TSLA', direccion: 'CALL', strike: 440, expiracion: '2026-10-09', contratos: 1, prima_fill: 2, prima_salida: 3 };
+    const BT = [{ ...b, broker: 'etrade', abierta_at: '2026-10-06T04:00:00Z', cerrada_at: '2026-10-06T04:00:00Z', resultado_usd: 97.4, fees: 2.6 },
+      { ...b, broker: 'moomoo', abierta_at: '2026-10-06T14:00:00Z', cerrada_at: '2026-10-06T15:00:00Z', resultado_usd: 100, fees: 0, raw: { fees: 'no disponibles' } }];
+    const ops = K.unirOperaciones([], BT).ops;
+    const M = K.metricasCuentas(K.resumenPeriodo(ops, '2026-10-01').ops, '2026-10-01');
+    igual([M.comisiones, M.com_brokers, M.sin_com_brokers], [2.6, ['etrade'], ['moomoo']], '(arreglo 5) comisiones solo de quien las manda (E*TRADE); moomoo anotado aparte');
+    const tl = K.tilesCuentasHtml(M, 'semana');
+    assert(/neta de las comisiones de E\*TRADE; moomoo no las da \(su P&L va sin descontarlas\)/.test(tl) && /ya descontadas del neto · las da E\*TRADE \(moomoo no\)/.test(tl) && !/comisiones ya descontadas/.test(tl),
+      '(arreglo 5) UTILIDAD: «neta de las comisiones de E*TRADE; moomoo no las da (su P&L va sin descontarlas)»; COMISIONES dice quién las da');
+    const mm = ops.find(o => o.broker === 'moomoo');
+    const solo = K.metricasCuentas(K.resumenPeriodo([mm], '2026-10-01').ops, '2026-10-01');
+    const ts = K.tilesCuentasHtml(solo, 'semana');
+    assert(solo.comisiones === null && /COMISIONES<\/div><div class="vl" style="color:var\(--tx\)">—<\/div><div class="sb">moomoo no las da<\/div>/.test(ts) && !/\$0\.00/.test(ts) && /moomoo no las da: P&L sin descontarlas/.test(ts),
+      '(arreglo 5) solo moomoo en el período: COMISIONES «—» (no $0.00) y la utilidad dice que va sin descontarlas');
+    const cuatro = K.unirOperaciones([], [BT[0], BT[1], { ...b, broker: 'tasty', abierta_at: '2026-10-07T14:00:00Z', cerrada_at: '2026-10-07T15:00:00Z', resultado_usd: 98.7, fees: 1.3 },
+      { ...b, broker: 'schwab', abierta_at: '2026-10-07T14:00:00Z', cerrada_at: '2026-10-07T15:00:00Z', resultado_usd: 100, fees: 0 }]).ops;
+    const M4 = K.metricasCuentas(K.resumenPeriodo(cuatro, '2026-10-01').ops, '2026-10-01');
+    assert(M4.comisiones === 3.9 && /neta de las comisiones de E\*TRADE y tasty; Schwab y moomoo no las dan \(su P&L va sin descontarlas\)/.test(K.tilesCuentasHtml(M4, 'semana')),
+      '(arreglo 5) con los cuatro: «neta de las comisiones de E*TRADE y tasty; Schwab y moomoo no las dan (su P&L va sin descontarlas)»');
+    assert(/<b>\$100\.00<\/b><span class="csub">sin comisión del bróker<\/span>/.test(K.filaHistorialCuentas(mm, { fills: [], senales: [] })) && /sin comisión del bróker/.test(K.tarjetaHistorial(mm, {})),
+      '(arreglo 5) la fila y la tarjeta de moomoo dicen «sin comisión del bróker» bajo su P&L');
+    assert(!/sin comisión del bróker/.test(K.filaHistorialCuentas(ops.find(o => o.broker === 'etrade'), {})) && !/sin comisión del bróker/.test(K.filaHistorialCuentas(cuatro.find(o => o.broker === 'tasty'), {})), 'E*TRADE y tasty con comisión: «bruto», nunca «sin comisión del bróker»');
+    igual(K.CTA_COLS[10], ['P&L $', 'neto si hay comisión', 0], '(arreglo 5) la columna se titula «P&L $ · neto si hay comisión»');
+    igual([K.comisionDelBroker({ broker: 'etrade', fees: 0 }), K.comisionDelBroker({ broker: 'tasty', fees: 1.3 }), K.comisionDelBroker({ broker: 'moomoo', fees: 0 }), K.comisionDelBroker({ broker: 'schwab', fees: null }),
+      K.comisionDelBroker({ broker: 'schwab', fees: 0.65 }), K.comisionDelBroker({ fees: undefined }), K.comisionDelBroker(null)], [true, true, false, false, true, false, false],
+    'comisionDelBroker: E*TRADE y tasty la mandan (aunque sea 0); moomoo y Schwab con 0 o sin fees no; un fees > 0 de quien sea, sí');
+  }
+  // (arreglo 6) E*TRADE a medianoche UTC: día, DTE, acción y señal del día correcto
+  {
+    const be = { broker: 'etrade', symbol: 'TSLA', direccion: 'CALL', strike: 440, expiracion: '2026-10-09' };
+    const op = K.unirOperaciones([], [{ ...be, contratos: 1, prima_fill: 3, prima_salida: 4, abierta_at: '2026-10-06T00:00:00.000Z', cerrada_at: '2026-10-06T00:00:00.000Z', resultado_usd: 98, fees: 2 }]).ops[0];
+    const ms = Date.parse('2026-10-06T00:00:00Z');
+    const FILLS = ['compra', 'venta'].map(lado => ({ ...be, lado, contratos: 1, ejecutado_at: new Date(ms).toISOString(), fecha_ny: K.fechaNyTransaccion(ms), spot: 430, spot_fuente: 'm1' }));
+    const SEN = [{ symbol: 'TSLA', direccion: 'CALL', estrategia_id: 'E1', creado_at: '2026-10-05T19:30:00Z', fecha_ny: '2026-10-05' }, { symbol: 'TSLA', direccion: 'CALL', estrategia_id: 'E5', creado_at: '2026-10-06T13:31:00Z', fecha_ny: '2026-10-06' }];
+    igual([op.abierta_fecha_ny, K.diaOpNY(op.abierta_at), K.diaAperturaOp(op), K.dteEntrada(op)], ['2026-10-05', '2026-10-06', '2026-10-06', 3], '(arreglo 6) E*TRADE a medianoche UTC: unirOperaciones no cambia (5 oct), Cuentas toma el 6 (fechaNyTransaccion) y el DTE es 3, no 4');
+    const sp = K.spotDeOperacion(op, FILLS);
+    igual([sp.entrada, sp.salida], [430, 430], '(arreglo 6) la acción sale del libro (antes «sin dato aún» porque 10-06 ≠ 10-05)');
+    igual(K.senalDeOperacion(op, SEN).estrategia_id, 'E5', '(arreglo 6) la señal es la E5 del 6, no la E1 del 5');
+    const t = K.tarjetaHistorial(op, { fills: FILLS, senales: SEN });
+    assert(/entrada<\/span><b>6 oct · \$3\.00<\/b>/.test(t) && /exp 9 oct · 3 DTE/.test(t) && /señal E5/.test(t) && /\$430\.00 → \$430\.00/.test(t) && /intradía no medible/.test(t), '(arreglo 6) la tarjeta: entrada el 6 oct, 3 DTE, la acción 430 del libro y la señal E5', t.replace(/\s+/g, ' ').slice(0, 400));
+    const tI = K.tarjetaHistorial(op, { fills: FILLS, senales: SEN, idx: K.indiceCuentas(FILLS, SEN) });
+    assert(/señal E5/.test(tI) && /\$430\.00 → \$430\.00/.test(tI), '(arreglo 6) y con el índice (la clave del día también es la del 6)');
+    igual([K.horaOpCuentas('2026-10-06T00:00:00Z', '2026-10-06'), K.diaOpNY('2026-10-06T14:57:00Z'), K.diaOpNY('2026-10-06T04:00:00Z'), K.diaOpNY(null)], ['6 oct', '2026-10-06', '2026-10-06', ''],
+      'diaOpNY: medianoche UTC → día UTC; con hora o a medianoche ET → día NY; sin instante → vacío (no «hoy»)');
+  }
+  // (arreglo 7) los vencimientos del bróker dicen «expiró» (y la presunta de Schwab, «presunto»)
+  {
+    const v = { broker: 'schwab', symbol: 'NVDA', direccion: 'CALL', strike: 200, expiracion: '2026-12-04', contratos: 1, prima_fill: 1.5, prima_salida: 0,
+      abierta_at: '2026-12-02T15:10:00+00:00', cerrada_at: '2026-12-04T20:00:00+00:00', resultado_usd: -150, fees: 0,
+      clave_ext: 'NVDA  261204C00200000#9>venc2026-12-04', raw: { abre: 9, cierra: 'vencimiento', nota: 'venció sin venderse (A2): pérdida total PRESUNTA' } };
+    const op = K.unirOperaciones([], [v]).ops[0];
+    const d = K.detalleOpCuentas(op, { fills: [], senales: [] });
+    igual([op.estado, d.expirada, d.presunta], ['cerrada', true, true], '(arreglo 7) unirOperaciones la deja «cerrada» (no cambia); Cuentas la ve expirada y presunta');
+    const t = K.tarjetaHistorial(op, {});
+    assert(/expiró<\/span> <span class="fresco">\(presunto\)<\/span>/.test(K.salidaOpCuentas(op, d, false)) && /expiró/.test(t) && !/15:00/.test(t), '(arreglo 7) Schwab presunta: «expiró (presunto)», sin la hora inventada de las 15:00');
+    igual(K.duracionOpCuentas(op, d), '2 d hasta vencer', '(arreglo 7) la duración, en días hasta el vencimiento');
+    const et = K.unirOperaciones([], [{ ...v, broker: 'etrade', clave_ext: 'X#1>2#1', raw: { abre: 1, cierra: 2, tipo: 'Option Expired' } }]).ops[0];
+    const de = K.detalleOpCuentas(et, {});
+    assert(de.expirada && !de.presunta && /expiró<\/span><\/b>/.test(K.tarjetaHistorial(et, {})), '(arreglo 7) E*TRADE «Option Expired»: expiró (sin «presunto»)');
+    const mixto = K.unirOperaciones([], [v, { ...v, clave_ext: 'b', raw: { abre: 10, cierra: 77 }, cerrada_at: '2026-12-03T15:00:00Z', prima_salida: 2, resultado_usd: 50 }]).ops[0];
+    const dm = K.detalleOpCuentas(mixto, {});
+    assert(!dm.expirada && /expiró \(presunto\)/.test(K.tramosOpCuentasHtml(mixto, dm)), '(arreglo 7) un grupo con una venta real no es «expirada»; en su desglose, el tramo vencido dice «expiró (presunto)»');
+    igual([K.filaVencioCuentas(v), K.filaVencioCuentas({ clave_ext: 'X#1>2#1', raw: { tipo: 'Sold To Close' } }), K.filaPresuntaCuentas(v), K.filaPresuntaCuentas(null)], [true, false, true, false], 'filaVencioCuentas / filaPresuntaCuentas');
+  }
+  // (arreglo 8) «sin señal ese día» con la dirección, y la de la dirección contraria si la hubo
+  {
+    const op = { symbol: 'TSLA', direccion: 'CALL', strike: 440, expiracion: '2026-10-09', broker: 'tasty', contratos: 1, prima_fill: 1, prima_salida: 1.2, resultado_usd: 20, estado: 'cerrada',
+      abierta_fecha_ny: '2026-10-06', abierta_at: '2026-10-06T14:00:00Z', cerrada_at: '2026-10-06T14:30:00Z' };
+    const sen = [{ symbol: 'TSLA', direccion: 'PUT', estrategia_id: 'E1', creado_at: '2026-10-06T13:40:00Z', fecha_ny: '2026-10-06' }];
+    assert(/sin señal CALL ese día \(hubo E1 PUT a las 09:40\)/.test(K.tarjetaHistorial(op, { fills: [], senales: sen })), '(arreglo 8) «sin señal CALL ese día (hubo E1 PUT a las 09:40)»: ya no se dice que no hubo señal');
+    assert(/sin señal CALL ese día \(hubo E1 PUT a las 09:40\)/.test(K.filaHistorialCuentas(op, { fills: [], senales: sen, idx: K.indiceCuentas([], sen) })), 'y con el índice');
+  }
+  // (arreglo 9) el repintado automático no devuelve el panel a la fila 1 ni pliega los desgloses
+  {
+    const panel = { scrollTop: 8000, scrollLeft: 40 };
+    const det = (k, open) => ({ dataset: { k }, open });
+    let detalles = [det('a', true), det('b', false), det('c', true)];
+    const hist = nodo({ querySelector: (s) => (s === '.ctabla' ? panel : null), querySelectorAll: (s) => (s === 'details[open]' ? detalles.filter(x => x.open) : s === 'details[data-k]' ? detalles : []) });
+    const V = cuentas({ $: (s) => (s === '#ctaHist' ? hist : null) });
+    const est = V.ctaEstadoGuardar();
+    igual(est, { scroll: [8000, 40], abiertos: ['a', 'c'] }, '(arreglo 9) se guarda el scroll del panel y los desgloses abiertos (por su data-k)');
+    panel.scrollTop = 0; panel.scrollLeft = 0; detalles = [det('a', false), det('b', false), det('c', false), det('d', false)];   // el repintado: panel nuevo, todo plegado
+    V.ctaEstadoRestaurar(est);
+    igual([panel.scrollTop, panel.scrollLeft, detalles.map(x => x.open)], [8000, 40, [true, false, true, false]], '(arreglo 9) tras pintar vuelven el scroll y los desgloses que estaban abiertos');
+    let ok = true; try { cuentas().ctaEstadoRestaurar(cuentas().ctaEstadoGuardar()); cuentas().ctaEstadoRestaurar(null); } catch (_) { ok = false; }
+    assert(ok, 'sin #ctaHist (otra vista, la primera vez) no revienta');
+    assert(/const est = ctaEstadoGuardar\(\);\s*\$\('#vista'\)\.innerHTML = `<div class="ctav">\$\{h\}<\/div>`;\s*ctaEstadoRestaurar\(est\);/.test(extraer('vistaCuentasSaldos')), '(arreglo 9) vistaCuentasSaldos guarda el estado justo antes de reemplazar #vista y lo devuelve justo después');
+    const k1 = K.claveDetalleCuentas(OPB, K.detalleOpCuentas(OPB, CTX)), k2 = K.claveDetalleCuentas(OPB, K.detalleOpCuentas(OPB, { fills: [], senales: [] }));
+    assert(k1 === k2 && k1 === 'tasty|TSLA|CALL|432.5|2026-10-09|2026-10-06|' + Date.parse('2026-10-06T14:57:00Z'), '(arreglo 9) la clave del desglose es estable (no depende de lo leído): bróker|contrato|día|apertura', k1);
+  }
+  // (arreglo 10) «ver más» AÑADE las filas nuevas sin repintar el panel
+  {
+    const muchas = Array.from({ length: 450 }, (_, i) => ({ ...OPB, strike: 300 + i, _partes_filas: null }));
+    const añadidas = [];
+    const tbody = { insertAdjacentHTML: (pos, html) => añadidas.push([pos, html]) };
+    const pie = { innerHTML: 'viejo', quitado: false, remove() { this.quitado = true; } };
+    const hist = nodo({ querySelector: (s) => (s === '.ctabla tbody' ? tbody : s === '#ctaMas' ? pie : null) });
+    const V = cuentas({ $: (s) => (s === '#ctaHist' ? hist : null) });
+    Object.assign(V._cta, { cerradas: muchas, ctx: CTX, formato: 'tabla', tope: 200 });
+    V.ctaVerMas();
+    igual([V._cta.tope, añadidas.length, añadidas[0][0], (añadidas[0][1].match(/<tr class="crow">/g) || []).length, hist.innerHTML], [400, 1, 'beforeend', 200, ''],
+      '(arreglo 10) «ver más» AÑADE las 200 nuevas al final del cuerpo de la tabla y no toca #ctaHist (el panel sigue siendo el mismo, con su scroll)');
+    assert(/TSLA CALL 500</.test(añadidas[0][1]) && /TSLA CALL 699</.test(añadidas[0][1]) && !/TSLA CALL 499</.test(añadidas[0][1]) && !/TSLA CALL 700</.test(añadidas[0][1]), 'son las filas 201 a 400: ninguna de las que ya estaban');
+    assert(/Se muestran 400 de 450/.test(pie.innerHTML) && /ver más \(50\)/.test(pie.innerHTML) && !pie.quitado, 'el pie cambia a «Se muestran 400 de 450 · ver más (50)»');
+    V.ctaVerMas();
+    igual([V._cta.tope, (añadidas[1][1].match(/<tr class="crow">/g) || []).length, pie.quitado], [600, 50, true], 'otra vez: las 50 que faltaban y el pie desaparece');
+    const tarjetas = [], lista = { insertAdjacentHTML: (p, h) => tarjetas.push(h) };
+    const hist2 = nodo({ querySelector: (s) => (s === '.ctalista' ? lista : null) });
+    const V2 = cuentas({ $: (s) => (s === '#ctaHist' ? hist2 : null) });
+    Object.assign(V2._cta, { cerradas: muchas, ctx: CTX, formato: 'tarjetas', tope: 200 });
+    V2.ctaVerMas();
+    igual([(tarjetas[0].match(/<div class="card">/g) || []).length, hist2.innerHTML], [200, ''], 'en el teléfono igual: 200 tarjetas más al final de su .ctalista');
+    assert(/<div class="ctalista">/.test(K.seccionHistorialCuentas(muchas, CTX, 200, 'tarjetas')) && /<div class="fila" id="ctaMas"/.test(K.seccionHistorialCuentas(muchas, CTX, 200, 'tabla')), 'las tarjetas van en .ctalista y el pie en #ctaMas');
+    assert(/\.ctalista\{display:flex;flex-direction:column;gap:11px\}/.test(INDEX), 'CSS: .ctalista con el mismo espacio entre tarjetas que la vista');
+  }
+  // (arreglo 11) el tile MEJOR / PEOR no corta la cifra en la computadora
+  assert(/\.ctav \.dcard \.vl\.vl2\{white-space:normal;overflow:visible;text-overflow:clip/.test(INDEX) && /\.ctav \.dcard \.vl\.vl2 span\{white-space:nowrap\}/.test(INDEX),
+    '(arreglo 11) CSS: los tiles de dos valores parten en la «/» y cada cifra queda entera («$530 / -$1,861», no «$530 / -$1,…»)');
+  // (arreglo 12) índice por lectura: cada operación mira solo SU trozo
+  {
+    const ix = K.indiceCuentas(FILLS_B.concat([{ ...FILLS_B[0], strike: null }]), SEN_B.concat([{ symbol: 'nvda', creado_at: '2026-10-07T14:00:00Z' }]));
+    igual([[...ix.fills.keys()], [...ix.senales.keys()]], [['tasty|TSLA|CALL|432.5|2026-10-09'], ['TSLA|2026-10-06', 'NVDA|2026-10-07']], '(arreglo 12) fills por bróker|contrato (sin contrato no entra) y señales por SÍMBOLO|día NY');
+    igual(K.filaHistorialCuentas(OPB, { ...CTX, idx: K.indiceCuentas(FILLS_B, SEN_B) }), K.filaHistorialCuentas(OPB, CTX), '(arreglo 12) con el índice la fila sale IDÉNTICA');
+    const trampa = { fills: FILLS_B.map(f => ({ ...f, spot: 999 })), senales: [{ ...SEN_B[0], estrategia_id: 'TRAMPA' }], idx: K.indiceCuentas(FILLS_B, SEN_B) };
+    const ft = K.filaHistorialCuentas(OPB, trampa);
+    assert(/\$430\.50 → \$432\.00/.test(ft) && /señal E5/.test(ft) && !/999|TRAMPA/.test(ft), '(arreglo 12) con índice, la operación NO recorre los arreglos enteros (los ~900 fills y ~2300 señales): solo su trozo');
+    assert(/ctx\.idx = indiceCuentas\(ctx\.fills, ctx\.senales\);/.test(extraer('vistaCuentasSaldos')), '(arreglo 12) vistaCuentasSaldos indexa UNA vez por lectura (y «ver más» lo reutiliza desde _cta.ctx)');
+    // 600 operaciones, 900 fills y 2304 señales: con el índice el historial entero se pinta mucho más rápido
+    const sy = ['TSLA', 'NVDA', 'SPY', 'META', 'AAPL', 'AMD'];
+    const ops6 = Array.from({ length: 600 }, (_, i) => { const d = `2026-09-${String(1 + (i % 28)).padStart(2, '0')}`; return { ...OPB, symbol: sy[i % 6], strike: 300 + (i % 50), abierta_fecha_ny: d, abierta_at: d + 'T14:57:00Z', cerrada_at: d + 'T15:05:00Z', _partes_filas: null }; });
+    const fills6 = Array.from({ length: 900 }, (_, i) => ({ ...FILLS_B[i % 4], symbol: sy[i % 6], strike: 300 + (i % 50), fecha_ny: `2026-09-${String(1 + (i % 28)).padStart(2, '0')}` }));
+    const sen6 = Array.from({ length: 2304 }, (_, i) => ({ ...SEN_B[0], symbol: sy[i % 6], fecha_ny: `2026-09-${String(1 + (i % 28)).padStart(2, '0')}`, creado_at: `2026-09-${String(1 + (i % 28)).padStart(2, '0')}T13:31:00Z` }));
+    // con el ymdNY REAL del fuente (su formateador se crea una vez, como horaNY): la copia de casa_pruebas lo crea en cada llamada
+    const KP = construir(NOMBRES.concat(['ymdNY']), { $: () => null, anchoVista: () => 1400 }, { consts: CONSTS, prefijo: `let _cuentasVista = 'cuentas';` });
+    const ctx6 = { fills: fills6, senales: sen6 }, ctx6i = { ...ctx6, idx: KP.indiceCuentas(fills6, sen6) };
+    KP.seccionHistorialCuentas(ops6.slice(0, 20), ctx6i, 20, 'tabla');   // calentar
+    let t0 = Date.now(); const hSin = KP.seccionHistorialCuentas(ops6, ctx6, 600, 'tabla'); const tSin = Date.now() - t0;
+    t0 = Date.now(); const hCon = KP.seccionHistorialCuentas(ops6, ctx6i, 600, 'tabla'); const tCon = Date.now() - t0;
+    assert(hSin === hCon && tCon * 1.5 < tSin, `(arreglo 12) 600 operaciones × 900 fills × 2304 señales: el MISMO HTML, con índice ${tCon} ms y sin él ${tSin} ms`);
+    assert(/ymdNY\._f \|\| \(ymdNY\._f = new Intl\.DateTimeFormat/.test(extraer('ymdNY')) && /horaNY\._f \|\| \(horaNY\._f = new Intl\.DateTimeFormat/.test(extraer('horaNY')), 'ymdNY y horaNY crean su formateador UNA vez (era la mitad del coste del historial)');
+    igual([KP.ymdNY('2026-10-06T03:59:00Z'), KP.ymdNY('2026-10-06T04:00:00Z'), KP.ymdNY('basura'), K.horaNY(Date.parse('2026-10-06T13:31:00Z'))], ['2026-10-05', '2026-10-06', '', '09:31'], 'y dan lo mismo que antes (también con un instante inválido: «»)');
   }
 
   C.resumen();

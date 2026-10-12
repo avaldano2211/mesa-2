@@ -269,7 +269,12 @@
      ~1200 px), la tabla se desplaza de lado dentro del panel en vez de salirse de la tarjeta. */
   .ctav{display:flex;flex-direction:column;gap:11px}
   .ctabrk,.ctados{display:grid;grid-template-columns:1fr;gap:11px}
+  .ctalista{display:flex;flex-direction:column;gap:11px}   /* v62 rev: las tarjetas en su lista, para que «ver más» las AÑADA */
   .dcard .vl.vl2{font-size:15px}
+  /* v62 rev: «MEJOR / PEOR» a 1400 px cortaba la cifra («$530 / -$1,…», que se lee −$1): los dos valores parten en la «/»
+     y cada uno queda entero */
+  .ctav .dcard .vl.vl2{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.25}
+  .ctav .dcard .vl.vl2 span{white-space:nowrap}
   .cdesg .tbl td,.cdesg .tbl th{padding:6px 5px}
   .ctasen{margin-top:8px;font-size:12px;line-height:1.4}
   .ctav .hist b span{font-size:10px;font-weight:500;letter-spacing:0;text-transform:none}   /* «(15 min)» dentro de un dato no es una etiqueta */
@@ -278,6 +283,7 @@
   .ctram summary{cursor:pointer;color:var(--oro);font-weight:600;padding:6px 0;-webkit-tap-highlight-color:transparent}
   .ctramo{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,.5fr) minmax(0,1.4fr) minmax(0,1fr);gap:6px;padding:5px 0;border-top:1px solid var(--line)}
   .ctramo b{text-align:right}
+  .ctramo .ctspot{grid-column:1/-1;font-size:10.5px;color:var(--tx3);margin-top:-3px}   /* v62 rev: la acción de ESA ida y vuelta */
   .ctabla{padding:0 8px 8px;overflow:auto;max-height:calc(100dvh - 110px);overscroll-behavior-x:contain}
   .ctbl{width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px}
   .ctbl th{position:sticky;top:0;z-index:2;background:var(--card);font-size:9.5px;font-weight:700;letter-spacing:.05em;color:var(--tx3);text-transform:uppercase;text-align:right;padding:8px 5px 6px;border-bottom:1px solid var(--line);vertical-align:bottom}
