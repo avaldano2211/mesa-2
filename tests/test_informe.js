@@ -10,6 +10,10 @@
      5. «Mercado ahora» (ventana de señales) y «Tu plan hoy» (solo lectura)
      6. vistaInforme REAL (módulo entero en un DOM de juguete) a 1400 px y a 390 px, informeAncho al cambiar de pestaña,
         el resize y el CSS
+     8. v63 rev (arreglos de la revisión): sin velas de HOY «último cierre» (sin «vs ayer» artificial); «Mercado ahora» con
+        el Plan 10, en feriado y sin horas fijas; «ask al sonar»; la señal no espera a tus operaciones ni a las velas;
+        la caché de «Tu plan hoy» se invalida al salir y con una posición nueva; cruzar los 900 px mientras carga; al
+        entrar desde otra pestaña la vista se vacía; una señal sola llena la fila
    Funciones REALES del fuente con dependencias falsas (casa_pruebas.js): nada se reimplementa aquí.
    Uso: node test_informe.js mesa-2-app/app/main.js */
 'use strict';
@@ -88,7 +92,8 @@ const HOY_FIJO = '2026-10-12';   // lunes
     assert(/sonó <b>09:31 ET<\/b>/.test(h), 'la hora NY a la que sonó (13:31Z → 09:31 ET)');
     assert(/acción al sonar <b>\$736\.80<\/b>/.test(h), 'el spot de la acción al sonar (senales.spot)');
     assert(/rango óptimo <b>—<\/b> rango inválido \(mín &gt; máx\)/.test(h) && !/\$208–\$104/.test(h) && !/\$104–\$208/.test(h), 'un rango_vivo invertido (lo 208 > hi 104, el de la captura) NUNCA se pinta: «—» y «rango inválido»');
-    assert(/contrato sugerido <b>CALL 737\.5<\/b> · vence 10-12 · ask \$5\.45/.test(h), 'el contrato sugerido del payload.ticket');
+    assert(/contrato sugerido <b>CALL 737\.5<\/b> · vence 10-12 · ask al sonar \$5\.45/.test(h), 'el contrato sugerido del payload.ticket (v63 rev: «ask al sonar», la foto de las 9:31, no el ask de ahora)', h);
+    assert(!/· ask \$/.test(h), 'v63 rev: el ask nunca sale a secas (se leía como el de ahora)');
     const ok = D.detalleSenalInforme({ ...meta, rango_vivo: { lo: 104, hi: 208.4, exp: '2026-10-14' } });
     assert(/rango óptimo <b>\$104–\$208<\/b> por contrato · por delta · exp 10-14/.test(ok), 'un rango válido: lo–hi por contrato (redondeado, como la tarjeta del ticker) y su expiración', ok);
     const sin = D.detalleSenalInforme({ id: 5, symbol: 'SPY', estrategia_id: 'E5', titulo: 'E5 · COMPRAR PUT · SPY', creado_at: '2026-10-12T13:45:31Z' });
@@ -155,7 +160,7 @@ const HOY_FIJO = '2026-10-12';   // lunes
     const M = construir(['tarjetaMercadoAhora', 'antesDe1030NY', 'ventanaSenalesTxt'], { esc, haceCuanto, hoyNY: fakeHoy }, { consts: ['VENTANA_SENALES_MIN'] });
     const merc = { symbol: 'MERCADO', sesion: 'regular', actualizado_at: new Date().toISOString(), payload: { fecha_ny: HOY_FIJO, sesion: 'regular', regla_1030: true, avisos_globales: ['FED a las 14:00 <hoy>', 'CPI mañana'] } };
     const hm = M.tarjetaMercadoAhora(merc, null, HOY_FIJO, en(9, 10));
-    assert(/<h3>Mercado ahora<\/h3>/.test(hm) && /Sesión <b[^>]*>regular \(9:30–16:00 ET\)<\/b>/.test(hm) && /antes de las 10:30 ET<\/b>: la doctrina espera/.test(hm), 'Mercado ahora: la sesión y la regla de las 10:30 del payload MERCADO de hoy', hm);
+    assert(/<h3>Mercado ahora<\/h3>/.test(hm) && /Sesión <b[^>]*>regular<\/b>/.test(hm) && /antes de las 10:30 ET<\/b>: la doctrina espera/.test(hm), 'Mercado ahora: la sesión (v63 rev: sin horas fijas) y la regla de las 10:30 del payload MERCADO de hoy', hm);
     assert(/hoy 9:30–9:48 ET<\/b> \(en 20 min\)/.test(hm), 'y la ventana de señales si aún no pasó');
     assert(/Avisos globales:/.test(hm) && /<div>· FED a las 14:00 &lt;hoy&gt;<\/div><div>· CPI mañana<\/div>/.test(hm), 'los avisos globales, todos y escapados');
     const viejo = M.tarjetaMercadoAhora({ ...merc, sesion: 'cerrado', payload: { ...merc.payload, fecha_ny: '2026-10-09' } }, { sesion: 'pre' }, HOY_FIJO, en(14, 0));
@@ -193,7 +198,8 @@ const HOY_FIJO = '2026-10-12';   // lunes
     ];
     async function correr(ancho, op) {
       op = op || {};
-      const sb = sbFalso((tabla) => {
+      const sb = sbFalso((tabla, cadena) => {
+        if (op.enrutar) { const r = op.enrutar(tabla, cadena); if (r !== undefined) return r; }
         if (tabla === 'ticker_estado') return { data: EST, error: null };
         if (tabla === 'senales') return { data: SEN, error: null };
         if (tabla === 'ticker_velas') return { data: VEL, error: null };
@@ -208,18 +214,27 @@ const HOY_FIJO = '2026-10-12';   // lunes
       await respirar();
       mod.win.innerWidth = ancho;
       let html = '';
+      const rep = { planHoy: [] };   // v63 rev: los repintados de la tarjeta «Tu plan hoy» (#infPlanHoy) que hace opsInformeDetras
       const clases = new Set(op.clases || []);
       const app = nodo({ classList: { toggle: (c, on) => { if (on === undefined ? !clases.has(c) : on) clases.add(c); else clases.delete(c); }, add: (c) => clases.add(c), remove: (c) => clases.delete(c), contains: (c) => clases.has(c) } });
-      mod.win.document.querySelector = (s) => { if (s === '#app') return app; const n = nodo(); if (s === '#vista') Object.defineProperty(n, 'innerHTML', { set(v) { html = v; }, get() { return html; } }); return n; };
+      mod.win.document.querySelector = (s) => {
+        if (s === '#app') return app;
+        const n = nodo();
+        if (s === '#vista') Object.defineProperty(n, 'innerHTML', { set(v) { html = v; }, get() { return html; } });
+        if (s === '#infPlanHoy') Object.defineProperty(n, 'outerHTML', { set(v) { rep.planHoy.push(v); }, get() { return ''; } });
+        return n;
+      };
       mod.ev("sesionActiva = { user: { id: 'u1' } };");
       mod.win.__hb = { latido_at: new Date().toISOString(), estado_proceso: 'vigilando', sesion: 'regular' };
+      // v63 rev: tus operaciones van fuera del camino de la señal; calentar = la caché ya llena (el redibujo de Realtime)
+      if (op.calentar) await mod.ev('opsInforme()');
       let revento = null;
       try { await mod.ev('vistaInforme(window.__hb)'); } catch (e) { revento = String((e && e.stack) || e); }
-      return { html, clases, revento, mod, llamadas: sb.llamadas };
+      return { get html() { return html; }, clases, revento, mod, llamadas: sb.llamadas, rep };
     }
     const escribe = (ll) => ll.some(l => l.cadena.some(c => ['insert', 'update', 'upsert', 'delete'].includes(c[0])));
 
-    const W = await correr(1400);
+    const W = await correr(1400, { calentar: true });
     assert(!W.error && !W.revento, 'vistaInforme corre entera en el DOM de juguete a 1400 px', W.error || W.revento);
     assert(W.clases.has('inf') && W.clases.has('ancho'), 'a 1400 px: #app.inf y #app.ancho', [...W.clases].join(','));
     const arriba = (W.html.match(/<div class="infarriba">([\s\S]*?)<\/div>\s*<div class="infsen">/) || [])[1] || '';
@@ -269,7 +284,7 @@ const HOY_FIJO = '2026-10-12';   // lunes
     assert(!T.llamadas.some(l => l.tabla === 'posiciones' || l.tabla === 'broker_trades' || l.tabla === 'fills'), 'en el teléfono no se leen tus operaciones (no hay tarjeta que las use)');
     assert(!escribe(T.llamadas), 'a 390 tampoco se escribe nada');
 
-    const E = await correr(1400, { posError: true, plan: 'PLAN_35' });
+    const E = await correr(1400, { posError: true, plan: 'PLAN_35', calentar: true });
     assert(!E.revento && />— \/ 3</.test(E.html) && /no pude leer tus operaciones/.test(E.html), 'con la lectura de posiciones en error: «— / 3» y lo dice; el resto del Informe sale igual');
     {
       const n0 = E.llamadas.filter(l => l.tabla === 'posiciones').length;
@@ -318,8 +333,134 @@ const HOY_FIJO = '2026-10-12';   // lunes
     }
     assert(/if \(typeof informeAncho === 'function'\) informeAncho\(tab === 'informe'\);/.test(extraer('ruta')), 'ruta() pone y quita #app.inf al cambiar de pestaña (junto a tickersAncho)');
     assert(/\(tab === 'informe' && informeCambiaFormato\(\)\) \|\| \(tab === 'cuentas' && ctaCambiaFormato\(\)\)\) ruta\(\);/.test(FUENTE), 'el handler de resize redibuja el Informe si cruza los 900 px');
+    // ── v63 rev · la SEÑAL no espera a tus operaciones (posiciones + broker_trades + el libro de fills) ──
+    {
+      const D = C.diferido();
+      const L = await correr(1400, { enrutar: (t) => (t === 'broker_trades' ? D.promesa : undefined) });
+      assert(!L.revento && /estrategia <b>E8 · CT15A<\/b>/.test(L.html), 'con broker_trades sin contestar, el Informe YA pinta la señal (antes esperaba al Promise.all con tus operaciones: 8,5 s con la red lenta)', L.revento);
+      const arr = (L.html.match(/<div class="infarriba">([\s\S]*?)<\/div>\s*<div class="infsen">/) || [])[1] || '';
+      assert(/id="infPlanHoy"/.test(arr) && />— \/ 1</.test(arr) && /leyendo tus operaciones…/.test(arr) && !/no pude leer/.test(arr) && !/>0 \/ 1</.test(arr), 'y «Tu plan hoy» dice «— / 1 · leyendo tus operaciones…» (nunca «0» ni «no pude leer» mientras pregunta)', arr);
+      igual(L.rep.planHoy.length, 0, 'todavía no se repinta la tarjeta');
+      D.resolver({ data: [], error: null });
+      await respirar(); await respirar();
+      igual(L.rep.planHoy.length, 1, 'al contestar broker_trades se repinta SOLO la tarjeta «Tu plan hoy» (#infPlanHoy)');
+      assert(/^<div class="card" id="infPlanHoy">/.test(L.rep.planHoy[0] || '') && /color:var\(--oro\)">1 \/ 1</.test(L.rep.planHoy[0] || '') && /Compañía de hoy: <b[^>]*>NVDA<\/b>/.test(L.rep.planHoy[0] || ''), 'con la operación de hoy (1 / 1) y la compañía', L.rep.planHoy[0]);
+      const n0 = L.llamadas.filter(l => l.tabla === 'broker_trades').length;
+      await L.mod.ev('vistaInforme(window.__hb)');
+      assert(/<div class="infarriba">[\s\S]*color:var\(--oro\)">1 \/ 1</.test(L.html) && L.llamadas.filter(l => l.tabla === 'broker_trades').length === n0, 'el redibujo siguiente (Realtime) pinta 1 / 1 de la caché, sin volver a preguntar');
+    }
+    {
+      // se invalidó (saliste del Informe) mientras la lectura estaba en vuelo: no repinta ni repuebla la caché con lo de antes
+      const D = C.diferido();
+      const L = await correr(1400, { enrutar: (t) => (t === 'broker_trades' ? D.promesa : undefined) });
+      L.mod.ev("location.hash = '#/copiloto'; informeOpsInvalidar();");
+      D.resolver({ data: [], error: null });
+      await respirar(); await respirar();
+      igual([L.rep.planHoy.length, L.mod.ev('_inf.ops')], [0, null], 'lectura en vuelo al salir del Informe: ni repinta ni deja en la caché una foto de ANTES del fill');
+    }
+    {
+      // otro usuario entró mientras la lectura volaba: no se le pinta la tarjeta del anterior
+      const D = C.diferido();
+      const L = await correr(1400, { enrutar: (t) => (t === 'broker_trades' ? D.promesa : undefined) });
+      L.mod.ev("sesionActiva = { user: { id: 'u2' } };");
+      D.resolver({ data: [], error: null });
+      await respirar(); await respirar();
+      igual(L.rep.planHoy.length, 0, 'cambió el usuario mientras volaba la lectura: no repinta');
+      igual(L.mod.ev('opsInformeCache()'), null, 'y la caché del anterior no se le enseña (opsInformeCache por usuario)');
+    }
+    // ── v63 rev · ni a las velas: tope de INF_VELAS_TOPE_MS y repintado al llegar ──
+    {
+      const DV = C.diferido();
+      const t0 = Date.now();
+      const L = await correr(1400, { calentar: true, enrutar: (t) => (t === 'ticker_velas' ? DV.promesa : undefined) });
+      const dt = Date.now() - t0, tope = L.mod.ev('INF_VELAS_TOPE_MS');
+      assert(tope > 0 && tope <= 2000 && dt < tope + 1500, `con ticker_velas sin contestar, el Informe pinta tras el tope (${tope} ms; tardó ${dt} ms)`);
+      assert(/estrategia <b>E8 · CT15A<\/b>/.test(L.html) && /contrato sugerido/.test(L.html), 'con la señal y su detalle');
+      igual((L.html.match(/<div class="mut infdet1">cargando velas…<\/div>/g) || []).length, 5, 'cada ticker dice «cargando velas…» (no «sin velas todavía»: aún no se sabe)');
+      assert(!/sin velas todavía/.test(L.html) && !/\$103\.20/.test(L.html), 'y ningún número ni «sin velas» mientras tanto');
+      DV.resolver({ data: VEL, error: null });
+      for (let i = 0; i < 6; i++) await respirar();
+      assert(/<div class="infnum"><div><span>spot<\/span><b class="mono">\$103\.20<\/b>/.test(L.html) && /<div class="mut infdet1">sin velas todavía<\/div>/.test(L.html) && !/cargando velas/.test(L.html), 'al llegar las velas, el Informe se repinta solo con ellas (AAPL con sus casillas; TSLA, sin fila, «sin velas todavía»)');
+      igual(L.llamadas.filter(l => l.tabla === 'ticker_velas').length, 1, 'el repintado usa la caché ya fresca: ticker_velas se pidió UNA vez');
+    }
+    {
+      // varios redibujos (Realtime) durante la misma lectura lenta: UN solo repintado al llegar las velas
+      const DV = C.diferido();
+      const L = await correr(1400, { calentar: true, enrutar: (t) => (t === 'ticker_velas' ? DV.promesa : undefined) });
+      await L.mod.ev('vistaInforme(window.__hb)');
+      const k = L.llamadas.filter(l => l.tabla === 'ticker_estado').length;
+      DV.resolver({ data: VEL, error: null });
+      for (let i = 0; i < 6; i++) await respirar();
+      igual([L.llamadas.filter(l => l.tabla === 'ticker_estado').length - k, L.mod.ev('_inf.velasEspera')], [1, false], 'dos pintados con el tope vencido → un solo repintado al llegar las velas (no uno por redibujo)');
+    }
+    {
+      // y si la lectura que pasó del tope FALLA: un repintado más que pregunta sin tope y dice «sin velas todavía» (nunca un bucle)
+      let n = 0; const DV = C.diferido();
+      const L = await correr(1400, { calentar: true, enrutar: (t) => (t === 'ticker_velas' ? (++n === 1 ? DV.promesa : { data: null, error: { message: 'timeout' } }) : undefined) });
+      DV.resolver({ data: null, error: { message: 'timeout' } });
+      for (let i = 0; i < 6; i++) await respirar();
+      igual([n, (L.html.match(/sin velas todavía/g) || []).length > 0, /cargando velas/.test(L.html)], [2, true, false], 'velas que fallan tras el tope: UNA lectura más (sin tope) y «sin velas todavía»; nada de bucles');
+      await new Promise(r => setTimeout(r, 30)); igual(n, 2, 'y no vuelve a preguntar por su cuenta');
+    }
+    // ── v63 rev · la caché de «Tu plan hoy» solo vale dentro de la visita ──
+    {
+      const R = await correr(1400, { calentar: true });
+      const M2 = R.mod;
+      assert(M2.ev('_inf.ops') != null, 'con el Informe a la vista la caché de tus operaciones está llena');
+      M2.ev("location.hash = '#/informe';"); M2.ev('ruta().catch(() => {})');
+      assert(M2.ev('_inf.ops') != null, 'ruta() dentro del Informe (Realtime, el tic de 60 s) NO la vacía');
+      M2.ev("location.hash = '#/copiloto';"); M2.ev('ruta().catch(() => {})');
+      igual(M2.ev('_inf.ops'), null, 'ruta() hacia el Copiloto la vacía: al volver tras registrar el fill no sigue en «0 / 1»');
+      await respirar();
+    }
+    {
+      const R = await correr(1400, { calentar: true });
+      R.mod.ev("window.__rutas = 0; ruta = () => { window.__rutas++; };");
+      R.mod.ev('posicionNueva()');
+      igual([R.mod.ev('_inf.ops'), R.mod.ev('window.__rutas')], [null, 1], 'una posición NUEVA por Realtime vacía la caché y redibuja (posicionNueva → rutaSalvoDiario)');
+      assert(/event: 'INSERT', schema: 'public', table: 'posiciones' \}, posicionNueva\)/.test(extraer('suscribir')) && /event: 'UPDATE', schema: 'public', table: 'posiciones' \}, rutaSalvoDiario\)/.test(extraer('suscribir')), 'Realtime: INSERT de posiciones → posicionNueva; los UPDATE (marks del worker) siguen en rutaSalvoDiario y no tocan la caché');
+    }
+    // ── v63 rev · cruzar los 900 px MIENTRAS carga ──
+    {
+      const R = await correr(820);
+      const M2 = R.mod;
+      igual(M2.ev('_inf.grande'), false, 'a 820 px pinta el formato del teléfono');
+      M2.ev("window.__rutas = 0; ruta = () => { window.__rutas++; };");
+      M2.win.document.querySelector('#vista').innerHTML = 'MARCA';
+      const pr = M2.ev('vistaInforme(window.__hb)');   // empieza a 820…
+      M2.win.innerWidth = 1400;                          // …y se maximiza la ventana mientras carga
+      await pr;
+      igual(R.html, 'MARCA', 'se cruzaron los 900 px durante la carga: NO pinta el HTML del teléfono a 1400 px');
+      await new Promise(r => setTimeout(r, 20));
+      igual(M2.ev('window.__rutas'), 1, 'y vuelve a empezar (ruta) con el formato de ahora');
+      M2.ev('window.__rutas = 0;');
+      await M2.ev('vistaInforme(window.__hb)');
+      await new Promise(r => setTimeout(r, 20));
+      assert(M2.ev('window.__rutas') === 0 && /<div class="infarriba">/.test(R.html) && M2.ev('_inf.grande') === true, 'sin cruzar nada durante la carga: pinta (formato grande) y no relanza');
+    }
+    // ── v63 rev · al ENTRAR en el Informe desde otra pestaña (computadora), la vista se vacía antes de cargar ──
+    {
+      const R = await correr(1400, { calentar: true });
+      const M2 = R.mod, vista = () => M2.win.document.querySelector('#vista');
+      M2.ev("location.hash = '#/tickers';"); M2.ev('ruta().catch(() => {})');
+      vista().innerHTML = 'SELECTORES Y GRÁFICOS DE TICKERS';
+      M2.ev("location.hash = '#/informe';"); M2.ev('ruta().catch(() => {})');
+      igual(R.html, '', 'de Tickers al Informe a 1400 px: lo de Tickers no se queda estirado a 1350 px mientras carga (vista vacía en el mismo tick)');
+      vista().innerHTML = 'INFORME';
+      M2.ev('ruta().catch(() => {})');
+      igual(R.html, 'INFORME', 'un redibujo dentro del Informe (Realtime) no vacía nada');
+      await respirar();
+      M2.win.innerWidth = 390;
+      M2.ev("location.hash = '#/copiloto';"); M2.ev('ruta().catch(() => {})');
+      vista().innerHTML = 'COPILOTO';
+      M2.ev("location.hash = '#/informe';"); M2.ev('ruta().catch(() => {})');
+      igual(R.html, 'COPILOTO', 'en el teléfono (sin .ancho, misma columna) se queda como en las demás pestañas');
+      await respirar();
+    }
+    assert(/tarjetaMercadoAhora\(merc, hb, hoy, new Date\(\), plan\)/.test(extraer('vistaInforme')), '«Mercado ahora» recibe tu plan');
+
     // las funciones nuevas no preguntan con cuadros nativos ni escriben
-    const nuevas = ['vistaInforme', 'tarjetaEstadoSistema', 'tarjetaMercadoAhora', 'opsInforme', 'tarjetaPlanHoy', 'tarjetaSenalInforme', 'detalleSenalInforme', 'datosTickerHoy', 'detalleTickerHtml', 'miniChartInforme', 'tarjetaTickerInforme', 'informeAncho'].map(extraer).join('\n');
+    const nuevas = ['vistaInforme', 'tarjetaEstadoSistema', 'tarjetaMercadoAhora', 'opsInforme', 'tarjetaPlanHoy', 'tarjetaSenalInforme', 'detalleSenalInforme', 'datosTickerHoy', 'detalleTickerHtml', 'miniChartInforme', 'tarjetaTickerInforme', 'informeAncho', 'velasInforme', 'opsInformeCache', 'informeOpsInvalidar', 'opsInformeDetras', 'posicionNueva'].map(extraer).join('\n');
     assert(!/confirm\(|prompt\(|\.insert\(|\.update\(|\.upsert\(|\.delete\(/.test(nuevas), 'sin confirm()/prompt() y sin escrituras en la base');
   }
 
@@ -335,6 +476,85 @@ const HOY_FIJO = '2026-10-12';   // lunes
     assert(/config\.js\?v=63/.test(INDEX) && /app\/main\.js\?v=63/.test(INDEX), 'index.html carga config.js?v=63 y app/main.js?v=63');
     const SW = fs.readFileSync(path.join(path.dirname(process.argv[2]), '..', 'sw.js'), 'utf8');
     assert(/const VER = 'mesa2-v52';/.test(SW), 'sw.js VER mesa2-v52');
+  }
+
+  // ════════════════ 8. v63 rev · funciones puras de los arreglos ════════════════
+  {
+    // 8.1 · B2 SIN velas de hoy: lo que se ve a las 8:30 ET del lunes (la fila m15 trae fecha_ny = HOY, el worker la publica
+    // cada 5 min, pero sus velas son del viernes): «último cierre», sin «vs ayer» artificial, con la edad de la vela
+    const T = construir(['datosTickerHoy', 'detalleTickerHtml', 'chartTiempo', 'fmtFechaNY', 'miniChartInforme', 'inicioVelasHoy'], { esc, haceCuanto, colUtil }, { consts: ['decDe'] });
+    const VIE = '2026-10-09';
+    const f = filaVelas('NVDA', VIE, { fecha_ny: HOY_FIJO, hoy: [[229.1, 229.6, 228.9, 229.2], [229.2, 229.5, 229.0, 229.32]], viva: null, spot: 229.32, cierre_ayer: 229.28 });
+    const d = T.datosTickerHoy(f, HOY_FIJO);
+    const tUlt = epochNY(VIE, 9, 45), edadEsperada = haceCuanto(new Date((tUlt + 900) * 1000).toISOString()).txt;
+    igual([d.velasHoy, d.cambio, d.pct, d.apertura, d.max, d.min, d.sesion, d.spot], [0, null, null, null, null, null, VIE, 229.32], 'fecha_ny = HOY sin velas de hoy: sin cambio (el +$0.04 era un artefacto), sin apertura/máx/mín, sesión = la fecha NY de la ÚLTIMA vela (no payload.fecha_ny) y el último cierre');
+    igual(d.edad, edadEsperada, 'la edad es la de esa vela (t + 15 min), no la de la fila («hace 2 min»)');
+    assert(d.edad !== 'hace segundos', 'nunca «hace segundos» por una fila recién publicada');
+    const tel = T.detalleTickerHtml(d, 'NVDA', false), pc = T.detalleTickerHtml(d, 'NVDA', true);
+    assert(new RegExp('^<div class="mut infdet1">último cierre <b>\\$229\\.32</b> \\(sesión del 09 oct\\) · hoy sin velas todavía · <span class="fresco">' + edadEsperada + '</span></div>$').test(tel), 'teléfono: «último cierre $229.32 (sesión del 09 oct) · hoy sin velas todavía» y su antigüedad', tel);
+    assert(!/spot|vs ayer|\+\$0\.04|0\.02 %/.test(tel), 'teléfono: ni «spot» ni «vs ayer»');
+    assert(/<div class="infnum"><div><span>último cierre<\/span><b class="mono">\$229\.32<\/b><\/div><div class="infhoy"><span>hoy<\/span><b>sin velas todavía<\/b><\/div><\/div>/.test(pc) && new RegExp('último cierre ' + edadEsperada + ' · sesión del 09 oct').test(pc), 'computadora: la casilla «último cierre», «hoy: sin velas todavía» y debajo su antigüedad y la sesión', pc);
+    assert(!/spot|vs cierre ayer|cierre de ayer/.test(pc), 'computadora: ni «spot hace 2 min» ni «vs cierre ayer» ni el cierre diario de esa misma sesión');
+    // la vela viva de la sesión anterior, si es la última, es la que manda
+    const fv = filaVelas('META', VIE, { fecha_ny: HOY_FIJO, hoy: [[700, 701, 699, 700.5]], viva: [700.5, 702, 700.1, 701.25], spot: 701.25, cierre_ayer: 701.3 });
+    const dv = T.datosTickerHoy(fv, HOY_FIJO);
+    igual([dv.spot, dv.sesion, dv.cambio, dv.edad], [701.25, VIE, null, haceCuanto(new Date((epochNY(VIE, 9, 45) + 900) * 1000).toISOString()).txt], 'con una vela viva de la sesión anterior: su cierre y su hora (la más reciente)');
+    assert(!/NaN|undefined/.test(tel + pc + T.detalleTickerHtml(dv, 'META', true)), 'ningún NaN ni undefined');
+    // con velas de hoy, igual que antes (y sin «sesión del»)
+    const hoyF = T.datosTickerHoy(filaVelas('AAPL', HOY_FIJO), HOY_FIJO);
+    igual([hoyF.velasHoy, hoyF.sesion, hoyF.spot], [5, null, 103.2], 'con velas de hoy nada cambia: spot del worker y sin «sesión del»');
+    // cargando (velasInforme pasó del tope sin nada en caché)
+    igual(T.detalleTickerHtml(null, 'AAPL', true, true), '<div class="mut infdet1">cargando velas…</div>', 'sin fila mientras se leen las velas: «cargando velas…»');
+    igual(T.detalleTickerHtml(null, 'AAPL', true, false), '<div class="mut infdet1">sin velas todavía</div>', 'sin fila y ya leídas: «sin velas todavía»');
+    assert(/<div class="vacio">cargando velas…<\/div>/.test(T.miniChartInforme('AAPL', null, HOY_FIJO, true)) && /cargando…<\/span>/.test(T.miniChartInforme('AAPL', null, HOY_FIJO, true)), 'el mini gráfico también dice «cargando velas…»');
+    assert(/Sin velas de hoy todavía/.test(T.miniChartInforme('AAPL', null, HOY_FIJO, false)), 'y sin cargar, como antes');
+
+    // 8.2 · «Mercado ahora»
+    const en = (hh, mm, ymd) => new Date(epochNY(ymd || HOY_FIJO, hh, mm) * 1000);
+    const M = construir(['tarjetaMercadoAhora', 'antesDe1030NY', 'ventanaSenalesTxt'], { esc, haceCuanto, hoyNY: () => HOY_FIJO }, { consts: ['VENTANA_SENALES_MIN', 'PLANES'] });
+    const ahora = new Date().toISOString();
+    const merc = (ses, ymd, extra) => ({ symbol: 'MERCADO', sesion: ses, actualizado_at: ahora, payload: Object.assign({ fecha_ny: ymd || HOY_FIJO, sesion: ses, regla_1030: true, avisos_globales: [] }, extra || {}) });
+    // Plan 10 a las 9:35 con regla_1030 true
+    const p10 = M.tarjetaMercadoAhora(merc('regular'), null, HOY_FIJO, en(9, 35), M.PLANES.PLAN_10);
+    assert(/regla de las 10:30 \(Plan 35%\): no aplica a tu plan · tu ventana <b[^>]*>9:30–9:45 ET<\/b>/.test(p10) && !/la doctrina espera/.test(p10), 'Plan 10 a las 9:35: «regla de las 10:30 (Plan 35%): no aplica a tu plan · tu ventana 9:30–9:45 ET» (como la hoja de orden), no «la doctrina espera»', p10);
+    assert(/abierta ahora/.test(p10), 'y la ventana de señales sigue diciéndose');
+    const p35 = M.tarjetaMercadoAhora(merc('regular'), null, HOY_FIJO, en(9, 35), M.PLANES.PLAN_35);
+    assert(/antes de las 10:30 ET<\/b>: la doctrina espera \(regla de las 10:30\)/.test(p35) && !/no aplica a tu plan/.test(p35), 'Plan 35: la regla de las 10:30 como siempre');
+    assert(/la doctrina espera/.test(M.tarjetaMercadoAhora(merc('regular'), null, HOY_FIJO, en(9, 35))), 'sin plan: como el Plan 35');
+    // feriado NYSE: Thanksgiving 2026-11-26 (jueves), MERCADO de hoy con sesión «cerrado» y regla_1030 true
+    const TG = '2026-11-26';
+    for (const [hh, mm] of [[8, 30], [9, 0], [9, 35]]) {
+      const h = M.tarjetaMercadoAhora(merc('cerrado', TG), null, TG, en(hh, mm, TG), M.PLANES.PLAN_35);
+      assert(/mercado cerrado hoy: sin ventana de señales/.test(h) && !/ventana de señales:|abierta ahora|Próxima ventana|la doctrina espera/.test(h), `feriado ${hh}:${dosD(mm)} ET: «mercado cerrado hoy: sin ventana de señales», sin «Próxima ventana: hoy 9:30–9:48» ni «la doctrina espera»`, h);
+    }
+    assert(/mercado cerrado hoy/.test(M.tarjetaMercadoAhora(merc('cerrado', TG), null, TG, en(9, 0, TG), M.PLANES.PLAN_10)) && !/no aplica a tu plan/.test(M.tarjetaMercadoAhora(merc('cerrado', TG), null, TG, en(9, 0, TG), M.PLANES.PLAN_10)), 'feriado con el Plan 10: también «mercado cerrado hoy»');
+    // sábado antes de las 10:30
+    const SAB = '2026-10-10';
+    const sab = M.tarjetaMercadoAhora(merc('cerrado', SAB), null, SAB, en(9, 0, SAB), M.PLANES.PLAN_35);
+    assert(/mercado cerrado hoy/.test(sab) && !/la doctrina espera/.test(sab), 'sábado 9:00: tampoco «la doctrina espera»', sab);
+    // sin MERCADO de hoy: un latido FRESCO que dice cerrado vale; uno VIEJO no declara cerrado el día
+    const fresco = M.tarjetaMercadoAhora(null, { sesion: 'cerrado', latido_at: ahora }, TG, en(9, 0, TG), null);
+    assert(/mercado cerrado hoy/.test(fresco) && !/Próxima ventana/.test(fresco), 'latido fresco «cerrado» (sin MERCADO de hoy): mercado cerrado hoy');
+    const viejo = M.tarjetaMercadoAhora(null, { sesion: 'cerrado', latido_at: new Date(Date.now() - 3 * 86400000).toISOString() }, HOY_FIJO, en(9, 0), null);
+    assert(!/mercado cerrado hoy/.test(viejo) && /Próxima ventana de señales/.test(viejo), 'latido de hace 3 días que decía «cerrado» (worker caído el finde): no declara cerrado el lunes', viejo);
+    // la sesión, sin horas fijas que contradigan la fase del worker
+    const pre2 = M.tarjetaMercadoAhora(merc('pre'), null, HOY_FIJO, en(2, 0));
+    const post22 = M.tarjetaMercadoAhora(merc('post'), null, HOY_FIJO, en(22, 0));
+    const reg = M.tarjetaMercadoAhora(merc('regular'), null, HOY_FIJO, en(12, 0));
+    assert(/Sesión <b[^>]*>pre-mercado<\/b>/.test(pre2) && !/4:00/.test(pre2), 'martes 2:00 ET: «pre-mercado» sin «(4:00–9:30 ET)» (aún no abrió)', pre2);
+    assert(/Sesión <b[^>]*>post-mercado<\/b>/.test(post22) && !/20:00/.test(post22), '22:00 ET: «post-mercado» sin «(16:00–20:00 ET)» (ya cerró el extendido)');
+    assert(/Sesión <b[^>]*>regular<\/b>/.test(reg) && !/16:00/.test(reg), 'regular sin «(9:30–16:00 ET)» (un medio día cierra a las 13:00)');
+
+    // 8.3 · «Tu plan hoy» mientras se leen tus operaciones
+    const P = construir(['tarjetaPlanHoy', 'focoDeHoy', 'lunesNY'], { esc }, { consts: ['PLANES', 'OPS_SEMANA'] });
+    const ley = P.tarjetaPlanHoy(P.PLANES.PLAN_10, null, HOY_FIJO, null);
+    assert(/^<div class="card" id="infPlanHoy">/.test(ley) && />— \/ 1</.test(ley) && /leyendo tus operaciones…/.test(ley) && !/no pude leer/.test(ley), 'aún sin respuesta: «— / 1 · leyendo tus operaciones…» (ni «0» ni «no pude leer»), con el id que repinta opsInformeDetras', ley);
+    assert(/no pude leer tus operaciones/.test(P.tarjetaPlanHoy(P.PLANES.PLAN_10, { ops: null, error: 'x' }, HOY_FIJO, null)), 'con error, como antes');
+
+    // 8.4 · CSS: una señal sola llena la fila
+    const css = (INDEX.match(/<style>[\s\S]*?<\/style>/) || [''])[0];
+    const media = css.split('@media (min-width:900px){').slice(1).join('\n');
+    assert(/#app\.ancho\.inf \.infsen>\.card:nth-child\(2\):last-child\{grid-column:1\/-1\}/.test(media), 'CSS: la tarjeta de una señal SOLA (detrás del encabezado) ocupa la fila entera (auto-fit no colapsaba nada por el encabezado 1/-1)');
   }
 
   C.resumen();

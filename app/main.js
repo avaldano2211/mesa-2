@@ -65,6 +65,7 @@ sb.auth.getSession().then(({ data }) => arrancar(data.session));
 
 let sesionActiva = null, timer = null, canal = null;
 let _hbUltimo = null;   // v56: el último latido que leyó ruta(); el ritmo en vivo decide con él si el mercado está abierto
+let _rutaTab = null;    // v63 rev: la pestaña del último ruta() (al ENTRAR en el Informe desde otra, en la computadora se vacía la vista)
 // v61 (2026-10-03, llegan los amigos: Luca, Xavier…): ¿este usuario es ADMINISTRADOR? Lo dice su propia fila de
 // usuarios_permitidos (política wl_sel_propia). Solo el admin edita el catálogo de tickers (0017: adm_ins/adm_upd),
 // así que a los demás no se les enseña el editor ni la ✕ (antes verían un error de la base al tocar).
@@ -163,6 +164,12 @@ function rutaSalvoDiario() {
   if (tab === 'cuentas' && typeof _cuentasVista !== 'undefined' && _cuentasVista === 'diario') return;
   return ruta();
 }
+// v63 rev: una posición NUEVA es una operación nueva: «Tu plan hoy» del Informe no espera al minuto de su caché (opsInforme).
+// Los UPDATE (marks del worker, varios por minuto) no la tocan: no cambian cuántas operaciones llevas.
+function posicionNueva() {
+  if (typeof informeOpsInvalidar === 'function') informeOpsInvalidar();
+  return rutaSalvoDiario();
+}
 // Realtime: la campanada (senales), el estado y el pulso llegan al instante.
 function suscribir() {
   if (canal) return;
@@ -173,7 +180,7 @@ function suscribir() {
     // v59 (muralla, 2026-10-03: hay un segundo usuario desde el 14-sep): en las tablas PERSONALES solo INSERT y UPDATE.
     // Los DELETE de Realtime no pasan por RLS y viajan con la clave primaria a todo suscriptor autenticado; la app no
     // los necesita (una posición se cierra por UPDATE).
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posiciones' }, rutaSalvoDiario)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posiciones' }, posicionNueva)   // v63 rev: invalida «Tu plan hoy»
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'posiciones' }, rutaSalvoDiario) // marks del worker
     .subscribe();
   // Señales quitadas en otro equipo (senales_ocultas, 0013) → redibujar. En su PROPIO
@@ -252,6 +259,13 @@ async function ruta() {
   if (typeof tickersAncho === 'function') tickersAncho(tab === 'tickers');                       // v57: Tickers en GRANDE en pantallas anchas (rejilla)
   if (typeof informeAncho === 'function') informeAncho(tab === 'informe');                      // v63: el Informe a pantalla completa en la computadora (#app.inf)
   if (tab !== 'tickers' && typeof _tickers === 'object' && _tickers) _tickers.quitando = null;   // v58: la pregunta «¿Quitar X?» no sobrevive a un cambio de pestaña
+  // v63 rev: la caché de tus operaciones del Informe («Tu plan hoy», 60 s) solo vale para los redibujos de la MISMA visita
+  // (Realtime): si registraste un fill en el Copiloto y vuelves, el Informe no puede seguir en «0 / 1» (como _cta.dentro).
+  if (tab !== 'informe' && typeof informeOpsInvalidar === 'function') informeOpsInvalidar();
+  // v63 rev: al ENTRAR en el Informe desde otra pestaña en la computadora, .inf/.ancho ya ensanchan #app en este tick; lo
+  // de la pestaña anterior (selectores y gráficos de Tickers…) no se queda estirado a 1350 px mientras el Informe carga.
+  const vengo = _rutaTab; _rutaTab = tab;
+  if (tab === 'informe' && vengo !== 'informe' && typeof informeGrande === 'function' && informeGrande()) { const v = $('#vista'); if (v) v.innerHTML = ''; }
   if (tab === 'copiloto' && typeof copilotoAncho === 'function') copilotoAncho(true);           // v55: …y del Copiloto (la tabla del gestor), en el mismo tick: sin salto de ancho
   document.querySelectorAll('#nav a').forEach(a =>
     a.classList.toggle('on', a.dataset.tab === tab));
@@ -276,7 +290,7 @@ async function ruta() {
 // TICKERS en rejilla de 3, cada ticker con el detalle del día (spot, cambio, apertura, máx/mín) y un mini gráfico de las
 // velas de 15 min de HOY. En el teléfono la estructura de siempre (estado, señales, tickers), con el mismo detalle en una
 // línea y sin gráfico. Nada aquí manda órdenes ni escribe en la base: solo LEE.
-const _inf = { grande: null, ops: null, opsVuelo: null };   // grande: formato del último pintado (resize: solo al cruzar los 900 px) · ops: caché de opsInforme
+const _inf = { grande: null, ops: null, opsVuelo: null, opsGen: 0, velasEspera: false };   // grande: formato del último pintado (resize: solo al cruzar los 900 px) · ops: caché de opsInforme · opsGen: sube al invalidarla · velasEspera: ya hay un repintado esperando a las velas
 function informeGrande() { return anchoVista() >= GESTOR_ANCHO_TABLA; }
 // #app.inf en la pestaña Informe y, en la computadora, #app.ancho (el patrón de tickersAncho / cuentasAncho). Apagarla solo
 // quita .inf: el .ancho lo gobierna diarioAncho, y ruta() lo apaga al salir hacia cualquier pestaña que no sea Cuentas.
@@ -286,7 +300,8 @@ function informeAncho(on) {
   if (on) app.classList.toggle('ancho', informeGrande());
 }
 function informeCambiaFormato() { return _inf.grande != null && informeGrande() !== _inf.grande; }
-async function vistaInforme(hb) {
+// velasSinTope: el repintado que llega cuando la lectura de las velas que se pasó del tope terminó (espera sin tope).
+async function vistaInforme(hb, velasSinTope) {
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
   const grande = informeGrande();
   // solo las de HOY (NY): un dato viejo jamás se presenta como fresco. UNA vez (el
@@ -294,25 +309,29 @@ async function vistaInforme(hb) {
   // Sin limit, como el Copiloto: con un tope las quitadas ocupaban cupo y el Informe
   // contradecía al Copiloto (el UNIQUE del worker deja pocas por día: ticker × estrategia)
   const senP = Promise.resolve(sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }));
-  // v63: las velas de 15 min (caché de 50 s, la misma de Tickers) para el detalle del día; tus operaciones solo en la
-  // computadora (la tarjeta «Tu plan hoy» no existe en el teléfono: allí nada se lee de más)
-  const [estados, senales, , , velas, opsR] = await Promise.all([
+  // v63 rev: la SEÑAL no espera a nada que no sea suyo. Tus operaciones («Tu plan hoy», solo en la computadora: en el
+  // teléfono no se leen) van APARTE: se pinta con lo que haya en su caché (o «leyendo…») y, al volver la lectura, se
+  // repinta solo esa tarjeta (posiciones + broker_trades + el libro de fills entero tardaban 8,5 s con la red lenta).
+  // Las velas de 15 min (caché de 50 s, la misma de Tickers) esperan como mucho INF_VELAS_TOPE_MS (velasInforme).
+  if (grande) opsInformeDetras(hoy);
+  const [estados, senales, , , vel] = await Promise.all([
     sb.from('ticker_estado').select('*'),
     senP,
     cargarPlanUsuario(),
     cargarOcultas(senP),
-    cargarVelas(TICKERS, 'm15').catch(() => ({})),
-    grande ? opsInforme() : Promise.resolve(null),
+    velasInforme(velasSinTope),
   ]);
   const est = estados.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
   const sen = senales.data || [];
   const plan = planActivo();
+  const velas = vel.velas || {};
   let h = '';
 
-  // resumen del worker (+ en la computadora: el mercado y tu plan, en una fila)
+  // resumen del worker (+ en la computadora: el mercado y tu plan, en una fila). Tus operaciones, de la caché AHORA (si
+  // la lectura volvió mientras se esperaba lo demás, ya está aquí; si no, opsInformeDetras repinta la tarjeta al volver).
   const estado = tarjetaEstadoSistema(hb, merc);
-  h += grande ? `<div class="infarriba">${estado}${tarjetaMercadoAhora(merc, hb, hoy, new Date())}${tarjetaPlanHoy(plan, opsR, hoy, planFilaCache())}</div>` : estado;
+  h += grande ? `<div class="infarriba">${estado}${tarjetaMercadoAhora(merc, hb, hoy, new Date(), plan)}${tarjetaPlanHoy(plan, opsInformeCache(), hoy, planFilaCache())}</div>` : estado;
 
   // señales del día (la misma sección y el mismo título que el Copiloto: las quitadas no salen). v63: el título ya no nombra
   // una estrategia (decía E5 y la señal de hoy era CT15A, de la E8).
@@ -322,14 +341,44 @@ async function vistaInforme(hb) {
   // tickers con el detalle del día
   h += `<div class="sec">TUS TICKERS</div>`;
   const tks = TICKERS.map(t => {
-    try { return tarjetaTickerInforme(est.find(e => e.symbol === t), t, (velas && velas[t]) || null, grande, hoy); }
+    // undefined = la lectura de las velas pasó del tope y aún no hay nada en caché: «cargando velas…», no «sin velas»
+    try { return tarjetaTickerInforme(est.find(e => e.symbol === t), t, velas[t] || null, grande, hoy, !!vel.tarde && velas[t] === undefined); }
     catch (_) { return tarjetaTicker(est.find(e => e.symbol === t), t, true); }   // un payload raro de UN ticker no tumba el Informe
   }).join('') || `<div class="card vacio">Aún no hay estado publicado.</div>`;
   h += grande ? `<div class="inftk">${tks}</div>` : tks;
   if ((location.hash.replace('#/', '') || 'informe') !== 'informe') return;   // cambió de pestaña mientras cargaba
+  // v63 rev: se cruzaron los 900 px mientras cargaba (la PWA abre a 820 y se maximiza): el resize no redibujó (el
+  // formato anotado es el del pintado anterior, o ninguno), así que se vuelve a empezar con el formato de AHORA.
+  if (informeGrande() !== grande) { setTimeout(ruta, 0); return; }
   _inf.grande = grande;
   informeAncho(true);
   $('#vista').innerHTML = h;
+  // las velas que pasaron del tope: al terminar su lectura, UN repintado (aunque en medio lleguen varios redibujos por
+  // Realtime; sin tope: con la caché ya fresca es inmediato; si falló, pregunta una vez más y dice «sin velas todavía»:
+  // nunca un bucle)
+  if (vel.tarde && !_inf.velasEspera) {
+    _inf.velasEspera = true;
+    vel.tarde.then(() => {
+      _inf.velasEspera = false;
+      if ((location.hash.replace('#/', '') || 'informe') === 'informe') return vistaInforme(_hbUltimo || hb, true);
+    }).catch(() => { _inf.velasEspera = false; });
+  }
+}
+// v63 rev: las velas m15 del Informe con un tope: la señal y el resto no esperan a ticker_velas (~115 KB) más de
+// INF_VELAS_TOPE_MS. → { velas: {SYM: fila|null|undefined}, tarde }: si ganó el tope, velas = lo que haya en la caché
+// (undefined = nada todavía) y tarde = la lectura en curso, para repintar al terminar. sinTope: espera lo que tarde.
+const INF_VELAS_TOPE_MS = 1200;
+async function velasInforme(sinTope) {
+  const p = cargarVelas(TICKERS, 'm15').catch(() => ({}));
+  if (sinTope) return { velas: await p, tarde: null };
+  let reloj = null;
+  const tope = new Promise(r => { reloj = setTimeout(() => r(null), INF_VELAS_TOPE_MS); });
+  const v = await Promise.race([p, tope]);
+  clearTimeout(reloj);
+  if (v) return { velas: v, tarde: null };
+  const out = {};
+  TICKERS.forEach(s => { const c = _velas.get(s + '|m15'); out[s] = c ? c.fila : undefined; });
+  return { velas: out, tarde: p };
 }
 // La tarjeta «Estado del sistema» de siempre (la misma en el teléfono y en la computadora).
 function tarjetaEstadoSistema(hb, merc) {
@@ -359,17 +408,34 @@ function ventanaSenalesTxt(fecha) {
 }
 // «Mercado ahora» (solo en la computadora): la sesión, la regla de las 10:30, los avisos globales del payload MERCADO
 // y la ventana de señales de hoy si aún no pasó. Un MERCADO de otro día no se presenta como de hoy.
-function tarjetaMercadoAhora(merc, hb, hoy, fecha) {
+// v63 rev: (1) la sesión SIN horas: el worker (reloj.fase_sesion) da «pre» desde la medianoche y «post» hasta la
+// medianoche, y un medio día cierra a las 13:00 — «pre-mercado (4:00–9:30)» a las 2:00 era falso. (2) «cerrado» solo lo da
+// en fin de semana o FERIADO (un día hábil es «pre» desde las 0:00): entonces no hay ventana de señales hoy ni regla que
+// esperar (Thanksgiving decía «Próxima ventana: hoy 9:30–9:48»; el tropiezo del Labor Day). Vale si es la sesión del
+// MERCADO de hoy o de un latido fresco (≤ 5 min, el umbral de «worker caído»): un latido viejo no declara cerrado el día.
+// (3) plan: con el Plan 10% (ventana 'apertura_15', 9:30–9:45) la regla de las 10:30 es del Plan 35% y no se presenta
+// como la que manda, igual que pintarAvisosOrden.
+function tarjetaMercadoAhora(merc, hb, hoy, fecha, plan) {
   const p = (merc && merc.payload) || {};
   const deHoy = !!merc && (!p.fecha_ny || p.fecha_ny === hoy);
-  const ses = String((deHoy && (merc.sesion || p.sesion)) || (hb && hb.sesion) || '');
-  const SES = { regular: 'regular (9:30–16:00 ET)', pre: 'pre-mercado (4:00–9:30 ET)', post: 'post-mercado (16:00–20:00 ET)', cerrado: 'mercado cerrado' };
+  const sesMerc = String((deHoy && (merc.sesion || p.sesion)) || '');
+  const ses = sesMerc || String((hb && hb.sesion) || '');
+  const SES = { regular: 'regular', pre: 'pre-mercado', post: 'post-mercado', cerrado: 'mercado cerrado' };
   const sesTxt = ses ? (SES[ses] || ses) : 'sin dato';
-  const antes = antesDe1030NY(deHoy ? merc : null);
-  const regla = antes ? '<b style="color:var(--oro)">antes de las 10:30 ET</b>: la doctrina espera (regla de las 10:30)'
-    : 'regla de las 10:30: no frena ahora';
+  const cerrado = ses === 'cerrado' && (!!sesMerc || (!!hb && haceCuanto(hb.latido_at).min <= 5));
+  const hm = (m) => Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0');
+  let regla;
+  if (cerrado) regla = 'mercado cerrado hoy: sin ventana de señales';
+  else if (plan && plan.ventana === 'apertura_15') {
+    const vm = Array.isArray(plan.ventanaMin) && plan.ventanaMin.length >= 2 ? plan.ventanaMin : [570, 585];
+    regla = `regla de las 10:30 (Plan 35%): no aplica a tu plan · tu ventana <b style="color:var(--tx)">${hm(vm[0])}–${hm(vm[1])} ET</b>`;
+  } else {
+    const antes = antesDe1030NY(deHoy ? merc : null);
+    regla = antes ? '<b style="color:var(--oro)">antes de las 10:30 ET</b>: la doctrina espera (regla de las 10:30)'
+      : 'regla de las 10:30: no frena ahora';
+  }
   const avisos = deHoy && Array.isArray(p.avisos_globales) ? p.avisos_globales.filter(x => x != null && String(x).trim()) : [];
-  const ven = ventanaSenalesTxt(fecha);
+  const ven = cerrado ? '' : ventanaSenalesTxt(fecha);
   return `<div class="card"><div class="fila"><h3>Mercado ahora</h3>
     <span class="fresco">${merc ? esc(haceCuanto(merc.actualizado_at).txt) : 'sin dato'}</span></div>
     <div class="mut">Sesión <b style="color:var(--tx)">${esc(sesTxt)}</b> · ${regla}.</div>
@@ -383,29 +449,57 @@ function tarjetaMercadoAhora(merc, hb, hoy, fecha) {
 // hoy». Solo LEE. → { ops, error }; si algo falla, ops null (la tarjeta lo dice: jamás «0» por no haber podido preguntar).
 // Caché de 60 s por usuario (la del libro, libroParaUnir) y una sola lectura en vuelo: con el Informe a la vista, cada
 // fila de ticker_estado que publica el worker llega por Realtime y redibuja (varias por minuto); broker_trades entero no
-// se puede pedir en cada una. Un error no se guarda: la siguiente vuelta vuelve a preguntar.
+// se puede pedir en cada una. Un error se guarda solo para PINTARLO: la siguiente vuelta vuelve a preguntar.
+// v63 rev: la caché vale para los redibujos de la misma visita; ruta() la invalida al salir del Informe y Realtime al
+// llegar una posición nueva (informeOpsInvalidar). opsGen: una lectura que estaba en vuelo al invalidar no la repuebla.
 const INF_OPS_MS = 60000;
 async function opsInforme() {
   const uid = planUid();
   const c = _inf.ops;
-  if (c && c.uid === uid && Date.now() - c.ts < INF_OPS_MS) return c.r;
+  if (c && c.uid === uid && !c.r.error && Date.now() - c.ts < INF_OPS_MS) return c.r;
   if (_inf.opsVuelo && _inf.opsVuelo.uid === uid) return _inf.opsVuelo.p;
+  const gen = _inf.opsGen;
   const p = (async () => {
+    let r;
     try {
       const [pos, bt] = await Promise.all([sb.from('posiciones').select('*'), sb.from('broker_trades').select('*')]);
-      if (!pos || pos.error || !bt || bt.error) return { ops: null, error: String(((pos && pos.error) || (bt && bt.error) || {}).message || 'sin respuesta') };
-      const libro = await libroParaUnir();
-      const r = { ops: unirOperaciones(pos.data || [], bt.data || [], libro).ops, error: null };
-      _inf.ops = { uid, ts: Date.now(), r };
-      return r;
-    } catch (e) { return { ops: null, error: String((e && e.message) || e) }; }
+      if (!pos || pos.error || !bt || bt.error) r = { ops: null, error: String(((pos && pos.error) || (bt && bt.error) || {}).message || 'sin respuesta') };
+      else {
+        const libro = await libroParaUnir();
+        r = { ops: unirOperaciones(pos.data || [], bt.data || [], libro).ops, error: null };
+      }
+    } catch (e) { r = { ops: null, error: String((e && e.message) || e) }; }
+    if (_inf.opsGen === gen) _inf.ops = { uid, ts: Date.now(), r };
+    return r;
   })();
   _inf.opsVuelo = { uid, p };
   try { return await p; } finally { if (_inf.opsVuelo && _inf.opsVuelo.p === p) _inf.opsVuelo = null; }
 }
+// Lo que haya ahora en la caché de tus operaciones para ESTE usuario (vieja o con error: se pinta y la lectura de
+// opsInformeDetras la pone al día); null = aún nada («leyendo tus operaciones…»).
+function opsInformeCache() {
+  const c = _inf.ops;
+  return c && c.uid === planUid() ? c.r : null;
+}
+// Vacía la caché (y suelta la lectura en vuelo, que ya no la repoblará): la siguiente vuelta pregunta de nuevo.
+function informeOpsInvalidar() { _inf.ops = null; _inf.opsVuelo = null; _inf.opsGen++; }
+// Lanza la lectura de tus operaciones FUERA del camino de la señal y, al volver, repinta solo la tarjeta «Tu plan hoy»
+// (#infPlanHoy) si el Informe de la computadora sigue a la vista, con el mismo usuario y sin invalidar entre medias. Si la
+// tarjeta aún no está en la página, no hace falta: el pintado de vistaInforme lee la caché ya llena.
+function opsInformeDetras(hoy) {
+  const uid = planUid(), gen = _inf.opsGen;
+  return opsInforme().then(r => {
+    if (planUid() !== uid || _inf.opsGen !== gen) return;
+    if ((location.hash.replace('#/', '') || 'informe') !== 'informe' || !informeGrande()) return;
+    const el = $('#infPlanHoy');
+    if (el) el.outerHTML = tarjetaPlanHoy(planActivo(), r, hoy, planFilaCache());
+  }).catch(() => {});
+}
 // «Tu plan hoy» (solo en la computadora). Versión compacta y de SOLO LECTURA de la tarjeta del Copiloto (tarjetaPlanDia
 // lleva los botones de la compañía del día, que escriben en plan_usuario): plan, operaciones de hoy (Plan 10%) o de la
 // semana (Plan 35%) contra el cupo, objetivo y corte; con el Plan 10%, la compañía de hoy si ya se eligió.
+// r: { ops, error } de opsInforme; null = la lectura aún no ha vuelto («leyendo…», nunca «0»). id="infPlanHoy": la
+// tarjeta que repinta opsInformeDetras.
 function tarjetaPlanHoy(plan, r, hoy, fila) {
   plan = plan || PLANES.PLAN_35;
   const diez = plan.periodo === 'dia';
@@ -417,9 +511,11 @@ function tarjetaPlanHoy(plan, r, hoy, fila) {
   const reglas = diez ? `objetivo GTC +${plan.gtcPct}% · corte -${plan.stopPct}% · ${plan.opsMax} operación al día · ${plan.tamanoMinPct}–${plan.tamanoMaxPct}% de la cuenta`
     : `objetivo GTC +${plan.gtcPct}% · sin corte · ${OPS_SEMANA} operaciones por semana · máximo ${plan.tamanoMaxPct}% de la cuenta`;
   const foco = diez ? focoDeHoy(fila, hoy) : null;
-  return `<div class="card"><div class="fila"><h3>Tu plan hoy</h3>
+  const nota = usadas != null ? '' : r == null ? ' · <span style="color:var(--tx3)">leyendo tus operaciones…</span>'
+    : ' · <span style="color:var(--oro)">no pude leer tus operaciones (se reintenta en 1 min)</span>';
+  return `<div class="card" id="infPlanHoy"><div class="fila"><h3>Tu plan hoy</h3>
     <span style="font-weight:700;color:${color}">${usadas == null ? '—' : usadas} / ${cupo}</span></div>
-    <div class="mut">${esc(plan.nombre)} · ${diez ? 'operaciones de hoy' : 'operaciones esta semana'}${usadas == null ? ' · <span style="color:var(--oro)">no pude leer tus operaciones (se reintenta en 1 min)</span>' : ''}</div>
+    <div class="mut">${esc(plan.nombre)} · ${diez ? 'operaciones de hoy' : 'operaciones esta semana'}${nota}</div>
     <div class="mut" style="margin-top:4px">${reglas}.</div>
     ${diez ? (foco ? `<div class="mut" style="margin-top:4px">Compañía de hoy: <b style="color:var(--tx)">${esc(foco)}</b></div>`
       : `<div class="mut" style="margin-top:4px;color:var(--oro)">Compañía de hoy: sin elegir (se elige en el Copiloto).</div>`) : ''}
@@ -448,7 +544,8 @@ function estrategiaSenal(s) {
 }
 // B1 · Detalle de una señal en el Informe: estrategia, hora NY a la que sonó, la acción al sonar (senales.spot), el rango
 // óptimo de la señal (rango_vivo: lo–hi; uno invertido NUNCA se pinta, como textoRangoTarjeta) y el contrato sugerido del
-// ticket. Lo que falta no sale (jamás un número inventado).
+// ticket. Lo que falta no sale (jamás un número inventado). v63 rev: el ask del ticket es la foto de cuando SONÓ (9:31),
+// no el de ahora: «ask al sonar», como «acción al sonar».
 function detalleSenalInforme(s) {
   if (!s) return '';
   const dec = decDe(String(s.symbol || '').toUpperCase());
@@ -474,13 +571,18 @@ function detalleSenalInforme(s) {
   if (tk && num(tk.strike) != null) {
     const dir = String(tk.direccion || s.direccion || '').toUpperCase();
     const ask = num(tk.ask);
-    it.push(`<span>contrato sugerido <b>${dir ? esc(dir) + ' ' : ''}${esc(num(tk.strike))}</b>${tk.exp ? ' · vence ' + esc(String(tk.exp).slice(5)) : ''}${ask != null && ask > 0 ? ' · ask $' + esc(ask.toFixed(2)) : ''}</span>`);
+    it.push(`<span>contrato sugerido <b>${dir ? esc(dir) + ' ' : ''}${esc(num(tk.strike))}</b>${tk.exp ? ' · vence ' + esc(String(tk.exp).slice(5)) : ''}${ask != null && ask > 0 ? ' · ask al sonar $' + esc(ask.toFixed(2)) : ''}</span>`);
   }
   return it.length ? `<div class="infdet">${it.join('')}</div>` : '';
 }
 // B2 · Los números del día de un ticker, de su fila m15 de ticker_velas (la de cargarVelas): spot del worker (niveles.spot;
 // sin él, el cierre de la última vela de HOY) y su cambio contra niveles.cierre_ayer en $ y %, y la apertura, el máximo y
 // el mínimo de HOY (NY) de las velas de 15 min de hoy, incluida la viva. hoy = YYYY-MM-DD NY. null si no hay velas.
+// v63 rev · SIN velas de HOY (antes de las 9:30, fin de semana, feriado): el worker publica la fila igual, cada 5 min y
+// con fecha_ny = HOY, pero sus velas son solo de la sesión anterior: niveles.spot es el cierre de su última vela de 15 min
+// y niveles.cierre_ayer la diaria de ESA sesión (el «+$0.04 vs ayer» de las 8:30 era ese artefacto) y la edad de la fila
+// («hace 2 min») no es la del precio. Entonces: velasHoy 0, spot = el ÚLTIMO CIERRE (el de la última vela), sin cambio,
+// sesion = la fecha NY de esa vela (no payload.fecha_ny) y edad = desde que cerró (t + 15 min).
 function datosTickerHoy(fila, hoy) {
   const pk = fila && fila.payload;
   if (!pk || typeof pk !== 'object') return null;
@@ -493,42 +595,57 @@ function datosTickerHoy(fila, hoy) {
   const vivaHoy = viva && chartTiempo(num(viva[0])).ymd === hoy && !deHoy.some(v => num(v[0]) === num(viva[0])) ? viva : null;
   const todas = vivaHoy ? deHoy.concat([vivaHoy]) : deHoy;
   const nv = pk.niveles || {};
+  if (!todas.length) {
+    const ult = [velas[velas.length - 1], viva].filter(Boolean).reduce((a, b) => (num(b[0]) > num(a[0]) ? b : a));
+    const t = num(ult[0]);
+    return {
+      spot: num(ult[4]), cierreAyer: num(nv.cierre_ayer), cambio: null, pct: null,
+      apertura: null, max: null, min: null, velasHoy: 0, conViva: false,
+      sesion: chartTiempo(t).ymd,
+      edad: haceCuanto(new Date((t + 900) * 1000).toISOString()).txt,
+    };
+  }
   let spot = num(nv.spot);
-  if (spot == null && todas.length) spot = num(todas[todas.length - 1][4]);
+  if (spot == null) spot = num(todas[todas.length - 1][4]);
   const ayer = num(nv.cierre_ayer);
   const cambio = spot != null && ayer != null && ayer > 0 ? spot - ayer : null;
   return {
     spot, cierreAyer: ayer, cambio, pct: cambio != null ? cambio / ayer * 100 : null,
-    apertura: todas.length ? num(todas[0][1]) : null,
-    max: todas.length ? Math.max(...todas.map(v => num(v[2]))) : null,
-    min: todas.length ? Math.min(...todas.map(v => num(v[3]))) : null,
+    apertura: num(todas[0][1]),
+    max: Math.max(...todas.map(v => num(v[2]))),
+    min: Math.min(...todas.map(v => num(v[3]))),
     velasHoy: todas.length, conViva: !!vivaHoy,
-    sesion: pk.fecha_ny && String(pk.fecha_ny) !== String(hoy) ? String(pk.fecha_ny) : null,   // la foto es de otra sesión
+    sesion: null,                                   // hay velas de hoy: es la sesión de hoy
     edad: haceCuanto(fila.actualizado_at).txt,
   };
 }
-// HTML de esos números: en el teléfono una línea; en la computadora una fila de casillas. Sin velas: «sin velas todavía».
-function detalleTickerHtml(d, sym, grande) {
-  if (!d) return `<div class="mut infdet1">sin velas todavía</div>`;
+// HTML de esos números: en el teléfono una línea; en la computadora una fila de casillas. Sin velas: «sin velas todavía»
+// (cargando: la lectura de las velas aún no vuelve → «cargando velas…»). v63 rev: sin velas de HOY, «último cierre $X
+// (sesión del …)» con su antigüedad — ni «spot» ni «vs ayer».
+function detalleTickerHtml(d, sym, grande, cargando) {
+  if (!d) return `<div class="mut infdet1">${cargando ? 'cargando velas…' : 'sin velas todavía'}</div>`;
   const dec = decDe(sym);
   const f$ = (v) => v == null ? '—' : '$' + Number(v).toFixed(dec);
   const r2 = (x, n) => { const k = Math.pow(10, n); return Math.round(x * k) / k; };
   const sg = (x, n) => { const r = r2(x, n); return r > 0 ? '+' : r < 0 ? '-' : ''; };
   const camb = d.cambio == null ? '' : `${sg(d.cambio, dec)}$${Math.abs(r2(d.cambio, dec)).toFixed(dec)} (${sg(d.pct, 2)}${Math.abs(r2(d.pct, 2)).toFixed(2)} %)`;
   const col = d.cambio == null ? 'var(--tx2)' : colUtil(r2(d.cambio, dec));
-  const ses = d.sesion ? ` · sesión del ${esc(fmtFechaNY(d.sesion + 'T12:00:00Z'))}` : '';
+  if (!d.velasHoy) {
+    const dia = d.sesion ? esc(fmtFechaNY(d.sesion + 'T12:00:00Z')) : '';
+    if (!grande) return `<div class="mut infdet1">último cierre <b>${esc(f$(d.spot))}</b>${dia ? ` (sesión del ${dia})` : ''} · hoy sin velas todavía · <span class="fresco">${esc(d.edad)}</span></div>`;
+    return `<div class="infnum"><div><span>último cierre</span><b class="mono">${esc(f$(d.spot))}</b></div><div class="infhoy"><span>hoy</span><b>sin velas todavía</b></div></div>`
+      + `<div class="fresco" style="margin-top:3px">último cierre ${esc(d.edad)}${dia ? ` · sesión del ${dia}` : ''}</div>`;
+  }
   if (!grande) {
     const p = [`spot <b>${esc(f$(d.spot))}</b>`];
     if (camb) p.push(`<b style="color:${col}">${esc(camb)}</b> vs ayer`);
-    if (d.velasHoy) p.push(`apertura ${esc(f$(d.apertura))}`, `máx ${esc(f$(d.max))}`, `mín ${esc(f$(d.min))}`);
-    else p.push('hoy sin velas todavía');
-    return `<div class="mut infdet1">${p.join(' · ')} · <span class="fresco">${esc(d.edad)}${ses}</span></div>`;
+    p.push(`apertura ${esc(f$(d.apertura))}`, `máx ${esc(f$(d.max))}`, `mín ${esc(f$(d.min))}`);
+    return `<div class="mut infdet1">${p.join(' · ')} · <span class="fresco">${esc(d.edad)}</span></div>`;
   }
   const c = (et, val, estilo, cls) => `<div${cls ? ` class="${cls}"` : ''}><span>${et}</span><b class="mono"${estilo ? ` style="${estilo}"` : ''}>${val}</b></div>`;
   let h = c('spot', esc(f$(d.spot))) + c('vs cierre ayer', camb ? esc(camb) : '—', camb ? `color:${col}` : '', 'infcamb');
-  h += d.velasHoy ? c('apertura hoy', esc(f$(d.apertura))) + c('máx hoy', esc(f$(d.max))) + c('mín hoy', esc(f$(d.min)))
-    : `<div class="infhoy"><span>hoy</span><b>sin velas todavía</b></div>`;
-  return `<div class="infnum">${h}</div><div class="fresco" style="margin-top:3px">spot ${esc(d.edad)}${d.cierreAyer != null ? ' · cierre de ayer ' + esc(f$(d.cierreAyer)) : ''}${ses}</div>`;
+  h += c('apertura hoy', esc(f$(d.apertura))) + c('máx hoy', esc(f$(d.max))) + c('mín hoy', esc(f$(d.min)));
+  return `<div class="infnum">${h}</div><div class="fresco" style="margin-top:3px">spot ${esc(d.edad)}${d.cierreAyer != null ? ' · cierre de ayer ' + esc(f$(d.cierreAyer)) : ''}</div>`;
 }
 // Índice de la primera vela de 15 min de HOY (NY) en pk.velas; -1 si no hay.
 function inicioVelasHoy(pk, hoy) {
@@ -537,12 +654,14 @@ function inicioVelasHoy(pk, hoy) {
 }
 // A3 · Mini gráfico del Informe en la computadora: las velas de 15 min de HOY (chartSvg real, Bollinger, sin selectores).
 // Tocarlo abre la hoja del gráfico (MZ.chartAbrir) como en Tickers. Con menos de dos velas cerradas de hoy, lo dice.
-function miniChartInforme(sym, fila, hoy) {
+// cargando (v63 rev): la lectura de las velas pasó del tope y no hay nada en caché todavía.
+function miniChartInforme(sym, fila, hoy, cargando) {
   const pk = fila && fila.payload;
   const i0 = inicioVelasHoy(pk, hoy);
-  const cab = `<div class="fila"><span class="fresco">hoy · 15 min</span><span class="fresco">${esc(fila ? chartFrescoTxt(fila, 'm15', false) : 'sin velas')}</span></div>`;
+  const cab = `<div class="fila"><span class="fresco">hoy · 15 min</span><span class="fresco">${esc(fila ? chartFrescoTxt(fila, 'm15', false) : cargando ? 'cargando…' : 'sin velas')}</span></div>`;
   let svg;
-  if (i0 < 0 || pk.velas.length - i0 < 2) svg = `<div class="vacio">Sin velas de hoy todavía (el gráfico empieza con dos velas de 15 min cerradas)</div>`;
+  if (!fila && cargando) svg = `<div class="vacio">cargando velas…</div>`;
+  else if (i0 < 0 || pk.velas.length - i0 < 2) svg = `<div class="vacio">Sin velas de hoy todavía (el gráfico empieza con dos velas de 15 min cerradas)</div>`;
   else {
     try { svg = chartSvg(pk, { h: 110, w: 380, tf: 'm15', vista: 'bb', ventana: { start: i0, end: pk.velas.length }, dec: decDe(sym), fondo: 'var(--bg2)' }); }
     catch (_) { svg = `<div class="vacio">Chart no disponible (datos inválidos)</div>`; }
@@ -551,9 +670,11 @@ function miniChartInforme(sym, fila, hoy) {
 }
 // Tarjeta de un ticker en el Informe: la de siempre (tendencias, volatilidad, rango) + los números del día (B2) y, en la
 // computadora, el mini gráfico de hoy y TODOS los avisos del payload (en el teléfono, el primero, como siempre).
-function tarjetaTickerInforme(e, sym, fila, grande, hoy) {
-  const det = detalleTickerHtml(datosTickerHoy(fila, hoy), sym, grande);
-  const graf = grande ? miniChartInforme(sym, fila, hoy) : '';
+// cargando: las velas aún no han llegado (velasInforme pasó del tope) → «cargando velas…» en vez de «sin velas».
+function tarjetaTickerInforme(e, sym, fila, grande, hoy, cargando) {
+  const car = !fila && !!cargando;
+  const det = detalleTickerHtml(datosTickerHoy(fila, hoy), sym, grande, car);
+  const graf = grande ? miniChartInforme(sym, fila, hoy, car) : '';
   if (!e) return `<div class="card">${cabeceraTicker(sym, true, `<span class="chip c-esp">SIN DATO</span>`)}${det}${graf}</div>`;
   const p = e.payload || {};
   const te = p.tendencias || {};

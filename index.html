@@ -337,6 +337,9 @@
     #app.ancho.inf .infarriba{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
     #app.ancho.inf .infsen{display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:14px;align-items:start}
     #app.ancho.inf .infsen>.sec,#app.ancho.inf .infsen>.vacio,#app.ancho.inf .infsen>.fresco{grid-column:1/-1}
+    /* v63 rev: auto-fit no colapsa ninguna pista porque el encabezado (1/-1) las ocupa todas: una señal SOLA (lo normal,
+       detrás del encabezado) llena la fila en vez de dejar media vacía */
+    #app.ancho.inf .infsen>.card:nth-child(2):last-child{grid-column:1/-1}
     #app.ancho.inf .inftk{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px;align-items:start}
     #app.ancho.inf .card{padding:16px 20px;border-radius:18px}
     #app.ancho.inf .card h3{font-size:19px}
