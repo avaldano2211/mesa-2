@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const C = require(path.join(__dirname, 'casa_pruebas.js'))(process.argv[2], 'test_spot.js');
-const { FUENTE, assert, igual, cerca, construir, esc, usd, colUtil, BROKER_NOMBRE, nodo, haceCuanto, extraer } = C;
+const { FUENTE, assert, igual, cerca, construir, esc, usd, colUtil, BROKER_NOMBRE, nodo, haceCuanto, extraer, ymdNY } = C;
 const HOY = '2026-10-03';
 
 (async () => {
@@ -72,8 +72,8 @@ const HOY = '2026-10-03';
   }
   // ════════════════ 3. la tarjeta de la operación cerrada: la tercera fila en sus variantes ════════════════
   {
-    const V = construir(['seccionOperacionesDiario', 'filaAccionDiario', 'distanciaStrike', 'pctEsp', 'usdSigno'],
-      { esc, fechaHoraD: () => 'FECHA', textoDuracionOp: () => 'DURO', fechaCorta: (s) => String(s || '') },
+    const V = construir(['seccionOperacionesDiario', 'filaAccionDiario', 'distanciaStrike', 'pctEsp', 'usdSigno', 'diaOpNY', 'sinHoraIso', 'fechaNyTransaccion', 'horaNY'],
+      { esc, ymdNY, fechaHoraD: () => 'FECHA', textoDuracionOp: () => 'DURO', fechaCorta: (s) => String(s || '') },
       { consts: ['LADO_DINERO', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'BROKER_CORTO', 'dineroD', 'pctD', 'colD'] });
     igual([V.pctEsp(0.4856, 2), V.pctEsp(-1.544, 1), V.pctEsp(0, 1), V.pctEsp(null), V.usdSigno(1.8), V.usdSigno(-9.3), V.usdSigno(0), V.usdSigno(null)], ['+0.49 %', '-1.5 %', '0.0 %', '—', '+$1.80', '-$9.30', '+$0.00', '—'], 'pctEsp / usdSigno: signo siempre, espacio antes del %');
     const base = { broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 372.5, expiracion: '2026-10-02', contratos: 2, prima_entrada: 3.3, prima_salida: 3.75, costo: 660, venta: 750, comisiones: 0, pnl: 90, pct: 16.3,
@@ -120,6 +120,17 @@ const HOY = '2026-10-03';
     const hHM = V.filaAccionDiario({ ...baseT, spot_fuente: 'manual' });
     assert(/\(a mano\)/.test(hHM) && !/sin hora|no dio la hora/.test(hHM), 'con fuente «manual», «(a mano)» y sin el aviso');
     assert(/acción plana <span class="fresco">\(sin hora: cierre del día\)<\/span>/.test(V.filaAccionDiario({ ...baseT, spot_salida: 431.3, spot_fuente: 'm1' })), '«acción plana» también lleva el recordatorio');
+    // v62 rev3: un viaje del MISMO día con la vela DIARIA en las dos patas (fills CON hora: el worker pone 'dia' a los de más
+    // de ~5 días) o SIN hora: las dos patas llevan el mismo cierre → «movimiento intradía no medible», nunca «acción plana»
+    const baseD = { ...base, symbol: 'SPY', direccion: 'PUT', strike: 757, pct: 36.5, entrada_at: '2026-09-14T14:23:09+00:00', salida_at: '2026-09-14T14:36:31+00:00',
+      spot_entrada: 760.8812, spot_salida: 760.8812, spot_fuente_entrada: 'dia', spot_fuente_salida: 'dia', spot_fuente: 'dia', sin_hora: false };
+    const hDD = V.filaAccionDiario(baseD);
+    assert(/\+36\.5 % · <span class="fresco">movimiento intradía no medible \(cierre del día en las dos patas\)<\/span>/.test(hDD) && !/acción plana|0\.00 %/.test(hDD)
+      && /\$760\.88 → \$760\.88 <span class="fresco">\(cierre del día\)<\/span><\/b>/.test(hDD), '(rev3) Diario: mismo día, «dia» en las dos patas y fills con hora → «movimiento intradía no medible (cierre del día en las dos patas)», sin «acción plana» ni 0.00 % → ' + hDD);
+    assert(/con la acción \+0\.54 %/.test(V.filaAccionDiario({ ...baseD, salida_at: '2026-09-15T14:36:31+00:00', spot_salida: 765 })), '(rev3) Diario: «dia» de un día para otro → se mide (de cierre a cierre)');
+    assert(/acción plana/.test(V.filaAccionDiario({ ...baseD, spot_fuente_entrada: 'm1', spot_fuente: 'dia', spot_entrada: 760.9 })), '(rev3) Diario: «dia» en UNA sola pata → se mide (aquí, de verdad plana)');
+    const hDH = V.filaAccionDiario({ ...baseD, entrada_at: '2026-09-14T04:00:00.000Z', salida_at: '2026-09-14T04:00:00.000Z', sin_hora: true, spot_fuente_entrada: 'm1', spot_fuente_salida: 'm1', spot_fuente: 'm1' });
+    assert(/movimiento intradía no medible \(el bróker no dio la hora\)/.test(hDH) && !/acción plana|0\.00 %/.test(hDH), '(rev3) Diario: fills SIN hora del mismo día → «movimiento intradía no medible (el bróker no dio la hora)», como Cuentas → ' + hDH);
     const hH0 = V.filaAccionDiario({ ...baseT, spot_entrada: null, spot_salida: null, spot_fuente: null });
     assert(/sin dato aún \(el worker lo completa\)/.test(hH0) && !/sin hora|no dio la hora/.test(hH0), 'sin ningún spot no hay nada que avisar');
     const hHE = V.filaAccionDiario({ ...baseT, spot_salida: null, spot_fuente: 'm1' });

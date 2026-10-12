@@ -4390,13 +4390,14 @@ const BROKERS_CON_COMISION = ['etrade', 'tasty'];
 // ¿El instante es una FECHA sin hora? Exactamente 00:00:00 UTC o 00:00 NY (la regla del worker 0.1.9b). Las opciones no
 // se negocian a esas horas: un 00:00 es «no sé la hora», no un fill de madrugada, y se pinta solo la fecha. v62 rev2: es
 // la ÚNICA regla de «sin hora» en la app (Diario y Cuentas), POR INSTANTE y nunca por bróker: los fills y las filas de
-// E*TRADE traen hora (2026-10-09T13:32:15Z) y se tratan como las de cualquier otro. PURA.
+// E*TRADE traen hora (2026-10-09T13:32:15Z) y se tratan como las de cualquier otro. v62 rev3: EXACTAMENTE 00:00:00.000,
+// como el worker (spot_fills.es_fecha_sin_hora): horaNY solo da HH:MM y una liquidación de moomoo a las 00:00:30 NY
+// salía «sin hora». Los desfases de NY son horas enteras: los segundos y milisegundos UTC son los de NY. PURA.
 function sinHoraIso(iso) {
   const ms = Date.parse(iso || '');
   if (!Number.isFinite(ms)) return false;
-  const d = new Date(ms);
-  if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0) return true;
-  return horaNY(ms) === '00:00';
+  if (ms % 86400000 === 0) return true;                       // 00:00:00.000 UTC
+  return ms % 60000 === 0 && horaNY(ms) === '00:00';          // 00:00:00.000 NY
 }
 // v62 rev · El DÍA NY de un instante de Cuentas. Una FECHA a medianoche UTC exacta (sinHoraIso) es, para
 // ymdNY, las 20:00 ET del día ANTERIOR: la entrada salía un día antes, el DTE con uno de más, la acción «sin dato» aunque
@@ -4469,7 +4470,8 @@ function indiceCuentas(fills, senales) {
 // PEOR (m1 < m15 < dia < manual): un dato aproximado jamás se vende como exacto. Por tramo, su entrada, su salida y su
 // movimiento; `mov` = media ponderada por contratos de los movimientos de cada tramo, NO la diferencia de las medias (dos
 // viajes, uno al alza y otro a la baja, no son una «acción plana»). Un tramo con fills SIN HORA abierto y cerrado el mismo
-// día no tiene movimiento medible: sus dos patas llevan el mismo precio del día. `n_fills` = los fills que casan aunque aún
+// día no tiene movimiento medible: sus dos patas llevan el mismo precio del día. v62 rev3: tampoco uno del mismo día con
+// la fuente 'dia' (el cierre del día) en las dos patas, aunque sus fills traigan hora. `n_fills` = los fills que casan aunque aún
 // no tengan spot (con 0 no hay nada que el worker pueda completar). Una ficha A MANO (sin filas del bróker) cuya hora no
 // casa con ningún fill usa de respaldo la ventana de antes y va con por_ventana para decirlo. PURA.
 //   → { entrada, salida, fuente_entrada, fuente_salida, sin_hora, mov, n_mov, n_fills, por_ventana,
@@ -4534,7 +4536,10 @@ function spotDeOperacion(op, fills) {
   const pesos = [];
   const res = partes.map((t, i) => {
     const P = porTramo[i], e = pond(P.compra), s = pond(P.venta), sh = P.compra.concat(P.venta).some(x => x.sh);
-    const mismoDia = sh && !!anclas[i].dA && anclas[i].dA === anclas[i].dC;   // fills sin hora del mismo día: no medible
+    // v62 rev3: las dos patas con el CIERRE DEL DÍA (el worker pone 'dia' a los fills de más de ~5 días) llevan el mismo
+    // precio aunque los fills traigan hora: tampoco es medible
+    const diaria = peor(P.compra) === 'dia' && peor(P.venta) === 'dia';
+    const mismoDia = (sh || diaria) && !!anclas[i].dA && anclas[i].dA === anclas[i].dC;   // mismo día: no medible
     const mov = (e != null && s != null && !mismoDia) ? Math.round((s - e) / e * 100 * 10000) / 10000 : null;
     if (mov != null) pesos.push([mov, Number(t.contratos) > 0 ? Number(t.contratos) : 1]);
     return { entrada: e, salida: s, fuente_entrada: peor(P.compra), fuente_salida: peor(P.venta), sin_hora: sh, mov };
@@ -4744,7 +4749,9 @@ function duracionTablaCuentas(p, d) {
 // fills en el libro para esta operación» si no los hay; con la lectura del libro caída, «acción: sin dato».
 // v62 rev: el % de la acción es la media de los movimientos de cada ida y vuelta (spotDeOperacion.mov), y con varias se
 // dice que es una media; fills sin hora del mismo día no tienen movimiento medible (las dos patas, el mismo precio del
-// día). v62 rev2: «sin hora» por instante (spotDeOperacion.sin_hora), nunca por bróker. Y `corta`: lo mismo en CORTO
+// día). v62 rev3: ni los del mismo día con el cierre del día ('dia') en las dos patas aunque traigan hora: «movimiento
+// intradía no medible (cierre del día en las dos patas)», nunca «acción plana» ni un 0.00 % inventado.
+// v62 rev2: «sin hora» por instante (spotDeOperacion.sin_hora), nunca por bróker. Y `corta`: lo mismo en CORTO
 // para la tabla de la computadora (filaHistorialCuentas): una línea con la acción entrada → salida (%) y sus etiquetas
 // cortas aparte («15 min», «cierre del día», «sin hora», «media de 2»…); el strike en una línea («392.5 · +$5.08
 // (+1.31 %) fuera») con su fuente corta. Los textos largos de arriba van al title de la celda. PURA.
@@ -4755,7 +4762,11 @@ function accionOpCuentas(p, d) {
     corta: { linea: '<span class="fresco">sin dato</span>', etq: [], strike: '<span class="fresco">sin dato</span>', strikeEtq: [] } };
   const sp = d.spot || {};
   const e = Number(sp.entrada) > 0 ? Number(sp.entrada) : null, s = Number(sp.salida) > 0 ? Number(sp.salida) : null;
-  const intradia = !!sp.sin_hora && !!d.dia && d.dia === d.diaC;
+  // v62 rev3: no medible si el viaje es del mismo día y sus dos patas llevan el cierre del día — por falta de hora
+  // (sin_hora) o porque el worker les puso la vela diaria ('dia' en las dos) aunque los fills traigan hora
+  const diaria = sp.fuente_entrada === 'dia' && sp.fuente_salida === 'dia';
+  const intradia = !!d.dia && d.dia === d.diaC && (!!sp.sin_hora || diaria);
+  const porQue = sp.sin_hora ? 'el bróker no dio la hora' : 'cierre del día en las dos patas';
   const mov = intradia ? null : sp.mov !== undefined ? sp.mov : (e != null && s != null ? (s - e) / e * 100 : null);
   const fte = peorFuenteSpot([sp.fuente_entrada, sp.fuente_salida]);
   const sinHora = !!sp.sin_hora && !['dia', 'manual'].includes(fte);
@@ -4775,7 +4786,7 @@ function accionOpCuentas(p, d) {
   const vacio = Number(sp.n_fills) > 0 ? 'sin dato aún (el worker lo completa)' : 'sin fills en el libro para esta operación';
   const accion = (e == null && s == null) ? `<span class="fresco">${vacio}</span>`
     : `${e != null ? dineroD(e) : 'sin dato'} → ${salida}${mov != null ? ` (${pctEsp(mov, 2)})` : ''}${fuente}${media}${ventana}`;
-  const vs = (intradia && (e != null || s != null)) ? `${pctEsp(d.pct, 1)} · <span class="fresco">movimiento intradía no medible (el bróker no dio la hora)</span>`
+  const vs = (intradia && (e != null || s != null)) ? `${pctEsp(d.pct, 1)} · <span class="fresco">movimiento intradía no medible (${porQue})</span>`
     : mov == null ? vsSin
     : Math.abs(mov) < 0.05 ? `${pctEsp(d.pct, 1)} · acción plana${aprox}${mediaVs}${ventana}` : `${pctEsp(d.pct, 1)} con la acción ${pctEsp(mov, 2)}${aprox}${mediaVs}${ventana}`;
   const ds = distanciaStrike(p.direccion, p.strike, e);
@@ -5057,7 +5068,8 @@ async function vistaCuentasSaldos() {
   // contaba DOS veces: la utilidad, el número de operaciones, los aciertos y el
   // mejor/peor de Cuentas contradecían a Disciplina, que sí pasa por
   // unirOperaciones. Un cierre PARCIAL también se agrupa: es UNA operación.
-  const { ops: todas } = unirOperaciones(posR.data || [], btR.data || []);
+  // v62 rev3: con el libro de fills (leído entero, sin error) las filas de E*TRADE sustituidas no se suman dos veces
+  const { ops: todas } = unirOperaciones(posR.data || [], btR.data || [], fillsR.error ? null : fillsR.filas);
   // El historial enseña las operaciones cerradas Y el tramo ya cobrado de una que sigue
   // abierta (una GTC llenada a medias): ese dinero existe, tiene su fecha y antes no
   // aparecía en ninguna parte de esta pantalla.
@@ -8124,6 +8136,34 @@ window.MZ = Object.assign(window.MZ || {}, {
 function nombreMesNY() {
   return new Intl.DateTimeFormat('es', { timeZone: 'America/New_York', month: 'long' }).format(new Date());
 }
+// v62 rev3 · Las filas de E*TRADE de broker_trades que SIGUEN vigentes. E*TRADE cambia el ID de una transacción al
+// contabilizarla (la «Sold» del día con IDs 2626020…, días después la «Sold To Close» con 2626050… y ~2 min antes) y la
+// sincronización (upsert por clave_ext, que nunca borra) guardó las dos: Cuentas sumaba el viaje dos veces (SPY CALL 764
+// del 17 sep: ×2 y −$8.03 con 1 contrato y −$4.03 en el libro). Se descarta una fila de E*TRADE cuyos IDs (raw.abre y
+// raw.cierra) no están los dos en el libro de fills cuando otra fila de E*TRADE que SÍ está en el libro es su gemela: el
+// mismo contrato, los mismos contratos, la misma prima de entrada y de salida, y la apertura y el cierre a ±3 min (o el
+// mismo lote de apertura, raw.abre: un vencimiento anotado dos veces con otro ID de cierre). Sin libro (lectura caída o
+// vacía) o sin gemela en él la fila se queda: nunca se tira un viaje que el libro no puede desmentir. PURA.
+const ET_GEMELA_MS = 3 * 60 * 1000;
+function filasEtradeVigentes(trades, fills) {
+  if (!Array.isArray(trades)) return trades;
+  const ids = new Set();
+  for (const f of (Array.isArray(fills) ? fills : [])) {
+    if (f && f.broker === 'etrade' && f.clave_ext != null && f.clave_ext !== '') ids.add(String(f.clave_ext));
+  }
+  if (!ids.size) return trades;
+  const raw = (t) => (t && t.raw && typeof t.raw === 'object') ? t.raw : {};
+  const enLibro = (t) => { const r = raw(t); return r.abre != null && r.cierra != null && ids.has(String(r.abre)) && ids.has(String(r.cierra)); };
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const cerca = (a, b) => { const x = Date.parse(a || ''), y = Date.parse(b || ''); return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= ET_GEMELA_MS; };
+  const buenas = trades.filter(t => t && t.broker === 'etrade' && enLibro(t));
+  if (!buenas.length) return trades;
+  const gemela = (t, o) => claveContrato(o) === claveContrato(t) && num(o.contratos) === num(t.contratos)
+    && num(o.prima_fill) === num(t.prima_fill) && num(o.prima_salida) === num(t.prima_salida)
+    && ((cerca(o.abierta_at, t.abierta_at) && cerca(o.cerrada_at, t.cerrada_at)) || (raw(t).abre != null && String(raw(o).abre) === String(raw(t).abre)));
+  const sobra = (t) => !!t && t.broker === 'etrade' && !enLibro(t) && !!claveContrato(t) && buenas.some(o => o !== t && gemela(t, o));
+  return trades.some(sobra) ? trades.filter(t => !sobra(t)) : trades;
+}
 // Une las operaciones manuales (posiciones) con los round-trips reales de los
 // brókeres (broker_trades) en UN conjunto sin duplicados, para la Disciplina.
 //  · Los round-trips del bróker se agrupan por contrato + día NY de apertura:
@@ -8136,7 +8176,10 @@ function nombreMesNY() {
 //  · Un cierre PARCIAL deja una fila-tramo cerrada con el mismo contrato y la misma
 //    apertura (abierta_at): las filas manuales de UNA operación se agrupan primero
 //    (contratos y resultado sumados), así un tramo no cuenta como otra operación.
-function unirOperaciones(posic, trades) {
+//  · v62 rev3: con el libro de fills (`fills`, opcional: Cuentas y el Diario lo tienen) las filas de E*TRADE
+//    SUSTITUIDAS no se suman (filasEtradeVigentes). Sin él, todo como siempre.
+function unirOperaciones(posic, trades, fills) {
+  if (fills) trades = filasEtradeVigentes(trades, fills);
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const r2 = (n) => Math.round(n * 100) / 100;
   const tramos = {}, manualesAgrupadas = [];
@@ -9164,10 +9207,16 @@ function fechaHoraD(iso) {
 // salida «venció» (su spot de salida es null salvo que exista); vencida EN PARTE y sin el spot de la venta todavía,
 // «venció en parte · sin dato» (la fila de arriba ya dice «venció en parte»: aquí no se afirma lo que no fue). Con un
 // viaje con algún instante SIN HORA (sin_hora: una FECHA a 00:00, de cualquier bróker) y fuente m1/m15 las tres filas
-// avisan de que el spot no es el del fill (es el cierre del día). Con hora —E*TRADE incluido— no hay aviso. PURA.
+// avisan de que el spot no es el del fill (es el cierre del día). Con hora —E*TRADE incluido— no hay aviso.
+// v62 rev3 (como Cuentas, accionOpCuentas): un viaje abierto y cerrado el MISMO día NY con las dos patas al cierre del
+// día —sin hora, o con la fuente 'dia' en las dos (el worker la pone a los fills de más de ~5 días)— lleva el mismo precio
+// en las dos: «movimiento intradía no medible», nunca «acción plana» ni un 0.00 % inventado. PURA.
 function filaAccionDiario(c) {
   const e = Number(c.spot_entrada) > 0 ? Number(c.spot_entrada) : null, s = Number(c.spot_salida) > 0 ? Number(c.spot_salida) : null;
-  const mov = (e != null && s != null) ? (s - e) / e * 100 : null;
+  const diaria = c.spot_fuente_entrada === 'dia' && c.spot_fuente_salida === 'dia';
+  const mismoDia = !!c.entrada_at && !!c.salida_at && diaOpNY(c.entrada_at) === diaOpNY(c.salida_at);
+  const intradia = mismoDia && (!!c.sin_hora || diaria);
+  const mov = (e != null && s != null && !intradia) ? (s - e) / e * 100 : null;
   const sinHora = !!c.sin_hora && !['dia', 'manual'].includes(c.spot_fuente);
   const fuenteTxt = sinHora ? SIN_HORA_TXT : FUENTE_SPOT_TXT[c.spot_fuente];
   const fuente = fuenteTxt ? ` <span class="fresco">(${esc(fuenteTxt)})</span>` : '';
@@ -9175,7 +9224,8 @@ function filaAccionDiario(c) {
   const salida = s != null ? dineroD(s) : (c.vencido ? (c.vencido_total === false ? 'venció en parte · sin dato' : 'venció') : 'sin dato');
   const accion = (e == null && s == null) ? '<span class="fresco">sin dato aún (el worker lo completa)</span>'
     : `${e != null ? dineroD(e) : 'sin dato'} → ${salida}${mov != null ? ` (${pctEsp(mov, 2)})` : ''}${fuente}`;
-  const vs = mov == null ? `${pctEsp(c.pct, 1)} · <span class="fresco">acción: sin dato</span>`
+  const vs = (intradia && (e != null || s != null)) ? `${pctEsp(c.pct, 1)} · <span class="fresco">movimiento intradía no medible (${c.sin_hora ? 'el bróker no dio la hora' : 'cierre del día en las dos patas'})</span>`
+    : mov == null ? `${pctEsp(c.pct, 1)} · <span class="fresco">acción: sin dato</span>`
     : Math.abs(mov) < 0.05 ? `${pctEsp(c.pct, 1)} · acción plana${aprox}` : `${pctEsp(c.pct, 1)} con la acción ${pctEsp(mov, 2)}${aprox}`;
   const d = distanciaStrike(c.direccion, c.strike, e);
   const strike = d ? `${esc(c.strike)}: ${usdSigno(d.usd)} (${pctEsp(d.pct, 2)}) ${LADO_DINERO[d.lado]}${aprox}` : '<span class="fresco">sin dato</span>';
@@ -9542,7 +9592,7 @@ async function vistaDiario(forzar) {
   let notaCuentas = '';
   try {
     const inicioMes = hoy.slice(0, 8) + '01';
-    const R = resumenPeriodo(unirOperaciones(posic, btR.data || []).ops, inicioMes);
+    const R = resumenPeriodo(unirOperaciones(posic, btR.data || [], fillsR.error ? null : fills).ops, inicioMes);
     const dMes = Math.round(F.cerradas.filter(c => c.fecha_ny >= inicioMes).reduce((s, c) => s + c.pnl, 0) * 100) / 100;
     if (Math.abs((R.util || 0) - dMes) > 0.5) notaCuentas = `Este mes el Diario suma ${dineroD(dMes)} y la pestaña Cuentas ${dineroD(R.util)}. No es un error: Cuentas suma las operaciones cerradas que bajó cada bróker (sin comisiones de Schwab y con las fichas que registraste a mano); el Diario suma cada compra y venta guardada, con comisiones. Manda el Diario; Cuentas se alinea en la siguiente entrega.`;
   } catch (_) {}
