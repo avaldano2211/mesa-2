@@ -187,7 +187,7 @@ function sbGrabador(respuestas) {
   const claveContrato = construir(['claveContrato']).claveContrato;
   // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
   const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
-    'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot'],
+    'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
     { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
   const FILLS = [
@@ -255,6 +255,24 @@ function sbGrabador(respuestas) {
   const RP = D.emparejarFillsFIFO([F('schwab', 'p1', 'SPY', 'CALL', 650, '2026-09-18', 'compra', 2, 1.00, '2026-09-15T14:00:00.000Z'), F('schwab', 'p2', 'SPY', 'CALL', 650, '2026-09-18', 'venta', 1, 1.50, '2026-09-16T14:00:00.000Z')], HOY);
   igual([RP.viajes.length, RP.viajes[0].pnl, RP.viajes[0].vencido, RP.viajes[0].vencido_total, RP.viajes[0].derivado, RP.viajes[0].fecha_ny, RP.viajes[0].salidas], [1, -50, true, false, true, '2026-09-18', 2], 'venta parcial + resto vencido: un solo viaje (−50) que «venció en parte», cerrado el día del vencimiento');
   igual(D.emparejarFillsFIFO([{ broker: 'etrade', symbol: 'SPY', lado: 'compra', contratos: 0, precio: 1 }, null], HOY).abiertos.length, 0, 'basura (contratos 0, null) se ignora');
+  // v62 rev2 · «sin hora» POR INSTANTE (sinHoraIso), nunca por bróker: los fills de E*TRADE traen hora en los datos reales
+  // (2026-10-09T13:48:25Z) y se emparejan como los de cualquier otro; solo un instante a 00:00 UTC / 00:00 NY es una FECHA.
+  const FH = [F('etrade', 'h1', 'TSLA', 'CALL', 387.5, '2026-10-10', 'compra', 5, 3.10, '2026-10-09T13:48:25.000Z', 3.25), F('etrade', 'h2', 'TSLA', 'CALL', 387.5, '2026-10-10', 'venta', 5, 3.60, '2026-10-09T13:51:50.000Z', 3.25),
+    F('etrade', 'h3', 'TSLA', 'CALL', 392.5, '2026-10-10', 'compra', 1, 6.10, '2026-10-09T14:57:02.000Z', 0.65), F('etrade', 'h4', 'TSLA', 'CALL', 392.5, '2026-10-10', 'venta', 1, 4.80, '2026-10-09T15:09:04.000Z', 0.65)];
+  const RH = D.emparejarFillsFIFO(FH, '2026-10-11');
+  igual(RH.viajes.map(v => [v.strike, v.sin_hora, v.duracion_min, v.fecha_ny]), [[387.5, false, 3, '2026-10-09'], [392.5, false, 12, '2026-10-09']], 'E*TRADE CON hora: sus viajes NO van sin_hora (3 min y 12 min, como los de cualquier bróker)');
+  assert(RH.cerradas.every(c => c.sin_hora === false), 'y ninguno de sus tramos tampoco');
+  const sinBr = (x) => JSON.parse(JSON.stringify(x, (k, v) => (k === 'broker' ? undefined : v)));
+  igual(sinBr(D.emparejarFillsFIFO(FH.map(f => ({ ...f, broker: 'tasty' })), '2026-10-11')), sinBr(RH), 'los MISMOS fills en tasty dan EXACTAMENTE lo mismo (salvo el bróker): E*TRADE con hora no es un caso aparte');
+  const FO = FILLS.filter(f => f.broker !== 'etrade');
+  const RO = D.emparejarFillsFIFO(FO, HOY);
+  assert(RO.cerradas.length > 0 && RO.cerradas.every(c => c.sin_hora === false) && RO.viajes.every(v => v.sin_hora === false), 'los fills con hora de los demás brókeres siguen sin sin_hora (nada cambia para ellos)');
+  igual(sinBr(D.emparejarFillsFIFO(FO.map(f => ({ ...f, broker: f.broker === 'tasty' ? 'etrade' : f.broker })), HOY)), sinBr(RO), 'y si los de tasty se etiquetan E*TRADE, la salida del Diario es idéntica');
+  // un fill de SCHWAB que llega como FECHA (00:00:00 UTC exacto) sí es sin hora
+  const RZ = D.emparejarFillsFIFO([F('schwab', 'z1', 'SPY', 'CALL', 660, '2026-10-16', 'compra', 1, 2.00, '2026-10-06T00:00:00.000Z'), F('schwab', 'z2', 'SPY', 'CALL', 660, '2026-10-16', 'venta', 1, 2.50, '2026-10-07T15:00:00.000Z')], '2026-10-11');
+  igual([RZ.viajes[0].sin_hora, RZ.cerradas[0].sin_hora], [true, true], 'un fill de Schwab a 00:00:00Z (FECHA sin hora) → sin_hora, sea del bróker que sea');
+  const RV = D.emparejarFillsFIFO([F('etrade', 'v1', 'AAPL', 'CALL', 260, '2026-10-03', 'compra', 1, 1.00, '2026-10-01T14:00:00.000Z'), F('etrade', 'v2', 'AAPL', 'CALL', 260, '2026-10-03', 'vencimiento', 1, 0, '2026-10-04T04:00:00.000Z')], '2026-10-11');
+  igual([RV.viajes[0].sin_hora, RV.viajes[0].vencido], [false, true], 'E*TRADE comprada CON hora y vencida (Option Expired): el vencimiento va a las 16:00 ET de la expiración, sin sin_hora');
   // día a día
   const dias = D.diaADia(R.cerradas, null, null, R.viajes);
   igual(dias.map(d => d.fecha_ny), ['2026-09-11', '2026-09-18', '2026-09-23', '2026-09-24'], 'día a día: una fila por día NY, en orden');
@@ -336,7 +354,7 @@ function sbGrabador(respuestas) {
   // ════════════════ 3. RENDER del Diario (HTML puro sobre los datos) ════════════════
   const V = construir(['seccionPeriodoDiario', 'tarjetasResumenDiario', 'seccionCoberturaDiario', 'seccionDiaADia', 'seccionResumenesDiario', 'seccionOperacionesDiario', 'seccionAbiertosDiario',
     'seccionEjecucionesDiario', 'seccionNotasDiario', 'selectorCuentas', 'textoDuracionOp', 'fechaHoraD', 'periodoDiarioNormalizar', 'lunesDe', 'viernesDe', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'tituloPeriodoDiario', 'diasEntre', 'claveFill',
-    'rangoPeriodoDiario', 'subtituloPeriodoDiario'],
+    'rangoPeriodoDiario', 'subtituloPeriodoDiario', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion'],   // v62 rev2: fechas y duración por instante
     { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, ymdNY, fmtFechaNY, durTxt, claveContrato, filaAccionDiario: () => '',   // v60: la fila de la acción se prueba en test_spot.js
       MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C'), BROKER_CORTO: constante('BROKER_CORTO'),
       dineroD: constante('dineroD'), dineroS: constante('dineroS'), pctD: constante('pctD'), pctD2: constante('pctD2'), colD: constante('colD'), nOps: constante('nOps') });
@@ -353,6 +371,16 @@ function sbGrabador(respuestas) {
   assert(/Sin ejecuciones de moomoo/.test(V.seccionEjecucionesDiario(FILLS, 'moomoo', false)), 'sin ejecuciones de ese bróker se dice, no queda una tabla vacía muda');
   const muchas = Array.from({ length: 130 }, (_, i) => ({ ...FILLS[0], clave_ext: 'm' + i, ejecutado_at: '2026-09-0' + (1 + (i % 9)) + 'T14:00:00Z' }));
   assert(/Ver las 10 restantes/.test(V.seccionEjecucionesDiario(muchas, 'todos', false)) && !/Ver las/.test(V.seccionEjecucionesDiario(muchas, 'todos', true)), 'más de 120: se ofrece ver las restantes (y con «todas» salen todas)');
+  // v62 rev2 · en pantalla: E*TRADE con hora lleva su hora; «(sin hora)» solo para un instante a 00:00 (de cualquier bróker)
+  const hEjH = V.seccionEjecucionesDiario(FH.concat([{ ...F('schwab', 'z1', 'SPY', 'CALL', 660, '2026-10-16', 'compra', 1, 2.00, '2026-10-06T00:00:00.000Z'), fecha_ny: '2026-10-06' }]), 'todos', true);   // fecha_ny como la escribe el libro (fechaNyTransaccion)
+  assert(!/9 oct[^<]*\(sin hora\)/.test(hEjH) && /09 oct,? 09:48|9 oct,? 09:48/.test(hEjH) && /6 oct \(sin hora\) · Schwab/.test(hEjH) && !/por ejecución y solo la fecha/.test(hEjH),
+    'ejecuciones: las de E*TRADE con hora muestran su hora (09:48) y no «(sin hora)»; la de Schwab a 00:00Z sí, con SU día (6 oct, no el 5)', (hEjH.match(/margin-top:2px"><span>[^<]*/g) || []).join(' | '));
+  igual([V.textoDuracionOp(RH.viajes[0]), V.textoDuracionOp(RH.viajes[1]), V.textoDuracionOp(RZ.viajes[0]), V.textoDuracionOp(R.viajes.find(v => v.symbol === 'SPY'))], ['3 min', '12 min', '1 d', '2 d'],
+    'duración: E*TRADE con hora en minutos; con un instante sin hora (Schwab 00:00Z o E*TRADE de fechas) en días');
+  igual([V.fechaHoraD('2026-10-09T13:48:25.000Z'), V.fechaHoraD('2026-10-06T00:00:00.000Z'), V.fechaHoraD('2026-09-22T04:00:00.000Z')], [esc(fmtFechaNY('2026-10-09T13:48:25.000Z', true)), '6 oct', '22 sep'],
+    'fechaHoraD por instante: con hora, fecha y hora; a 00:00 UTC o 00:00 NY, solo la fecha (y la del día que dice)');
+  const hOH = V.seccionOperacionesDiario(RH.viajes);
+  assert(/<span>duró<\/span><b>12 min<\/b>/.test(hOH) && /<span>duró<\/span><b>3 min<\/b>/.test(hOH) && (hOH.match(/09:48|10:57|11:09/g) || []).length >= 3, 'la tarjeta de un viaje de E*TRADE con hora: entrada y salida con su hora y la duración en minutos');
   const hD = V.seccionDiaADia(dias, ['etrade', 'schwab', 'tasty']);
   assert(/<th>E\*TRADE<\/th>/.test(hD) && /<th>Schwab<\/th>/.test(hD) && /<th>tasty<\/th>/.test(hD) && /Acum\./.test(hD) && /⚠1/.test(hD), 'día a día: una columna por bróker, el acumulado y el aviso de vencidos');
   // v53: cada fila del día a día es clicable (una fila = ese día solo) y el día elegido va marcado

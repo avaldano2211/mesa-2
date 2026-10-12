@@ -29,7 +29,7 @@ const HOY = '2026-10-03';
     igual([D.distanciaStrike('CALL', 372.5, null), D.distanciaStrike('CALL', null, 370.7), D.distanciaStrike('CALL', 372.5, 0), D.distanciaStrike('CALL', 'x', 370.7)], [null, null, null, null], 'sin spot, sin strike, spot 0 o basura → null (no se inventa una distancia)');
   }
   // ════════════════ 2. el contable: el spot viaja del fill al tramo y al viaje (ponderado, fuente PEOR) ════════════════
-  const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'claveContrato'],
+  const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY'],
     { hoyNY: () => HOY, ymdNY: C.ymdNY }, { consts: ['DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'] });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, spot, fuente) =>
     ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: 0, ejecutado_at: at, fecha_ny: C.ymdNY(at), spot, spot_fuente: fuente });
@@ -82,7 +82,7 @@ const HOY = '2026-10-03';
     assert(/<span>acción<\/span><b class="mono">\$370\.70 → \$371\.20 \(\+0\.13 %\)<\/b>/.test(h1), 'ambos spots: «$370.70 → $371.20 (+0.13 %)» → ' + h1);
     assert(/<span>contrato vs acción<\/span><b class="mono">\+16\.3 % con la acción \+0\.13 %<\/b>/.test(h1), 'contrato vs acción: los DOS porcentajes, sin inventar un multiplicador');
     assert(/<span>strike al entrar<\/span><b class="mono">372\.5: \+\$1\.80 \(\+0\.49 %\) fuera del dinero<\/b>/.test(h1), 'strike al entrar: «372.5: +$1.80 (+0.49 %) fuera del dinero»');
-    assert(!/15 min|cierre del día|a mano|inicio del día/.test(h1), 'con fuente m1 y la hora del fill (sin_hora falso) no hay sufijo: es el instante');
+    assert(!/15 min|cierre del día|a mano|sin hora|no dio la hora/.test(h1), 'con fuente m1 y la hora del fill (sin_hora falso) no hay sufijo: es el instante');
     const hPlana = V.filaAccionDiario({ ...base, spot_entrada: 370.7, spot_salida: 370.75, spot_fuente: 'm1' });
     assert(/\+16\.3 % · acción plana/.test(hPlana) && /\$370\.70 → \$370\.75 \(\+0\.01 %\)/.test(hPlana), 'con la acción movida menos del 0,05 %: «acción plana» (nada de multiplicadores con un denominador casi cero)');
     const hE = V.filaAccionDiario({ ...base, spot_entrada: 370.7, spot_salida: null, spot_fuente: 'm1' });
@@ -104,24 +104,26 @@ const HOY = '2026-10-03';
     assert(/\$431\.20 → \$437\.90/.test(V.filaAccionDiario({ ...base, vencido: true, vencido_total: false, lado_salida: 'venta', spot_entrada: 431.2, spot_salida: 437.9, spot_fuente: 'm1' })), 'y en cuanto el worker completa el spot de la venta, sale el precio');
     const hTP = V.seccionOperacionesDiario([{ ...base, vencido: true, vencido_total: false, lado_salida: 'venta', spot_entrada: 431.2, spot_salida: null, spot_fuente: 'm1' }]);
     assert(/<span>salida<\/span><b><span style="color:var\(--oro\)">venció en parte<\/span><\/b>/.test(hTP) && /venció en parte · sin dato/.test(hTP), 'la tarjeta entera: la fila «salida» y la fila «acción» dicen lo mismo (en parte)');
-    // rev60: un viaje de E*TRADE (sin_hora: ejecutado_at a las 00:00Z) con fuente m1/m15 → el spot es el inicio del día, no el fill, y se dice
-    const AV = 'E\\*TRADE no da la hora: precio del inicio del día, no del fill';
+    // rev60 / v62 rev2: un viaje SIN HORA (sin_hora: un instante a 00:00, de cualquier bróker) con fuente m1/m15 → el spot no es el del fill
+    // (el worker guarda la vela DIARIA: el cierre del día), y se dice sin nombrar a ningún bróker
+    const AV = 'el bróker no dio la hora: precio de cierre del día, no del fill';
     const baseT = { ...base, broker: 'etrade', symbol: 'TSLA', strike: 440, sin_hora: true, spot_entrada: 431.2, spot_salida: 437.9 };
     const hH = V.filaAccionDiario({ ...baseT, spot_fuente: 'm1' });
-    assert(new RegExp('<span>acción</span><b class="mono">\\$431\\.20 → \\$437\\.90 \\(\\+1\\.55 %\\) <span class="fresco">\\(' + AV + '\\)</span></b>').test(hH), 'E*TRADE sin hora + m1: la fila «acción» lleva el aviso «E*TRADE no da la hora: precio del inicio del día, no del fill» → ' + hH);
-    assert(/\+16\.3 % con la acción \+1\.55 % <span class="fresco">\(inicio del día\)<\/span><\/b>/.test(hH), 'y «contrato vs acción» recuerda «(inicio del día)»');
-    assert(/440: \+\$8\.80 \(\+2\.04 %\) fuera del dinero <span class="fresco">\(inicio del día\)<\/span><\/b>/.test(hH), 'y «strike al entrar» también');
+    assert(new RegExp('<span>acción</span><b class="mono">\\$431\\.20 → \\$437\\.90 \\(\\+1\\.55 %\\) <span class="fresco">\\(' + AV + '\\)</span></b>').test(hH), 'sin hora + m1: la fila «acción» lleva el aviso «el bróker no dio la hora: precio de cierre del día, no del fill» → ' + hH);
+    assert(/\+16\.3 % con la acción \+1\.55 % <span class="fresco">\(sin hora: cierre del día\)<\/span><\/b>/.test(hH), 'y «contrato vs acción» recuerda «(sin hora: cierre del día)»');
+    assert(/440: \+\$8\.80 \(\+2\.04 %\) fuera del dinero <span class="fresco">\(sin hora: cierre del día\)<\/span><\/b>/.test(hH), 'y «strike al entrar» también');
+    assert(!/E\*TRADE/.test(hH), 'el aviso no nombra a E*TRADE (la regla es por instante, no por bróker)');
     assert(new RegExp(AV).test(V.filaAccionDiario({ ...baseT, spot_fuente: 'm15' })) && !/\(15 min\)/.test(V.filaAccionDiario({ ...baseT, spot_fuente: 'm15' })), 'con m15 el aviso manda sobre «(15 min)» (la vela de 15 min tampoco es la del fill)');
     assert(new RegExp(AV).test(V.filaAccionDiario({ ...baseT, spot_fuente: null })), 'con el spot y sin fuente conocida, el aviso igual (lo conservador)');
     const hHD = V.filaAccionDiario({ ...baseT, spot_fuente: 'dia' });
-    assert(/\(cierre del día\)/.test(hHD) && !/inicio del día|no da la hora/.test(hHD), 'con fuente «dia» el sufijo de siempre ya dice lo que es: «(cierre del día)», sin el aviso');
+    assert(/\(cierre del día\)/.test(hHD) && !/sin hora|no dio la hora/.test(hHD), 'con fuente «dia» el sufijo de siempre ya dice lo que es: «(cierre del día)», sin el aviso');
     const hHM = V.filaAccionDiario({ ...baseT, spot_fuente: 'manual' });
-    assert(/\(a mano\)/.test(hHM) && !/inicio del día|no da la hora/.test(hHM), 'con fuente «manual», «(a mano)» y sin el aviso');
-    assert(/acción plana <span class="fresco">\(inicio del día\)<\/span>/.test(V.filaAccionDiario({ ...baseT, spot_salida: 431.3, spot_fuente: 'm1' })), '«acción plana» también lleva el recordatorio');
+    assert(/\(a mano\)/.test(hHM) && !/sin hora|no dio la hora/.test(hHM), 'con fuente «manual», «(a mano)» y sin el aviso');
+    assert(/acción plana <span class="fresco">\(sin hora: cierre del día\)<\/span>/.test(V.filaAccionDiario({ ...baseT, spot_salida: 431.3, spot_fuente: 'm1' })), '«acción plana» también lleva el recordatorio');
     const hH0 = V.filaAccionDiario({ ...baseT, spot_entrada: null, spot_salida: null, spot_fuente: null });
-    assert(/sin dato aún \(el worker lo completa\)/.test(hH0) && !/inicio del día|no da la hora/.test(hH0), 'sin ningún spot no hay nada que avisar');
+    assert(/sin dato aún \(el worker lo completa\)/.test(hH0) && !/sin hora|no dio la hora/.test(hH0), 'sin ningún spot no hay nada que avisar');
     const hHE = V.filaAccionDiario({ ...baseT, spot_salida: null, spot_fuente: 'm1' });
-    assert(new RegExp('\\$431\\.20 → sin dato <span class="fresco">\\(' + AV + '\\)').test(hHE) && /acción: sin dato<\/span><\/b>/.test(hHE) && /fuera del dinero <span class="fresco">\(inicio del día\)/.test(hHE), 'solo entrada sin hora: el aviso en «acción» y en «strike al entrar»; «contrato vs acción» sigue sin comparar');
+    assert(new RegExp('\\$431\\.20 → sin dato <span class="fresco">\\(' + AV + '\\)').test(hHE) && /acción: sin dato<\/span><\/b>/.test(hHE) && /fuera del dinero <span class="fresco">\(sin hora: cierre del día\)/.test(hHE), 'solo entrada sin hora: el aviso en «acción» y en «strike al entrar»; «contrato vs acción» sigue sin comparar');
     // la tarjeta entera: las dos filas de siempre y la tercera detrás, en ese orden
     const hT = V.seccionOperacionesDiario([{ ...base, spot_entrada: 370.7, spot_salida: 371.2, spot_fuente: 'm1' }]);
     const iEnt = hT.indexOf('<span>entrada</span>'), iCos = hT.indexOf('<span>costó</span>'), iAcc = hT.indexOf('<span>acción</span>');

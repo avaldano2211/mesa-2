@@ -224,6 +224,7 @@
      tipografía sube un escalón. En el iPhone nada cambia. La hoja del gráfico (#modalChart) también crece. */
   @media (min-width:900px){
     #app.ancho.tk{max-width:1560px}
+    #app.ancho.cta{max-width:1560px}   /* v62 rev2: Cuentas también usa el ancho grande (a 1400 px las 15 columnas, sin desplazar de lado) */
     #app.tk main.vista{display:grid;grid-template-columns:repeat(auto-fit,minmax(600px,1fr));gap:14px;align-content:start;padding:8px 24px 96px}
     #app.tk main.vista>#chartSel{grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap}
     #app.tk main.vista>#chartSel .periodos{flex:1 1 340px;margin:0}
@@ -263,10 +264,12 @@
   }
   /* v62: la vista «Cuentas» con todo el detalle (Andrés 2026-10-11: «dame más detalles y completa la pantalla en la
      computadora»). En el teléfono: tiles a 2 columnas (.dcards), «por activo» y «por bróker» apilados y el historial en
-     tarjetas con el desglose plegable. En la computadora (≥ 900 px, #app.ancho.cta hasta 1180 px): brókeres en rejilla,
+     tarjetas con el desglose plegable. En la computadora (≥ 900 px, #app.ancho.cta hasta 1560 px, v62 rev2): brókeres en rejilla,
      los tiles en una fila, las dos tablas lado a lado y el historial como TABLA en su propio panel de casi toda la altura
      de la ventana: el encabezado queda fijo al desplazar (sticky dentro del panel) y, si la ventana es estrecha (900 a
-     ~1200 px), la tabla se desplaza de lado dentro del panel en vez de salirse de la tarjeta. */
+     ~1200 px), la tabla se desplaza de lado dentro del panel en vez de salirse de la tarjeta (nunca la página).
+     v62 rev2: en la tabla, Acción / Strike vs acción / Señal / P&L van en CORTO (una línea .c1 sin partir y, debajo, las
+     etiquetas cortas en .csub); el texto largo de la tarjeta queda en el title de la celda. */
   .ctav{display:flex;flex-direction:column;gap:11px}
   .ctabrk,.ctados{display:grid;grid-template-columns:1fr;gap:11px}
   .ctalista{display:flex;flex-direction:column;gap:11px}   /* v62 rev: las tarjetas en su lista, para que «ver más» las AÑADA */
@@ -286,15 +289,16 @@
   .ctramo .ctspot{grid-column:1/-1;font-size:10.5px;color:var(--tx3);margin-top:-3px}   /* v62 rev: la acción de ESA ida y vuelta */
   .ctabla{padding:0 8px 8px;overflow:auto;max-height:calc(100dvh - 110px);overscroll-behavior-x:contain}
   .ctbl{width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px}
-  .ctbl th{position:sticky;top:0;z-index:2;background:var(--card);font-size:9.5px;font-weight:700;letter-spacing:.05em;color:var(--tx3);text-transform:uppercase;text-align:right;padding:8px 5px 6px;border-bottom:1px solid var(--line);vertical-align:bottom}
+  .ctbl th{position:sticky;top:0;z-index:2;background:var(--card);font-size:9.5px;font-weight:700;letter-spacing:.05em;color:var(--tx3);text-transform:uppercase;text-align:right;padding:8px 4px 6px;border-bottom:1px solid var(--line);vertical-align:bottom}
   .ctbl th.l{text-align:left}
   .ctbl th small{display:block;font-size:8.5px;font-weight:600;letter-spacing:.02em;text-transform:none;margin-top:1px}
-  .ctbl td{padding:7px 5px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);white-space:nowrap;vertical-align:top}
+  .ctbl td{padding:7px 4px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);white-space:nowrap;vertical-align:top}
   .ctbl td:nth-child(-n+3){text-align:left}
-  .ctbl td.ctxt{white-space:normal;text-align:left;font-family:var(--sans);min-width:100px}
-  .ctbl td.ctxt:nth-child(13){min-width:170px}   /* Acción: «$667.33 → $669.34 (+0.30 %) (15 min)» en dos líneas, no en cuatro */
-  .ctbl td.ctxt:nth-child(14){min-width:130px}
+  .ctbl td.ctxt{white-space:normal;text-align:left;font-family:var(--sans);min-width:92px}
+  .ctbl td.ctxt .c1{display:block;white-space:nowrap;font-variant-numeric:tabular-nums}   /* «$387.31 → $385.42 (-0.49 %)» · «392.5 · +$5.08 (+1.31 %) fuera» en UNA línea */
+  .ctbl td.ctxt.csen{white-space:nowrap;min-width:0;font-family:var(--mono)}       /* «E5 · 9:31» o «—» */
   .ctbl .csub{display:block;font-size:10px;color:var(--tx3);margin-top:2px;line-height:1.3;white-space:normal}
+  .ctbl td:not(.ctxt) .csub{white-space:nowrap}                                     /* «bruto $X» / «sin comisión» en una sola línea */
   .ctbl tr.cdet td{padding:0 8px 8px;text-align:left;font-family:var(--sans);white-space:normal}
   .ctbl tr.crow:has(+ tr.cdet) td{border-bottom:none}
   .ctbl tr.crow:hover td{background:rgba(231,181,77,.06)}

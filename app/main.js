@@ -4387,9 +4387,10 @@ const CTA_COLS = [['Fecha', '', 1], ['Contrato', 'exp · DTE', 1], ['Bróker', '
 // raw.fees «no disponibles» y Schwab tampoco la manda: su resultado_usd es BRUTO.
 const BROKERS_CON_COMISION = ['etrade', 'tasty'];
 
-// ¿El instante es una FECHA sin hora? E*TRADE manda transactionDate a medianoche ET (o, raro, a medianoche UTC exacta:
-// fechaNyTransaccion). Las opciones no se negocian a esas horas: un 00:00 es «no sé la hora», no un fill de madrugada,
-// y se pinta solo la fecha (como el Diario con sus viajes sin_hora). PURA.
+// ¿El instante es una FECHA sin hora? Exactamente 00:00:00 UTC o 00:00 NY (la regla del worker 0.1.9b). Las opciones no
+// se negocian a esas horas: un 00:00 es «no sé la hora», no un fill de madrugada, y se pinta solo la fecha. v62 rev2: es
+// la ÚNICA regla de «sin hora» en la app (Diario y Cuentas), POR INSTANTE y nunca por bróker: los fills y las filas de
+// E*TRADE traen hora (2026-10-09T13:32:15Z) y se tratan como las de cualquier otro. PURA.
 function sinHoraIso(iso) {
   const ms = Date.parse(iso || '');
   if (!Number.isFinite(ms)) return false;
@@ -4397,7 +4398,7 @@ function sinHoraIso(iso) {
   if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0) return true;
   return horaNY(ms) === '00:00';
 }
-// v62 rev · El DÍA NY de un instante de Cuentas. Una FECHA de E*TRADE a medianoche UTC exacta (sinHoraIso) es, para
+// v62 rev · El DÍA NY de un instante de Cuentas. Una FECHA a medianoche UTC exacta (sinHoraIso) es, para
 // ymdNY, las 20:00 ET del día ANTERIOR: la entrada salía un día antes, el DTE con uno de más, la acción «sin dato» aunque
 // los fills ya tuvieran spot y la señal era la del día anterior. Se resuelve como el libro de fills
 // (fechaNyTransaccion: la fecha UTC tal cual); con hora real, ymdNY. unirOperaciones no cambia (Disciplina y el Copiloto
@@ -4461,13 +4462,14 @@ function indiceCuentas(fills, senales) {
 // -1.16 % cuando subió +4.65 %, con el signo cambiado), los tramos cobrados de una abierta, un lote del mismo día que
 // sigue abierto, un E*TRADE de lunes a miércoles con otro viaje el martes. Ahora cada fill se ANCLA a las idas y vueltas
 // del PROPIO grupo (partesOpCuentas): una COMPRA cuenta si cae a ±2 min de la apertura de un tramo; una VENTA, a ±2 min
-// de su cierre; de varios tramos a tiro, el más cercano (empate: todos). Un fill de E*TRADE no trae hora (FECHA a
-// medianoche): se ancla por DÍA (compra el día de apertura de un tramo, venta el día de su cierre) y el resultado lleva
-// sin_hora. ENTRADA / SALIDA = media ponderada por contratos de los fills anclados (cada fill una vez); la fuente es la
+// de su cierre; de varios tramos a tiro, el más cercano (empate: todos). v62 rev2: un fill SIN HORA (una FECHA a 00:00,
+// sinHoraIso, de cualquier bróker) —o un tramo cuya apertura/cierre no trae hora— se ancla por DÍA (compra el día de
+// apertura de un tramo, venta el día de su cierre) y, si es el FILL el que no trae hora, el resultado lleva sin_hora. Un
+// fill de E*TRADE CON hora se ancla a ±2 min como los demás. ENTRADA / SALIDA = media ponderada por contratos de los fills anclados (cada fill una vez); la fuente es la
 // PEOR (m1 < m15 < dia < manual): un dato aproximado jamás se vende como exacto. Por tramo, su entrada, su salida y su
 // movimiento; `mov` = media ponderada por contratos de los movimientos de cada tramo, NO la diferencia de las medias (dos
-// viajes, uno al alza y otro a la baja, no son una «acción plana»). Un tramo de E*TRADE abierto y cerrado el mismo día
-// no tiene movimiento medible: sus dos patas llevan el mismo precio del día. `n_fills` = los fills que casan aunque aún
+// viajes, uno al alza y otro a la baja, no son una «acción plana»). Un tramo con fills SIN HORA abierto y cerrado el mismo
+// día no tiene movimiento medible: sus dos patas llevan el mismo precio del día. `n_fills` = los fills que casan aunque aún
 // no tengan spot (con 0 no hay nada que el worker pueda completar). Una ficha A MANO (sin filas del bróker) cuya hora no
 // casa con ningún fill usa de respaldo la ventana de antes y va con por_ventana para decirlo. PURA.
 //   → { entrada, salida, fuente_entrada, fuente_salida, sin_hora, mov, n_mov, n_fills, por_ventana,
@@ -4480,13 +4482,16 @@ function spotDeOperacion(op, fills) {
   if (!k) return nada;
   const br = op.broker || 'etrade';     // como claveCartera: una ficha a mano sin bróker es de E*TRADE
   const ms = (iso) => { const n = Date.parse(iso || ''); return Number.isFinite(n) ? n : null; };
-  const anclas = partes.map(t => ({ a: ms(t.abierta_at), c: ms(t.cerrada_at), dA: diaAperturaOp(t), dC: t.cerrada_at ? diaOpNY(t.cerrada_at) : '' }));
-  // Los tramos a los que se ancla un fill: los más cercanos dentro del margen (sin hora: los del mismo día).
+  const anclas = partes.map(t => ({ a: ms(t.abierta_at), c: ms(t.cerrada_at), dA: diaAperturaOp(t), dC: t.cerrada_at ? diaOpNY(t.cerrada_at) : '',
+    shA: sinHoraIso(t.abierta_at), shC: sinHoraIso(t.cerrada_at) }));
+  // Los tramos a los que se ancla un fill: los más cercanos dentro del margen (sin hora —el fill o el instante del tramo—:
+  // los del mismo día).
   const tramosDe = (lado, sh, tf, fd) => {
     let mejor = Infinity, ids = [];
     anclas.forEach((x, i) => {
       const dia = lado === 'compra' ? x.dA : x.dC, ref = lado === 'compra' ? x.a : x.c;
-      const dist = sh ? (dia && fd === dia ? 0 : Infinity) : (ref == null || tf == null ? Infinity : Math.abs(tf - ref));
+      const porDia = sh || (lado === 'compra' ? x.shA : x.shC);
+      const dist = porDia ? (dia && fd === dia ? 0 : Infinity) : (ref == null || tf == null ? Infinity : Math.abs(tf - ref));
       if (dist > CTA_MARGEN_MS) return;
       if (dist < mejor) { mejor = dist; ids = [i]; } else if (dist === mejor) ids.push(i);
     });
@@ -4506,7 +4511,7 @@ function spotDeOperacion(op, fills) {
   for (const f of (Array.isArray(fills) ? fills : [])) {
     if (!f || f.broker !== br || claveContrato(f) !== k) continue;
     if (f.lado !== 'compra' && f.lado !== 'venta') continue;     // solo compras y ventas llevan spot
-    const sh = f.broker === 'etrade';
+    const sh = sinHoraIso(f.ejecutado_at);                       // v62 rev2: por INSTANTE, nunca por bróker
     const fd = String(f.fecha_ny || '').slice(0, 10) || diaOpNY(f.ejecutado_at);
     const tf = ms(f.ejecutado_at);
     const s = spotDeFill(f), c = Number(f.contratos);
@@ -4529,7 +4534,7 @@ function spotDeOperacion(op, fills) {
   const pesos = [];
   const res = partes.map((t, i) => {
     const P = porTramo[i], e = pond(P.compra), s = pond(P.venta), sh = P.compra.concat(P.venta).some(x => x.sh);
-    const mismoDia = sh && !!anclas[i].dA && anclas[i].dA === anclas[i].dC;   // E*TRADE del mismo día: no medible
+    const mismoDia = sh && !!anclas[i].dA && anclas[i].dA === anclas[i].dC;   // fills sin hora del mismo día: no medible
     const mov = (e != null && s != null && !mismoDia) ? Math.round((s - e) / e * 100 * 10000) / 10000 : null;
     if (mov != null) pesos.push([mov, Number(t.contratos) > 0 ? Number(t.contratos) : 1]);
     return { entrada: e, salida: s, fuente_entrada: peor(P.compra), fuente_salida: peor(P.venta), sin_hora: sh, mov };
@@ -4544,9 +4549,9 @@ function spotDeOperacion(op, fills) {
 // A3 · La señal que HABÍA antes de entrar: del MISMO símbolo, del MISMO día NY de apertura, creada antes de la entrada
 // (creado_at ≤ abierta_at) y, si la señal trae dirección, la MISMA que la operación; de varias, la más reciente antes
 // de entrar. Es un HECHO («había señal E5 a las 09:31»), no la causa de la entrada, y la vista lo dice así. Si la
-// entrada no trae hora (E*TRADE a medianoche: sinHoraIso) «antes de entrar» no se puede comprobar: vale la más reciente
-// de ese día y va con sin_hora para decirlo. v62 rev: el día de apertura es el de diaAperturaOp (una fecha de E*TRADE a
-// medianoche UTC era, para ymdNY, el día anterior y se elegía la señal de OTRO día). PURA.
+// entrada no trae hora (una FECHA a 00:00: sinHoraIso, de cualquier bróker) «antes de entrar» no se puede comprobar: vale
+// la más reciente de ese día y va con sin_hora para decirlo. v62 rev: el día de apertura es el de diaAperturaOp (una
+// fecha a medianoche UTC era, para ymdNY, el día anterior y se elegía la señal de OTRO día). PURA.
 //   → { estrategia_id, hora (HH:MM NY), direccion, sin_hora } | null
 function senalDeOperacion(op, senales) {
   if (!op || !op.symbol || !op.abierta_at) return null;
@@ -4569,7 +4574,7 @@ function senalDeOperacion(op, senales) {
 }
 // A3 · Días naturales del día de apertura a la expiración (0 = 0DTE). null si falta un dato o no cuadra: una
 // expiración anterior a la entrada no es un DTE y no se inventa. v62 rev: el día de apertura de diaAperturaOp (una fecha
-// de E*TRADE a medianoche UTC daba un DTE de más). PURA.
+// a medianoche UTC daba un DTE de más). PURA.
 function dteEntrada(op) {
   if (!op) return null;
   const d = diasEntre(diaAperturaOp(op), op.expiracion);
@@ -4656,14 +4661,14 @@ function detalleOpCuentas(p, ctx) {
   const neto = num(p.resultado_usd) != null ? num(p.resultado_usd) : (venta != null && costo != null ? r2(venta - costo) : null);
   const fees = num(p.fees);
   const com = fees != null && fees > 0 ? r2(fees) : null;       // Schwab y moomoo mandan 0: no hay comisión que enseñar
-  // v62 rev: el día de apertura y el de cierre con diaOpNY (una FECHA de E*TRADE a medianoche UTC no es el día anterior)
+  // v62 rev: el día de apertura y el de cierre con diaOpNY (una FECHA a medianoche UTC no es el día anterior)
   const dia = diaAperturaOp(p), diaC = p.cerrada_at ? diaOpNY(p.cerrada_at) : '';
   const ix = ctx.idx || null;
   const fillsOp = ix ? (ix.fills.get(`${p.broker || 'etrade'}|${claveContrato(p)}`) || []) : ctx.fills;
   const senDia = ix ? (ix.senales.get(`${String(p.symbol || '').toUpperCase()}|${dia}`) || []) : ctx.senales;
   const senal = ctx.errSen ? null : senalDeOperacion(p, senDia);
   // Sin señal ANTES de entrar, ¿la hubo DESPUÉS ese día? «sin señal ese día» sería falso: se dice cuál y que fue después.
-  // Sin hora (E*TRADE) senalDeOperacion ya mira el día entero. v62 rev: y si no la hubo en su dirección pero sí en la
+  // Sin hora (una FECHA a 00:00) senalDeOperacion ya mira el día entero. v62 rev: y si no la hubo en su dirección pero sí en la
   // CONTRARIA, también se dice («sin señal CALL ese día (hubo E1 PUT a las 09:40)»).
   const tA = Date.parse(p.abierta_at || ''), sinHora = sinHoraIso(p.abierta_at);
   const todoElDia = (dir) => (!ctx.errSen && dia && Number.isFinite(tA))
@@ -4685,7 +4690,7 @@ function detalleOpCuentas(p, ctx) {
     spot: ctx.errFills ? null : spotDeOperacion(p, fillsOp), senal, senalDespues: despues, senalOtra: otra,
     errFills: !!ctx.errFills, errSen: !!ctx.errSen, tramos };
 }
-// «10:57» si es el mismo día NY que diaRef, «13 oct 10:57» si no; sin hora (E*TRADE), solo la fecha. PURA.
+// «10:57» si es el mismo día NY que diaRef, «13 oct 10:57» si no; sin hora (sinHoraIso, de cualquier bróker), solo la fecha. PURA.
 function horaOpCuentas(iso, diaRef) {
   if (!iso) return '—';
   const dia = diaOpNY(iso);
@@ -4699,7 +4704,7 @@ function contratoOpCuentas(p, d) {
     sub: (p.expiracion ? `exp ${esc(fechaCorta(p.expiracion))}` : 'exp sin dato') + dte };
 }
 // Entrada: «6 oct 10:57 · $2.10» en la tarjeta; en la tabla la hora y debajo la prima (la fecha va en su columna, y en
-// dos líneas la tabla de 15 columnas cabe en el ancho de la computadora). Sin hora (E*TRADE): solo la fecha / «sin hora».
+// dos líneas la tabla de 15 columnas cabe en el ancho de la computadora). Sin hora (sinHoraIso): solo la fecha / «sin hora».
 function entradaOpCuentas(p, d, enTabla) {
   const prima = d.pe != null ? `$${d.pe.toFixed(2)}` : '';
   const hora = d.sinHora ? (enTabla ? '<span class="fresco">sin hora</span>' : '') : esc(p.abierta_at ? horaNY(Date.parse(p.abierta_at)) : '—');
@@ -4707,8 +4712,9 @@ function entradaOpCuentas(p, d, enTabla) {
   return `${esc(fechaCorta(d.dia))}${hora ? ' ' + hora : ''}${prima ? ' · ' + prima : ''}`;
 }
 // v62 rev: una expirada dice «expiró» y, si es la pérdida PRESUNTA de Schwab (no emite nada al vencer), «(presunto)».
+// v62 rev2: en la tabla, «presunto» debajo, en pequeño (en una línea ensanchaba la columna).
 function salidaOpCuentas(p, d, enTabla) {
-  if (d.expirada) return `<span style="color:var(--oro)">expiró</span>${d.presunta ? ' <span class="fresco">(presunto)</span>' : ''}`;
+  if (d.expirada) return `<span style="color:var(--oro)">expiró</span>${d.presunta ? (enTabla ? '<span class="csub">presunto</span>' : ' <span class="fresco">(presunto)</span>') : ''}`;
   const h = esc(horaOpCuentas(p.cerrada_at, d.dia)), prima = d.ps != null ? `$${d.ps.toFixed(2)}` : '';
   if (enTabla) return `${h}${prima ? `<span class="csub">${prima}</span>` : ''}`;
   return `${h}${prima ? ' · ' + prima : ''}`;
@@ -4723,16 +4729,30 @@ function duracionOpCuentas(p, d) {
   if (d.sinHora || sinHoraIso(p.cerrada_at)) { const n = diasEntre(d.dia, diaOpNY(p.cerrada_at)); return n == null ? '—' : n === 0 ? 'mismo día' : `${n} d`; }
   return durTxt(p.abierta_at, p.cerrada_at);
 }
+// v62 rev2 · La duración en la TABLA: la de una expirada en dos líneas («mismo día» / «3 d» y debajo «venció» / «hasta
+// vencer»): «venció el mismo día» en una sola ensanchaba la columna. El texto entero va en el title de la celda. PURA.
+function duracionTablaCuentas(p, d) {
+  const t = duracionOpCuentas(p, d);
+  const m = d.expirada ? /^(?:venció el (mismo día)|(\d+ d) hasta vencer)$/.exec(t) : null;
+  if (!m) return `<td>${esc(t)}</td>`;
+  return `<td title="${esc(t)}">${m[1] || m[2]}<span class="csub">${m[1] ? 'venció' : 'hasta vencer'}</span></td>`;
+}
 // B · La ACCIÓN detrás del contrato, con los textos del Diario (filaAccionDiario): entrada → salida y su %, «contrato vs
 // acción» (los dos porcentajes; con la acción quieta —menos del 0,05 %— solo «acción plana») y el strike frente a la
-// acción al entrar. La fuente siempre a la vista (sufijo «(15 min)» / «(cierre del día)»; con fills de E*TRADE, «inicio
-// del día»), también en el strike. Sin spot: «sin dato aún (el worker lo completa)» si hay fills que completar, «sin
+// acción al entrar. La fuente siempre a la vista (sufijo «(15 min)» / «(cierre del día)»; con fills SIN HORA etiquetados
+// m1/m15, «sin hora: cierre del día»), también en el strike. Sin spot: «sin dato aún (el worker lo completa)» si hay fills que completar, «sin
 // fills en el libro para esta operación» si no los hay; con la lectura del libro caída, «acción: sin dato».
 // v62 rev: el % de la acción es la media de los movimientos de cada ida y vuelta (spotDeOperacion.mov), y con varias se
-// dice que es una media; E*TRADE del mismo día no tiene movimiento medible (las dos patas, el mismo precio del día). PURA.
+// dice que es una media; fills sin hora del mismo día no tienen movimiento medible (las dos patas, el mismo precio del
+// día). v62 rev2: «sin hora» por instante (spotDeOperacion.sin_hora), nunca por bróker. Y `corta`: lo mismo en CORTO
+// para la tabla de la computadora (filaHistorialCuentas): una línea con la acción entrada → salida (%) y sus etiquetas
+// cortas aparte («15 min», «cierre del día», «sin hora», «media de 2»…); el strike en una línea («392.5 · +$5.08
+// (+1.31 %) fuera») con su fuente corta. Los textos largos de arriba van al title de la celda. PURA.
+//   → { accion, vs, strike, mov, corta: { linea, etq: [..], strike, strikeEtq: [..] } }
 function accionOpCuentas(p, d) {
   const vsSin = `${pctEsp(d.pct, 1)} · <span class="fresco">acción: sin dato</span>`;
-  if (d.errFills) return { accion: '<span class="fresco">sin dato (no se pudo leer el libro de fills)</span>', vs: vsSin, strike: '<span class="fresco">sin dato</span>', mov: null };
+  if (d.errFills) return { accion: '<span class="fresco">sin dato (no se pudo leer el libro de fills)</span>', vs: vsSin, strike: '<span class="fresco">sin dato</span>', mov: null,
+    corta: { linea: '<span class="fresco">sin dato</span>', etq: [], strike: '<span class="fresco">sin dato</span>', strikeEtq: [] } };
   const sp = d.spot || {};
   const e = Number(sp.entrada) > 0 ? Number(sp.entrada) : null, s = Number(sp.salida) > 0 ? Number(sp.salida) : null;
   const intradia = !!sp.sin_hora && !!d.dia && d.dia === d.diaC;
@@ -4743,7 +4763,7 @@ function accionOpCuentas(p, d) {
   const fr = (t) => t ? ` <span class="fresco">(${esc(t)})</span>` : '';
   const fuente = fr(fuenteTxt);
   const aprox = sinHora ? fr(SIN_HORA_CORTO) : '';
-  // el strike es AL ENTRAR: el sufijo de la fuente de la ENTRADA (cierre del día, 15 min, inicio del día…)
+  // el strike es AL ENTRAR: el sufijo de la fuente de la ENTRADA (cierre del día, 15 min, sin hora…)
   const fteE = sp.fuente_entrada;
   const sufStrike = fr((sp.sin_hora && !['dia', 'manual'].includes(fteE)) ? SIN_HORA_CORTO : FUENTE_SPOT_TXT[fteE]);
   const N = d.tramos ? d.tramos.filas.length : 0, que = d.tramos && d.tramos.tipo === 'viajes' ? 'idas y vueltas' : 'tramos';
@@ -4755,13 +4775,33 @@ function accionOpCuentas(p, d) {
   const vacio = Number(sp.n_fills) > 0 ? 'sin dato aún (el worker lo completa)' : 'sin fills en el libro para esta operación';
   const accion = (e == null && s == null) ? `<span class="fresco">${vacio}</span>`
     : `${e != null ? dineroD(e) : 'sin dato'} → ${salida}${mov != null ? ` (${pctEsp(mov, 2)})` : ''}${fuente}${media}${ventana}`;
-  const vs = (intradia && (e != null || s != null)) ? `${pctEsp(d.pct, 1)} · <span class="fresco">movimiento intradía no medible (E*TRADE no da la hora)</span>`
+  const vs = (intradia && (e != null || s != null)) ? `${pctEsp(d.pct, 1)} · <span class="fresco">movimiento intradía no medible (el bróker no dio la hora)</span>`
     : mov == null ? vsSin
     : Math.abs(mov) < 0.05 ? `${pctEsp(d.pct, 1)} · acción plana${aprox}${mediaVs}${ventana}` : `${pctEsp(d.pct, 1)} con la acción ${pctEsp(mov, 2)}${aprox}${mediaVs}${ventana}`;
   const ds = distanciaStrike(p.direccion, p.strike, e);
   const strike = ds ? `${esc(p.strike)}: ${usdSigno(ds.usd)} (${pctEsp(ds.pct, 2)}) ${LADO_DINERO[ds.lado]}${sufStrike}${d.tramos && d.tramos.tipo === 'viajes' ? media : ''}${ventana}`
     : '<span class="fresco">sin dato</span>';
-  return { accion, vs, strike, mov };
+  // v62 rev2 · la versión corta (tabla): las mismas cifras, las etiquetas en una lista corta
+  const etq = [];
+  if (e != null || s != null) {
+    if (sinHora) etq.push('sin hora'); else if (FUENTE_SPOT_TXT[fte]) etq.push(FUENTE_SPOT_TXT[fte]);
+    if (intradia) etq.push('intradía no medible');
+    else if (mov != null && Math.abs(mov) < 0.05) etq.push('acción plana');
+    if (N) etq.push((nMov > 0 && nMov < N) ? `media de ${nMov} de ${N}` : `media de ${N}`);
+    if (sp.por_ventana) etq.push('aprox.');
+  }
+  const linea = (e == null && s == null) ? `<span class="fresco">${Number(sp.n_fills) > 0 ? 'sin dato aún' : 'sin fills'}</span>`
+    : `${e != null ? dineroD(e) : 'sin dato'} → ${salida}${mov != null ? ` (${pctEsp(mov, 2)})` : ''}`;
+  const strikeEtq = [];
+  if (ds) {
+    const sufE = (sp.sin_hora && !['dia', 'manual'].includes(fteE)) ? 'sin hora' : FUENTE_SPOT_TXT[fteE];
+    if (sufE) strikeEtq.push(sufE);
+    if (d.tramos && d.tramos.tipo === 'viajes') strikeEtq.push(`media de ${N}`);
+    if (sp.por_ventana) strikeEtq.push('aprox.');
+  }
+  const ladoCorto = { fuera: 'fuera', dentro: 'dentro', en: 'en el dinero' };
+  const strikeC = ds ? `${esc(p.strike)} · ${usdSigno(ds.usd)} (${pctEsp(ds.pct, 2)}) ${ladoCorto[ds.lado]}` : '<span class="fresco">sin dato</span>';
+  return { accion, vs, strike, mov, corta: { linea, etq, strike: strikeC, strikeEtq } };
 }
 // La acción de UNA ida y vuelta del desglose: «acción $430.00 → $432.00 (+0.47 %)» con su fuente. PURA.
 function accionParteCuentas(x) {
@@ -4782,6 +4822,17 @@ function senalOpCuentasHtml(d) {
     return `<span class="fresco">sin señal${d.dir ? ' ' + esc(d.dir) : ''} ese día${o ? ` (hubo ${esc(o.estrategia_id || 'una')} ${esc(o.direccion || '')} a las ${esc(o.hora)})` : ''}</span>`;
   }
   return `señal ${esc(s.estrategia_id || '¿?')} · ${esc(s.hora)}${s.sin_hora ? ' <span class="fresco">(ese día; la entrada no trae hora)</span>' : ''}`;
+}
+// v62 rev2 · La señal en CORTO para la tabla: «E5 · 9:31» (la hora sin el cero de delante), «—» si no la hubo antes de
+// entrar (o no se pudo leer); el detalle entero (senalOpCuentasHtml, sin etiquetas) va al title de la celda. PURA.
+function senalCortaCuentas(d) {
+  const s = (!d || d.errSen) ? null : d.senal;
+  if (!s) return '<span class="fresco">—</span>';
+  return `${esc(s.estrategia_id || '¿?')} · ${esc(String(s.hora || '').replace(/^0(\d)/, '$1'))}${s.sin_hora ? '<span class="fresco">*</span>' : ''}`;
+}
+// v62 rev2 · Un trozo de HTML de la vista como texto para un atributo title (sin etiquetas; lo dinámico ya va escapado). PURA.
+function tituloCelda(h) {
+  return String(h == null ? '' : h).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().replace(/"/g, '&quot;');
 }
 // v62 rev · La clave ESTABLE del desglose de una operación (bróker | contrato | día | apertura en ms): el repintado
 // automático vuelve a abrir los <details> que Andrés tenía abiertos (ctaEstadoGuardar / ctaEstadoRestaurar). PURA.
@@ -4840,6 +4891,8 @@ function tarjetaHistorial(p, ctx) {
 }
 // C2 · La FILA de la tabla del historial (computadora, ≥ 900 px): las 15 columnas de CTA_COLS y, debajo, una fila de
 // detalle con el desglose plegable (solo si hay más de una ida y vuelta, o si es el tramo cobrado de una abierta).
+// v62 rev2 (a 1400 px la tabla no cabía: 1333 de 1130): Acción, Strike vs acción, Señal y P&L en CORTO (accionOpCuentas
+// .corta, senalCortaCuentas), con el texto largo de la tarjeta en el title de cada celda; nada se pierde.
 function filaHistorialCuentas(p, ctx) {
   const d = detalleOpCuentas(p, ctx), k = contratoOpCuentas(p, d), A = accionOpCuentas(p, d);
   const det = tramosOpCuentasHtml(p, d) + (p._tramoAbierta ? `<div class="fresco">tramo cobrado · la posición sigue abierta con el resto</div>` : '');
@@ -4850,15 +4903,15 @@ function filaHistorialCuentas(p, ctx) {
     <td>${esc(d.c)}</td>
     <td>${entradaOpCuentas(p, d, true)}</td>
     <td>${salidaOpCuentas(p, d, true)}</td>
-    <td>${esc(duracionOpCuentas(p, d))}</td>
+    ${duracionTablaCuentas(p, d)}
     <td>${dineroD(d.costo)}</td>
     <td>${dineroD(d.venta)}</td>
     <td>${d.com != null ? dineroD(d.com) : '<span class="fresco">—</span>'}</td>
-    <td style="color:${colUtil(d.neto)}"><b>${dineroD(d.neto)}</b>${d.com != null ? `<span class="csub">bruto ${dineroD(d.bruto)}</span>` : d.sinComBroker ? '<span class="csub">sin comisión del bróker</span>' : ''}</td>
+    <td style="color:${colUtil(d.neto)}"${d.com != null ? ` title="neto · bruto ${dineroD(d.bruto)} − comisión ${dineroD(d.com)}"` : d.sinComBroker ? ' title="sin comisión del bróker"' : ''}><b>${dineroD(d.neto)}</b>${d.com != null ? `<span class="csub">bruto ${dineroD(d.bruto)}</span>` : d.sinComBroker ? '<span class="csub">sin comisión</span>' : ''}</td>
     <td style="color:${colUtil(d.neto)}">${pctD(d.pct)}</td>
-    <td class="ctxt">${A.accion}<span class="csub">contrato ${A.vs}</span></td>
-    <td class="ctxt">${A.strike}</td>
-    <td class="ctxt">${senalOpCuentasHtml(d)}</td>
+    <td class="ctxt cacc" title="${tituloCelda(A.accion)} · contrato ${tituloCelda(A.vs)}"><span class="c1">${A.corta.linea}</span><span class="csub">${['contrato ' + pctEsp(d.pct, 1)].concat(A.corta.etq).map(esc).join(' · ')}</span></td>
+    <td class="ctxt cstk" title="${tituloCelda(A.strike)}"><span class="c1">${A.corta.strike}</span>${A.corta.strikeEtq.length ? `<span class="csub">${A.corta.strikeEtq.map(esc).join(' · ')}</span>` : ''}</td>
+    <td class="ctxt csen" title="${tituloCelda(senalOpCuentasHtml(d))}">${senalCortaCuentas(d)}</td>
   </tr>${det ? `<tr class="cdet"><td colspan="${CTA_COLS.length}">${det}</td></tr>` : ''}`;
 }
 // C2 · La fila de TILES de métricas (las .dcards del Diario: 2 columnas en el teléfono, en una fila en la computadora).
@@ -8558,12 +8611,14 @@ const BROKER_CORTO = { etrade: 'E*TRADE', schwab: 'Schwab', tasty: 'tasty', moom
 // momento, m15 = vela de 15 min, dia = cierre del día, manual). La app solo LEE. Calidad de mejor a peor:
 const FUENTES_SPOT = ['m1', 'm15', 'dia', 'manual'];
 const FUENTE_SPOT_TXT = { m15: '15 min', dia: 'cierre del día', manual: 'a mano' };   // m1 no lleva sufijo: es el instante
-// Un fill de E*TRADE trae FECHA sin hora (ejecutado_at a las 00:00Z; el viaje lleva sin_hora): el worker no encuentra una
-// vela que contenga ese instante y toma el OPEN de la primera vela del día (la de las 4:00 ET con la extendida), etiquetada
-// m1 o m15 como si fuera el momento del fill. No lo es, y la tarjeta lo dice (doctrina b: un dato aproximado jamás se
-// presenta como exacto). Con fuente «dia» o «manual» el sufijo de siempre ya dice lo que es.
-const SIN_HORA_TXT = 'E*TRADE no da la hora: precio del inicio del día, no del fill';
-const SIN_HORA_CORTO = 'inicio del día';
+// v62 rev2 · «sin hora» es POR INSTANTE, nunca por bróker (sinHoraIso: exactamente 00:00:00 UTC o 00:00 NY, como el worker
+// 0.1.9b): los fills de E*TRADE traen hora (2026-10-09T13:32:15Z) y se tratan como los de cualquier otro bróker. Solo un
+// fill que llega como FECHA (00:00) es «no sé la hora»: el worker no puede situarlo en una vela del día y guarda la vela
+// DIARIA, que es el CIERRE del día, no el momento del fill; si aun así viene etiquetado m1/m15 (worker anterior), la
+// tarjeta lo dice (doctrina b: un dato aproximado jamás se presenta como exacto). Con fuente «dia» o «manual» el sufijo
+// de siempre ya dice lo que es.
+const SIN_HORA_TXT = 'el bróker no dio la hora: precio de cierre del día, no del fill';
+const SIN_HORA_CORTO = 'sin hora: cierre del día';
 // El spot de un fill, o null si no lo tiene (0, vacío o basura no son precios); la fuente solo si es una conocida. PURA.
 function spotDeFill(f) {
   const s = Number(f && f.spot);
@@ -8606,7 +8661,7 @@ function operacionCerrada(f, ap, usa, costo, venta, com, ladoSalida, derivado) {
     spot_entrada: ap.spot != null ? ap.spot : null, spot_salida: ss.spot,
     spot_fuente_entrada: ap.spot != null ? (ap.spot_fuente || null) : null, spot_fuente_salida: ss.fuente,
     entrada_at: ap.at, salida_at: f._at, fecha_ny: f._fecha, duracion_min: durMin(ap.at, f._at),
-    sin_hora: f.broker === 'etrade',                        // E*TRADE da FECHAS, no horas: la duración va en días
+    sin_hora: sinHoraIso(ap.at) || sinHoraIso(f._at),       // v62 rev2: POR INSTANTE (una FECHA a 00:00), nunca por bróker
     costo: r2(costo), venta: r2(venta), comisiones: r2(com), pnl,
     pct: costo > 0 ? Math.round(pnl / costo * 10000) / 100 : null,
     lado_salida: ladoSalida, vencido: ladoSalida === 'vencimiento', derivado: !!derivado, ids: { abre: ap.id, cierra: f.clave_ext } };
@@ -8631,7 +8686,7 @@ function viajeDe(v) {
   return { broker: v.broker, symbol: v.symbol, direccion: v.direccion, strike: v.strike, expiracion: v.expiracion, contrato: v.contrato,
     contratos, prima_entrada: contratos > 0 ? r4(costo / contratos / 100) : null, prima_salida: contratos > 0 ? r4(venta / contratos / 100) : null,
     spot_entrada, spot_salida, spot_fuente_entrada, spot_fuente_salida, spot_fuente: peorFuenteSpot([spot_fuente_entrada, spot_fuente_salida]),
-    entrada_at: v.entrada_at, salida_at: u.salida_at, fecha_ny: u.fecha_ny, duracion_min: durMin(v.entrada_at, u.salida_at), sin_hora: !!u.sin_hora,
+    entrada_at: v.entrada_at, salida_at: u.salida_at, fecha_ny: u.fecha_ny, duracion_min: durMin(v.entrada_at, u.salida_at), sin_hora: ts.some(t => !!t.sin_hora),
     costo, venta, comisiones: com, pnl, pct: costo > 0 ? Math.round(pnl / costo * 10000) / 100 : null,
     lado_salida: u.lado_salida, vencido: ts.some(t => t.vencido), vencido_total: ts.every(t => t.vencido), derivado: ts.some(t => t.derivado),
     compras: compras.length, salidas: salidas.length, tramos: ts, ids: { abre: ts[0].ids.abre, cierra: u.ids.cierra } };
@@ -9089,13 +9144,17 @@ function seccionResumenesDiario(meses, semanas, sel) {
   };
   return tabla('RESUMEN MENSUAL', 'toca un mes para verlo solo', meses, 'mes') + tabla('RESUMEN SEMANAL', 'toca una semana para verla sola', semanas, 'sem');
 }
+// v62 rev2: «sin hora» POR INSTANTE (sinHoraIso), nunca por bróker: si la entrada o la salida es una FECHA (00:00), la
+// duración va en días entre sus días NY (diaOpNY: una fecha a medianoche UTC no es el día anterior); con las dos horas,
+// en minutos/horas como cualquier fill.
 function textoDuracionOp(c) {
-  if (c.sin_hora) { const d = diasEntre(String(c.entrada_at).slice(0, 10), String(c.salida_at).slice(0, 10)); return d == null ? '—' : d === 0 ? 'mismo día' : `${d} d`; }
+  if (c.sin_hora || sinHoraIso(c.entrada_at) || sinHoraIso(c.salida_at)) { const d = diasEntre(diaOpNY(c.entrada_at), diaOpNY(c.salida_at)); return d == null ? '—' : d === 0 ? 'mismo día' : `${d} d`; }
   return durTxt(c.entrada_at, c.salida_at);
 }
-function fechaHoraD(iso, sinHora) {
+// La fecha y hora de un instante del Diario; si el instante es una FECHA sin hora (sinHoraIso), solo la fecha.
+function fechaHoraD(iso) {
   if (!iso) return '—';
-  if (sinHora) return esc(fechaCorta(ymdNY(iso) || String(iso).slice(0, 10)));
+  if (sinHoraIso(iso)) return esc(fechaCorta(diaOpNY(iso) || String(iso).slice(0, 10)));
   return esc(fmtFechaNY(iso, true));
 }
 // v60: la tercera fila de la tarjeta de una operación cerrada: la ACCIÓN detrás del contrato (entrada → salida y su
@@ -9104,7 +9163,8 @@ function fechaHoraD(iso, sinHora) {
 // vista cuando no es la vela del minuto; sin spot se dice que el worker lo completa. Una vencida sale igual, con la
 // salida «venció» (su spot de salida es null salvo que exista); vencida EN PARTE y sin el spot de la venta todavía,
 // «venció en parte · sin dato» (la fila de arriba ya dice «venció en parte»: aquí no se afirma lo que no fue). Con un
-// viaje de E*TRADE (sin_hora) y fuente m1/m15 las tres filas avisan de que el spot es el inicio del día, no el fill. PURA.
+// viaje con algún instante SIN HORA (sin_hora: una FECHA a 00:00, de cualquier bróker) y fuente m1/m15 las tres filas
+// avisan de que el spot no es el del fill (es el cierre del día). Con hora —E*TRADE incluido— no hay aviso. PURA.
 function filaAccionDiario(c) {
   const e = Number(c.spot_entrada) > 0 ? Number(c.spot_entrada) : null, s = Number(c.spot_salida) > 0 ? Number(c.spot_salida) : null;
   const mov = (e != null && s != null) ? (s - e) / e * 100 : null;
@@ -9131,7 +9191,7 @@ function seccionOperacionesDiario(viajes, tope) {
   const cs = (viajes || []).slice().reverse();
   const n = cs.length, T = tope || 150;
   if (!n) return `<div class="sec">OPERACIONES CERRADAS</div><div class="card vacio">Ninguna operación cerrada en el período.</div>`;
-  const salida = (c) => c.vencido ? `<span style="color:var(--oro)">${c.vencido_total === false ? 'venció en parte' : 'venció'}${c.derivado ? ' (deducido)' : ''}</span>` : c.lado_salida === 'asignacion' ? 'asignada' : c.lado_salida === 'ejercicio' ? 'ejercida' : fechaHoraD(c.salida_at, c.sin_hora);
+  const salida = (c) => c.vencido ? `<span style="color:var(--oro)">${c.vencido_total === false ? 'venció en parte' : 'venció'}${c.derivado ? ' (deducido)' : ''}</span>` : c.lado_salida === 'asignacion' ? 'asignada' : c.lado_salida === 'ejercicio' ? 'ejercida' : fechaHoraD(c.salida_at);
   const tramos = (c) => (c.tramos && c.tramos.length > 1)
     ? `<div class="fresco" style="margin-top:5px">${c.compras > 1 ? `${c.compras} compras` : '1 compra'} y ${c.salidas > 1 ? `${c.salidas} salidas` : '1 salida'} · ${c.tramos.map(t => `×${esc(t.contratos)} $${esc(Number(t.prima_entrada).toFixed(2))}→$${esc(Number(t.prima_salida).toFixed(2))}`).join(' · ')}</div>` : '';
   const ejercida = (c) => (c.lado_salida === 'ejercicio' || c.lado_salida === 'asignacion')
@@ -9141,7 +9201,7 @@ function seccionOperacionesDiario(viajes, tope) {
       <div class="fila"><h3 style="font-size:14px">${esc(c.symbol)} ${esc(c.direccion)} ${esc(c.strike)} <span class="fresco">${esc(fechaCorta(c.expiracion))}</span></h3>
         <span class="mono" style="font-weight:700;color:${colD(c.pnl)}">${dineroD(c.pnl)}${c.pct != null ? ` · ${pctD(c.pct)}` : ''}</span></div>
       <div class="hist">
-        <div><span>entrada</span><b>${fechaHoraD(c.entrada_at, c.sin_hora)}</b></div>
+        <div><span>entrada</span><b>${fechaHoraD(c.entrada_at)}</b></div>
         <div><span>salida</span><b>${salida(c)}</b></div>
         <div><span>duró</span><b>${esc(textoDuracionOp(c))}</b></div></div>
       <div class="hist">
@@ -9194,10 +9254,10 @@ function seccionEjecucionesDiario(fills, filtro, todas) {
   h += `<div class="card" style="padding:2px 13px 8px">${ver.map(x => `<div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
       <div class="fila"><span><b style="font-size:13.5px">${esc(x.symbol)} ${esc(x.direccion || '')} ${x.strike != null ? esc(x.strike) : ''}</b> <span class="fresco">${esc(fechaCorta(x.expiracion))}</span></span>
         <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap">${lado(x.lado)} ×${esc(x.contratos)} @ $${esc(Number(x.precio).toFixed(2))}</span></div>
-      <div class="fila fresco" style="margin-top:2px"><span>${x.broker === 'etrade' ? esc(fechaCorta(x.fecha_ny)) + ' (sin hora)' : esc(fmtFechaNY(x.ejecutado_at, true))} · ${esc(BROKER_CORTO[x.broker] || x.broker)}</span>
+      <div class="fila fresco" style="margin-top:2px"><span>${sinHoraIso(x.ejecutado_at) ? esc(fechaCorta(String(x.fecha_ny || '').slice(0, 10) || diaOpNY(x.ejecutado_at))) + ' (sin hora)' : esc(fmtFechaNY(x.ejecutado_at, true))} · ${esc(BROKER_CORTO[x.broker] || x.broker)}</span>
         <span>monto ${dineroD(Number(x.precio) * Number(x.contratos) * 100)}${Number(x.comision) ? ' · com ' + dineroD(x.comision) : ''}</span></div></div>`).join('')}
     ${n > T && !todas ? `<div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.diarioMasEjec()">Ver las ${n - T} restantes</button></div>` : ''}
-    <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución y solo la fecha; Schwab (órdenes) y moomoo (ejecuciones de OpenD) no mandan comisiones.</div></div>`;
+    <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución; una ejecución que llega sin hora (00:00) muestra solo la fecha; Schwab (órdenes) y moomoo (ejecuciones de OpenD) no mandan comisiones.</div></div>`;
   return h;
 }
 

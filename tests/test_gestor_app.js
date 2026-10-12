@@ -548,7 +548,7 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
   // ════════════════ 11. DIARIO: los días operados cuentan cualquier ejecución (compras incluidas) ════════════════
   {
     const claveContrato = construir(['claveContrato']).claveContrato;
-    const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario', 'spotDeFill', 'peorFuenteSpot'],
+    const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],
       { claveContrato, hoyNY, ymdNY: C.ymdNY, DIARIO_LADOS_SALIDA: C.extraerConst('DIARIO_LADOS_SALIDA') ? new Function(C.extraerConst('DIARIO_LADOS_SALIDA') + '; return DIARIO_LADOS_SALIDA;')() : [] },
       { consts: ['FUENTES_SPOT'] });   // v60: el contable lleva el spot de la acción
     const F = (broker, clave, lado, contratos, precio, at) => ({ broker, clave_ext: clave, symbol: 'SPY', direccion: 'CALL', strike: 770, expiracion: '2026-10-16', lado, contratos, precio, comision: 0, ejecutado_at: at, fecha_ny: at.slice(0, 10), origen: 'dispositivo' });
