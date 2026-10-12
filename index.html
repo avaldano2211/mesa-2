@@ -308,6 +308,48 @@
     #app.cta .ctav .dcards{grid-template-columns:repeat(auto-fill,minmax(128px,1fr))}
     #app.cta .ctados{grid-template-columns:1fr 1fr;align-items:start}
   }
+  /* v63: el INFORME con más detalle y a pantalla completa en la computadora (Andrés 2026-10-12, desde el laptop: todo en la
+     columna de 440 px en una pantalla de 2000). Señal: con el Plan 10% «Tu plan (manda)» PRIMERO y en grande (.gtcplan) y la
+     doctrina del curso debajo, pequeña y gris (.gtcdoc) — igual en el Copiloto; debajo del motivo, el detalle (.infdet:
+     estrategia, hora, la acción al sonar, rango, contrato). Ticker: los números del día en una línea en el teléfono
+     (.infdet1) y en casillas en la computadora (.infnum). En ≥ 900 px (#app.ancho.inf hasta 1560 px): fila de tres tarjetas
+     (.infarriba), señales en rejilla de 2 (.infsen) y tickers en rejilla de 3 con su mini gráfico de hoy (.inftk). Los
+     envoltorios solo existen en la computadora; si quedan un instante en una ventana estrecha (resize), son una columna. */
+  .gtcplan{margin-top:7px;color:var(--azul);font-size:14px;font-weight:700;line-height:1.4}
+  .gtcdoc{margin-top:3px;color:var(--tx3);font-size:11px;line-height:1.4}
+  .infdet{display:flex;flex-wrap:wrap;gap:3px 12px;margin-top:7px;font-size:11.5px;color:var(--tx2);line-height:1.45}
+  .infdet b{color:var(--tx);font-family:var(--mono);font-weight:700}
+  .infdet1{margin-top:7px;font-size:11.5px}
+  .infdet1 b{color:var(--tx);font-family:var(--mono)}
+  .infnum{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 12px;margin-top:10px}
+  .infnum>div{display:flex;flex-direction:column;gap:1px;min-width:0}
+  .infnum span{font-size:9.5px;font-weight:700;letter-spacing:.06em;color:var(--tx3);text-transform:uppercase;white-space:nowrap}
+  .infnum b{font-size:14px;white-space:nowrap}
+  .infnum .infcamb{grid-column:span 2}                      /* fila 1: spot y el cambio · fila 2: apertura, máx y mín de hoy */
+  .infnum .infhoy{grid-column:1/-1}
+  .infnum .infhoy b{font-size:12.5px;color:var(--tx2);font-weight:600}
+  .infchart .fila>.fresco:first-child{white-space:nowrap}
+  .infav>div{margin-top:2px}
+  .infarriba,.infsen,.inftk{display:flex;flex-direction:column;gap:11px}
+  @media (min-width:900px){
+    #app.ancho.inf{max-width:1560px}
+    #app.ancho.inf main.vista{gap:14px}
+    #app.ancho.inf .infarriba{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
+    #app.ancho.inf .infsen{display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:14px;align-items:start}
+    #app.ancho.inf .infsen>.sec,#app.ancho.inf .infsen>.vacio,#app.ancho.inf .infsen>.fresco{grid-column:1/-1}
+    #app.ancho.inf .inftk{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px;align-items:start}
+    #app.ancho.inf .card{padding:16px 20px;border-radius:18px}
+    #app.ancho.inf .card h3{font-size:19px}
+    #app.ancho.inf .mut{font-size:13.5px}
+    #app.ancho.inf .fresco{font-size:11px}
+    #app.ancho.inf .tg{font-size:12.5px}
+    #app.ancho.inf .tend{gap:10px}
+    #app.ancho.inf .rango b{font-size:16px}
+    #app.ancho.inf .infdet{font-size:12.5px}
+    #app.ancho.inf .gtcplan{font-size:16px}
+    #app.ancho.inf .gtcdoc{font-size:11.5px}
+    #app.ancho.inf .sec{font-size:11.5px}
+  }
   /* Gestor de posiciones v55 (igual al de la mesa vieja): la TABLA de 10 columnas en Mac (≥ 900 px,
      dentro de #app.ancho) y el mismo bloque en cada tarjeta en iPhone. */
   .gtbl{width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap}
@@ -400,7 +442,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=62"></script>
-  <script src="./app/main.js?v=62"></script>
+  <script src="./config.js?v=63"></script>
+  <script src="./app/main.js?v=63"></script>
 </body>
 </html>

@@ -662,8 +662,9 @@ function armarCorte(E) {
   {
     const L = construir(['lineasGtcSenal'], { esc }, { consts: ['PLANES'] });
     const h10 = L.lineasGtcSenal('Al llenarte pon YA tu venta límite GTC a +35%', L.PLANES.PLAN_10);
-    assert(/Doctrina Plan 35%: Al llenarte pon YA/.test(h10), 'con el Plan 10 la instrucción de la señal se presenta como doctrina del Plan 35');
-    assert(/Tu plan \(manda\): GTC \+10% · corte -20%/.test(h10), 'y debajo va la línea del plan propio, que es la que manda');
+    // v63: con el Plan 10 «Tu plan (manda)» va PRIMERO y en grande; la instrucción de la señal, debajo, como «doctrina del curso (Plan 35%)»
+    assert(/doctrina del curso \(Plan 35%\): Al llenarte pon YA/.test(h10) && h10.indexOf('Tu plan (manda)') < h10.indexOf('doctrina del curso'), 'con el Plan 10 la instrucción de la señal se presenta como doctrina del Plan 35, debajo de la línea del plan propio');
+    assert(/Tu plan \(manda\): GTC \+10% · corte -20%/.test(h10), 'y la línea del plan propio, que es la que manda (v63: arriba)');
     const h35 = L.lineasGtcSenal('Al llenarte pon YA tu venta límite GTC a +35%', L.PLANES.PLAN_35);
     assert(!/Doctrina Plan 35%/.test(h35) && !/Tu plan \(manda\)/.test(h35) && /Al llenarte pon YA/.test(h35), 'con el Plan 35 la señal sale como siempre');
     igual(L.lineasGtcSenal(null, L.PLANES.PLAN_35), '', 'sin instrucción y con Plan 35 no sale nada');

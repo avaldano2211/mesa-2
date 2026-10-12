@@ -338,7 +338,7 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
         return { data: [], error: null };
       });
       const canal = () => { const c = { on() { return c; }, subscribe() { return c; } }; return c; };
-      const mod = C.cargarModuloEntero({ src: './app/main.js?v=62', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
+      const mod = C.cargarModuloEntero({ src: './app/main.js?v=63', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
       if (!mod.cargo) return { error: mod.error };
       mod.win.innerWidth = ancho;
       let html = '';

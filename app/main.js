@@ -108,7 +108,8 @@ function arrancar(session) {
 window.addEventListener('hashchange', ruta);
 // v55: al cambiar el ancho (Mac: ventana; iPhone: giro) el gestor pasa de tabla a tarjetas o al revés
 // v62: Cuentas también, pero solo su vista «Cuentas» y solo si cruza los 900 px (tabla ↔ tarjetas: ctaCambiaFormato)
-(() => { let t = null; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => { if (!sesionActiva) return; const tab = location.hash.replace('#/', '') || 'informe'; if (['copiloto', 'tickers'].includes(tab) || (tab === 'cuentas' && ctaCambiaFormato())) ruta(); }, 250); }); })();   // v57: Tickers también (viewBox del gráfico según el ancho)
+// v63: el Informe también, solo si cruza los 900 px (fila de tres tarjetas, rejillas y mini gráficos ↔ la columna del teléfono)
+(() => { let t = null; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => { if (!sesionActiva) return; const tab = location.hash.replace('#/', '') || 'informe'; if (['copiloto', 'tickers'].includes(tab) || (tab === 'informe' && informeCambiaFormato()) || (tab === 'cuentas' && ctaCambiaFormato())) ruta(); }, 250); }); })();   // v57: Tickers también (viewBox del gráfico según el ancho)
 // Al volver del fondo (iOS congela la PWA y corta los fetch en vuelo): si estuvo
 // oculta más de 30 s se redibuja la vista y, si hay un formulario de orden
 // abierto, se recarga la cadena.
@@ -249,6 +250,7 @@ async function ruta() {
   if (tab !== 'cuentas' && typeof cuentasAncho === 'function') cuentasAncho(false);            // v62: …y de la vista Cuentas (su .cta)
   if (tab !== 'cuentas' && typeof _cta === 'object' && _cta) _cta.dentro = false;                // v62 rev: al volver, «ver más» empieza en 200
   if (typeof tickersAncho === 'function') tickersAncho(tab === 'tickers');                       // v57: Tickers en GRANDE en pantallas anchas (rejilla)
+  if (typeof informeAncho === 'function') informeAncho(tab === 'informe');                      // v63: el Informe a pantalla completa en la computadora (#app.inf)
   if (tab !== 'tickers' && typeof _tickers === 'object' && _tickers) _tickers.quitando = null;   // v58: la pregunta «¿Quitar X?» no sobrevive a un cambio de pestaña
   if (tab === 'copiloto' && typeof copilotoAncho === 'function') copilotoAncho(true);           // v55: …y del Copiloto (la tabla del gestor), en el mismo tick: sin salto de ancho
   document.querySelectorAll('#nav a').forEach(a =>
@@ -268,18 +270,39 @@ async function ruta() {
 }
 
 // ---------- vistas ----------
+// v63 (Andrés 2026-10-12, desde el laptop: el Informe salía en la columna de 440 px del teléfono en una pantalla de
+// 2000 px; el mismo trato que Tickers v57 y Cuentas v62): en la computadora (≥ 900 px, #app.ancho.inf hasta 1560 px) una
+// fila arriba con «Estado del sistema», «Mercado ahora» y «Tu plan hoy»; debajo las SEÑALES DE HOY en rejilla de 2 y TUS
+// TICKERS en rejilla de 3, cada ticker con el detalle del día (spot, cambio, apertura, máx/mín) y un mini gráfico de las
+// velas de 15 min de HOY. En el teléfono la estructura de siempre (estado, señales, tickers), con el mismo detalle en una
+// línea y sin gráfico. Nada aquí manda órdenes ni escribe en la base: solo LEE.
+const _inf = { grande: null, ops: null, opsVuelo: null };   // grande: formato del último pintado (resize: solo al cruzar los 900 px) · ops: caché de opsInforme
+function informeGrande() { return anchoVista() >= GESTOR_ANCHO_TABLA; }
+// #app.inf en la pestaña Informe y, en la computadora, #app.ancho (el patrón de tickersAncho / cuentasAncho). Apagarla solo
+// quita .inf: el .ancho lo gobierna diarioAncho, y ruta() lo apaga al salir hacia cualquier pestaña que no sea Cuentas.
+function informeAncho(on) {
+  const app = $('#app'); if (!app || !app.classList) return;
+  app.classList.toggle('inf', !!on);
+  if (on) app.classList.toggle('ancho', informeGrande());
+}
+function informeCambiaFormato() { return _inf.grande != null && informeGrande() !== _inf.grande; }
 async function vistaInforme(hb) {
   const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  const grande = informeGrande();
   // solo las de HOY (NY): un dato viejo jamás se presenta como fresco. UNA vez (el
   // builder de Supabase lanza la consulta en cada then): las quitadas van detrás, con sus ids.
   // Sin limit, como el Copiloto: con un tope las quitadas ocupaban cupo y el Informe
   // contradecía al Copiloto (el UNIQUE del worker deja pocas por día: ticker × estrategia)
   const senP = Promise.resolve(sb.from('senales').select('*').eq('fecha_ny', hoy).order('creado_at', { ascending: false }));
-  const [estados, senales] = await Promise.all([
+  // v63: las velas de 15 min (caché de 50 s, la misma de Tickers) para el detalle del día; tus operaciones solo en la
+  // computadora (la tarjeta «Tu plan hoy» no existe en el teléfono: allí nada se lee de más)
+  const [estados, senales, , , velas, opsR] = await Promise.all([
     sb.from('ticker_estado').select('*'),
     senP,
     cargarPlanUsuario(),
     cargarOcultas(senP),
+    cargarVelas(TICKERS, 'm15').catch(() => ({})),
+    grande ? opsInforme() : Promise.resolve(null),
   ]);
   const est = estados.data || [];
   const merc = est.find(e => e.symbol === 'MERCADO');
@@ -287,26 +310,267 @@ async function vistaInforme(hb) {
   const plan = planActivo();
   let h = '';
 
-  // resumen del worker
+  // resumen del worker (+ en la computadora: el mercado y tu plan, en una fila)
+  const estado = tarjetaEstadoSistema(hb, merc);
+  h += grande ? `<div class="infarriba">${estado}${tarjetaMercadoAhora(merc, hb, hoy, new Date())}${tarjetaPlanHoy(plan, opsR, hoy, planFilaCache())}</div>` : estado;
+
+  // señales del día (la misma sección y el mismo título que el Copiloto: las quitadas no salen). v63: el título ya no nombra
+  // una estrategia (decía E5 y la señal de hoy era CT15A, de la E8).
+  const sec = seccionSenales('SEÑALES DE HOY', sen, _ocultas.ids, _ocultas.ver, (s) => tarjetaSenalInforme(s, plan));
+  h += grande ? `<div class="infsen">${sec}</div>` : sec;
+
+  // tickers con el detalle del día
+  h += `<div class="sec">TUS TICKERS</div>`;
+  const tks = TICKERS.map(t => {
+    try { return tarjetaTickerInforme(est.find(e => e.symbol === t), t, (velas && velas[t]) || null, grande, hoy); }
+    catch (_) { return tarjetaTicker(est.find(e => e.symbol === t), t, true); }   // un payload raro de UN ticker no tumba el Informe
+  }).join('') || `<div class="card vacio">Aún no hay estado publicado.</div>`;
+  h += grande ? `<div class="inftk">${tks}</div>` : tks;
+  if ((location.hash.replace('#/', '') || 'informe') !== 'informe') return;   // cambió de pestaña mientras cargaba
+  _inf.grande = grande;
+  informeAncho(true);
+  $('#vista').innerHTML = h;
+}
+// La tarjeta «Estado del sistema» de siempre (la misma en el teléfono y en la computadora).
+function tarjetaEstadoSistema(hb, merc) {
   const fr = hb ? haceCuanto(hb.latido_at) : { txt: 'sin dato' };
-  h += `<div class="card"><div class="fila"><h3>Estado del sistema</h3>
+  return `<div class="card"><div class="fila"><h3>Estado del sistema</h3>
     <span class="fresco">latido ${esc(fr.txt)}</span></div>
     <div class="mut">${hb ? `El analista está <b style="color:var(--tx)">${esc(hb.estado_proceso)}</b> · sesión <b style="color:var(--tx)">${esc(hb.sesion)}</b>. `
       : 'Sin latido del worker todavía. '}${
       merc && merc.payload && merc.payload.regla_1030 ? 'Antes de las 10:30 ET.' : ''}</div></div>`;
-
-  // señales del día (la misma sección que el Copiloto: las quitadas no salen)
-  h += seccionSenales('SEÑALES DE HOY (E5)', sen, _ocultas.ids, _ocultas.ver, (s) => `<div class="card">
+}
+// Ventana en la que suenan las señales de la apertura (CT15A/CT15B y E5), en minutos NY: 9:30–9:48 ET.
+const VENTANA_SENALES_MIN = [570, 588];
+// Texto de la ventana de señales de HOY si aún no pasó (día hábil por reloj NY, sin calendario de festivos, igual que
+// antesDe1030NY); '' si ya pasó o es fin de semana. fecha: el instante (para las pruebas; por defecto, ahora).
+function ventanaSenalesTxt(fecha) {
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(fecha || new Date());
+  const v = (t) => (f.find(x => x.type === t) || {}).value;
+  if (v('weekday') === 'Sat' || v('weekday') === 'Sun') return '';
+  const m = Number(v('hour')) * 60 + Number(v('minute'));
+  const [a, b] = VENTANA_SENALES_MIN;
+  if (m > b) return '';
+  if (m >= a) return 'Ventana de señales <b style="color:var(--oro)">abierta ahora</b> (9:30–9:48 ET)';
+  const falta = a - m, hh = Math.floor(falta / 60), mm = falta % 60;
+  const en = [hh ? hh + ' h' : '', mm || !hh ? mm + ' min' : ''].filter(Boolean).join(' ');
+  return `Próxima ventana de señales: <b style="color:var(--tx)">hoy 9:30–9:48 ET</b> (en ${en})`;
+}
+// «Mercado ahora» (solo en la computadora): la sesión, la regla de las 10:30, los avisos globales del payload MERCADO
+// y la ventana de señales de hoy si aún no pasó. Un MERCADO de otro día no se presenta como de hoy.
+function tarjetaMercadoAhora(merc, hb, hoy, fecha) {
+  const p = (merc && merc.payload) || {};
+  const deHoy = !!merc && (!p.fecha_ny || p.fecha_ny === hoy);
+  const ses = String((deHoy && (merc.sesion || p.sesion)) || (hb && hb.sesion) || '');
+  const SES = { regular: 'regular (9:30–16:00 ET)', pre: 'pre-mercado (4:00–9:30 ET)', post: 'post-mercado (16:00–20:00 ET)', cerrado: 'mercado cerrado' };
+  const sesTxt = ses ? (SES[ses] || ses) : 'sin dato';
+  const antes = antesDe1030NY(deHoy ? merc : null);
+  const regla = antes ? '<b style="color:var(--oro)">antes de las 10:30 ET</b>: la doctrina espera (regla de las 10:30)'
+    : 'regla de las 10:30: no frena ahora';
+  const avisos = deHoy && Array.isArray(p.avisos_globales) ? p.avisos_globales.filter(x => x != null && String(x).trim()) : [];
+  const ven = ventanaSenalesTxt(fecha);
+  return `<div class="card"><div class="fila"><h3>Mercado ahora</h3>
+    <span class="fresco">${merc ? esc(haceCuanto(merc.actualizado_at).txt) : 'sin dato'}</span></div>
+    <div class="mut">Sesión <b style="color:var(--tx)">${esc(sesTxt)}</b> · ${regla}.</div>
+    ${ven ? `<div class="mut" style="margin-top:4px">${ven}</div>` : ''}
+    <div class="mut" style="margin-top:4px">${!merc ? 'Sin estado de MERCADO todavía.' : !deHoy ? 'El estado de MERCADO aún no es de hoy.'
+      : avisos.length ? 'Avisos globales:' : 'Sin avisos globales hoy.'}</div>
+    ${avisos.length ? `<div class="mut infav">${avisos.map(a => `<div>· ${esc(a)}</div>`).join('')}</div>` : ''}
+  </div>`;
+}
+// Tus operaciones (las mismas que cuentan el Copiloto y Disciplina: manual + bróker + libro, deduplicadas) para «Tu plan
+// hoy». Solo LEE. → { ops, error }; si algo falla, ops null (la tarjeta lo dice: jamás «0» por no haber podido preguntar).
+// Caché de 60 s por usuario (la del libro, libroParaUnir) y una sola lectura en vuelo: con el Informe a la vista, cada
+// fila de ticker_estado que publica el worker llega por Realtime y redibuja (varias por minuto); broker_trades entero no
+// se puede pedir en cada una. Un error no se guarda: la siguiente vuelta vuelve a preguntar.
+const INF_OPS_MS = 60000;
+async function opsInforme() {
+  const uid = planUid();
+  const c = _inf.ops;
+  if (c && c.uid === uid && Date.now() - c.ts < INF_OPS_MS) return c.r;
+  if (_inf.opsVuelo && _inf.opsVuelo.uid === uid) return _inf.opsVuelo.p;
+  const p = (async () => {
+    try {
+      const [pos, bt] = await Promise.all([sb.from('posiciones').select('*'), sb.from('broker_trades').select('*')]);
+      if (!pos || pos.error || !bt || bt.error) return { ops: null, error: String(((pos && pos.error) || (bt && bt.error) || {}).message || 'sin respuesta') };
+      const libro = await libroParaUnir();
+      const r = { ops: unirOperaciones(pos.data || [], bt.data || [], libro).ops, error: null };
+      _inf.ops = { uid, ts: Date.now(), r };
+      return r;
+    } catch (e) { return { ops: null, error: String((e && e.message) || e) }; }
+  })();
+  _inf.opsVuelo = { uid, p };
+  try { return await p; } finally { if (_inf.opsVuelo && _inf.opsVuelo.p === p) _inf.opsVuelo = null; }
+}
+// «Tu plan hoy» (solo en la computadora). Versión compacta y de SOLO LECTURA de la tarjeta del Copiloto (tarjetaPlanDia
+// lleva los botones de la compañía del día, que escriben en plan_usuario): plan, operaciones de hoy (Plan 10%) o de la
+// semana (Plan 35%) contra el cupo, objetivo y corte; con el Plan 10%, la compañía de hoy si ya se eligió.
+function tarjetaPlanHoy(plan, r, hoy, fila) {
+  plan = plan || PLANES.PLAN_35;
+  const diez = plan.periodo === 'dia';
+  const ops = r && Array.isArray(r.ops) ? r.ops : null;
+  const cupo = diez ? plan.opsMax : OPS_SEMANA;
+  const usadas = ops == null ? null : diez ? ops.filter(p => (p.abierta_fecha_ny || '') === hoy).length
+    : ops.filter(p => (p.abierta_fecha_ny || '') >= lunesNY()).length;
+  const color = usadas == null ? 'var(--tx3)' : usadas > cupo ? 'var(--rojo)' : usadas === cupo ? 'var(--oro)' : 'var(--verde)';
+  const reglas = diez ? `objetivo GTC +${plan.gtcPct}% · corte -${plan.stopPct}% · ${plan.opsMax} operación al día · ${plan.tamanoMinPct}–${plan.tamanoMaxPct}% de la cuenta`
+    : `objetivo GTC +${plan.gtcPct}% · sin corte · ${OPS_SEMANA} operaciones por semana · máximo ${plan.tamanoMaxPct}% de la cuenta`;
+  const foco = diez ? focoDeHoy(fila, hoy) : null;
+  return `<div class="card"><div class="fila"><h3>Tu plan hoy</h3>
+    <span style="font-weight:700;color:${color}">${usadas == null ? '—' : usadas} / ${cupo}</span></div>
+    <div class="mut">${esc(plan.nombre)} · ${diez ? 'operaciones de hoy' : 'operaciones esta semana'}${usadas == null ? ' · <span style="color:var(--oro)">no pude leer tus operaciones (se reintenta en 1 min)</span>' : ''}</div>
+    <div class="mut" style="margin-top:4px">${reglas}.</div>
+    ${diez ? (foco ? `<div class="mut" style="margin-top:4px">Compañía de hoy: <b style="color:var(--tx)">${esc(foco)}</b></div>`
+      : `<div class="mut" style="margin-top:4px;color:var(--oro)">Compañía de hoy: sin elegir (se elige en el Copiloto).</div>`) : ''}
+  </div>`;
+}
+// Tarjeta de una señal en el Informe: «hace X h» + motivo (como siempre), el detalle de la señal (detalleSenalInforme) y
+// las líneas del plan (lineasGtcSenal, las mismas del Copiloto).
+function tarjetaSenalInforme(s, plan) {
+  return `<div class="card">
       ${cabeceraSenal(s)}
       ${motivoSenal(s)}
+      ${detalleSenalInforme(s)}
       ${lineasGtcSenal(s.instruccion_gtc, plan)}
-    </div>`);
-
-  // tickers resumidos
-  h += `<div class="sec">TUS TICKERS</div>`;
-  h += TICKERS.map(t => tarjetaTicker(est.find(e => e.symbol === t), t, true)).join('') ||
-    `<div class="card vacio">Aún no hay estado publicado.</div>`;
-  $('#vista').innerHTML = h;
+    </div>`;
+}
+// Nombres cortos de las estrategias que ya nombra la app (SENALES_VACIO: «CT15A / CT15B (cambio de tendencia en 15 min)»).
+// Las demás (E5…) van solo con su id: nada de nombres inventados.
+const ESTRATEGIA_NOMBRE = { CT15A: 'cambio de tendencia 15 min', CT15B: 'cambio de tendencia 15 min' };
+// Estrategia de una señal: el id de la base (estrategia_id, p. ej. E8) y, si el detector o el título del worker traen un
+// código con nombre (CT15A), ese código y su nombre. → { id, codigo, nombre }
+function estrategiaSenal(s) {
+  const id = String((s && s.estrategia_id) || '').trim();
+  const txt = String((s && s.payload && s.payload.detector) || '') + ' ' + String((s && s.titulo) || '');
+  const codigo = Object.keys(ESTRATEGIA_NOMBRE).find(k => k === id.toUpperCase() || new RegExp('(^|[^A-Za-z0-9])' + k + '([^A-Za-z0-9]|$)').test(txt)) || null;
+  return { id, codigo, nombre: codigo ? ESTRATEGIA_NOMBRE[codigo] : '' };
+}
+// B1 · Detalle de una señal en el Informe: estrategia, hora NY a la que sonó, la acción al sonar (senales.spot), el rango
+// óptimo de la señal (rango_vivo: lo–hi; uno invertido NUNCA se pinta, como textoRangoTarjeta) y el contrato sugerido del
+// ticket. Lo que falta no sale (jamás un número inventado).
+function detalleSenalInforme(s) {
+  if (!s) return '';
+  const dec = decDe(String(s.symbol || '').toUpperCase());
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);
+  const it = [];
+  const e = estrategiaSenal(s);
+  if (e.id || e.codigo) {
+    const ids = [e.id, e.codigo && e.codigo !== e.id.toUpperCase() ? e.codigo : ''].filter(Boolean).map(esc).join(' · ');
+    it.push(`<span>estrategia <b>${ids}</b>${e.nombre ? ' ' + esc(e.nombre) : ''}</span>`);
+  }
+  const t = Date.parse(s.creado_at);
+  if (Number.isFinite(t)) it.push(`<span>sonó <b>${esc(horaNY(t))} ET</b></span>`);
+  const spot = num(s.spot);
+  if (spot != null && spot > 0) it.push(`<span>acción al sonar <b>$${esc(spot.toFixed(dec))}</b></span>`);
+  const rv = s.rango_vivo && typeof s.rango_vivo === 'object' ? s.rango_vivo : null;
+  const lo = rv ? num(rv.lo) : null, hi = rv ? num(rv.hi) : null;
+  if (lo != null && hi != null) {
+    const exp = rv.exp ? ' · exp ' + esc(String(rv.exp).slice(5)) : '';
+    it.push(lo > hi ? `<span>rango óptimo <b>—</b> rango inválido (mín &gt; máx)</span>`
+      : `<span>rango óptimo <b>$${esc(Math.round(lo))}–$${esc(Math.round(hi))}</b> por contrato · por delta${exp}</span>`);
+  }
+  const tk = (s.payload && s.payload.ticket) || null;
+  if (tk && num(tk.strike) != null) {
+    const dir = String(tk.direccion || s.direccion || '').toUpperCase();
+    const ask = num(tk.ask);
+    it.push(`<span>contrato sugerido <b>${dir ? esc(dir) + ' ' : ''}${esc(num(tk.strike))}</b>${tk.exp ? ' · vence ' + esc(String(tk.exp).slice(5)) : ''}${ask != null && ask > 0 ? ' · ask $' + esc(ask.toFixed(2)) : ''}</span>`);
+  }
+  return it.length ? `<div class="infdet">${it.join('')}</div>` : '';
+}
+// B2 · Los números del día de un ticker, de su fila m15 de ticker_velas (la de cargarVelas): spot del worker (niveles.spot;
+// sin él, el cierre de la última vela de HOY) y su cambio contra niveles.cierre_ayer en $ y %, y la apertura, el máximo y
+// el mínimo de HOY (NY) de las velas de 15 min de hoy, incluida la viva. hoy = YYYY-MM-DD NY. null si no hay velas.
+function datosTickerHoy(fila, hoy) {
+  const pk = fila && fila.payload;
+  if (!pk || typeof pk !== 'object') return null;
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);
+  const bien = (v) => Array.isArray(v) && v.length >= 5 && [0, 1, 2, 3, 4].every(i => num(v[i]) != null);
+  const velas = Array.isArray(pk.velas) ? pk.velas.filter(bien) : [];
+  const viva = bien(pk.vela_viva) ? pk.vela_viva : null;
+  if (!velas.length && !viva) return null;
+  const deHoy = velas.filter(v => chartTiempo(num(v[0])).ymd === hoy);
+  const vivaHoy = viva && chartTiempo(num(viva[0])).ymd === hoy && !deHoy.some(v => num(v[0]) === num(viva[0])) ? viva : null;
+  const todas = vivaHoy ? deHoy.concat([vivaHoy]) : deHoy;
+  const nv = pk.niveles || {};
+  let spot = num(nv.spot);
+  if (spot == null && todas.length) spot = num(todas[todas.length - 1][4]);
+  const ayer = num(nv.cierre_ayer);
+  const cambio = spot != null && ayer != null && ayer > 0 ? spot - ayer : null;
+  return {
+    spot, cierreAyer: ayer, cambio, pct: cambio != null ? cambio / ayer * 100 : null,
+    apertura: todas.length ? num(todas[0][1]) : null,
+    max: todas.length ? Math.max(...todas.map(v => num(v[2]))) : null,
+    min: todas.length ? Math.min(...todas.map(v => num(v[3]))) : null,
+    velasHoy: todas.length, conViva: !!vivaHoy,
+    sesion: pk.fecha_ny && String(pk.fecha_ny) !== String(hoy) ? String(pk.fecha_ny) : null,   // la foto es de otra sesión
+    edad: haceCuanto(fila.actualizado_at).txt,
+  };
+}
+// HTML de esos números: en el teléfono una línea; en la computadora una fila de casillas. Sin velas: «sin velas todavía».
+function detalleTickerHtml(d, sym, grande) {
+  if (!d) return `<div class="mut infdet1">sin velas todavía</div>`;
+  const dec = decDe(sym);
+  const f$ = (v) => v == null ? '—' : '$' + Number(v).toFixed(dec);
+  const r2 = (x, n) => { const k = Math.pow(10, n); return Math.round(x * k) / k; };
+  const sg = (x, n) => { const r = r2(x, n); return r > 0 ? '+' : r < 0 ? '-' : ''; };
+  const camb = d.cambio == null ? '' : `${sg(d.cambio, dec)}$${Math.abs(r2(d.cambio, dec)).toFixed(dec)} (${sg(d.pct, 2)}${Math.abs(r2(d.pct, 2)).toFixed(2)} %)`;
+  const col = d.cambio == null ? 'var(--tx2)' : colUtil(r2(d.cambio, dec));
+  const ses = d.sesion ? ` · sesión del ${esc(fmtFechaNY(d.sesion + 'T12:00:00Z'))}` : '';
+  if (!grande) {
+    const p = [`spot <b>${esc(f$(d.spot))}</b>`];
+    if (camb) p.push(`<b style="color:${col}">${esc(camb)}</b> vs ayer`);
+    if (d.velasHoy) p.push(`apertura ${esc(f$(d.apertura))}`, `máx ${esc(f$(d.max))}`, `mín ${esc(f$(d.min))}`);
+    else p.push('hoy sin velas todavía');
+    return `<div class="mut infdet1">${p.join(' · ')} · <span class="fresco">${esc(d.edad)}${ses}</span></div>`;
+  }
+  const c = (et, val, estilo, cls) => `<div${cls ? ` class="${cls}"` : ''}><span>${et}</span><b class="mono"${estilo ? ` style="${estilo}"` : ''}>${val}</b></div>`;
+  let h = c('spot', esc(f$(d.spot))) + c('vs cierre ayer', camb ? esc(camb) : '—', camb ? `color:${col}` : '', 'infcamb');
+  h += d.velasHoy ? c('apertura hoy', esc(f$(d.apertura))) + c('máx hoy', esc(f$(d.max))) + c('mín hoy', esc(f$(d.min)))
+    : `<div class="infhoy"><span>hoy</span><b>sin velas todavía</b></div>`;
+  return `<div class="infnum">${h}</div><div class="fresco" style="margin-top:3px">spot ${esc(d.edad)}${d.cierreAyer != null ? ' · cierre de ayer ' + esc(f$(d.cierreAyer)) : ''}${ses}</div>`;
+}
+// Índice de la primera vela de 15 min de HOY (NY) en pk.velas; -1 si no hay.
+function inicioVelasHoy(pk, hoy) {
+  if (!pk || !Array.isArray(pk.velas)) return -1;
+  return pk.velas.findIndex(v => Array.isArray(v) && Number.isFinite(Number(v[0])) && chartTiempo(Number(v[0])).ymd === hoy);
+}
+// A3 · Mini gráfico del Informe en la computadora: las velas de 15 min de HOY (chartSvg real, Bollinger, sin selectores).
+// Tocarlo abre la hoja del gráfico (MZ.chartAbrir) como en Tickers. Con menos de dos velas cerradas de hoy, lo dice.
+function miniChartInforme(sym, fila, hoy) {
+  const pk = fila && fila.payload;
+  const i0 = inicioVelasHoy(pk, hoy);
+  const cab = `<div class="fila"><span class="fresco">hoy · 15 min</span><span class="fresco">${esc(fila ? chartFrescoTxt(fila, 'm15', false) : 'sin velas')}</span></div>`;
+  let svg;
+  if (i0 < 0 || pk.velas.length - i0 < 2) svg = `<div class="vacio">Sin velas de hoy todavía (el gráfico empieza con dos velas de 15 min cerradas)</div>`;
+  else {
+    try { svg = chartSvg(pk, { h: 110, w: 380, tf: 'm15', vista: 'bb', ventana: { start: i0, end: pk.velas.length }, dec: decDe(sym), fondo: 'var(--bg2)' }); }
+    catch (_) { svg = `<div class="vacio">Chart no disponible (datos inválidos)</div>`; }
+  }
+  return `<div class="chart infchart" role="button" onclick="MZ.chartAbrir('${esc(sym)}')">${cab}${svg}</div>`;
+}
+// Tarjeta de un ticker en el Informe: la de siempre (tendencias, volatilidad, rango) + los números del día (B2) y, en la
+// computadora, el mini gráfico de hoy y TODOS los avisos del payload (en el teléfono, el primero, como siempre).
+function tarjetaTickerInforme(e, sym, fila, grande, hoy) {
+  const det = detalleTickerHtml(datosTickerHoy(fila, hoy), sym, grande);
+  const graf = grande ? miniChartInforme(sym, fila, hoy) : '';
+  if (!e) return `<div class="card">${cabeceraTicker(sym, true, `<span class="chip c-esp">SIN DATO</span>`)}${det}${graf}</div>`;
+  const p = e.payload || {};
+  const te = p.tendencias || {};
+  const fr = haceCuanto(e.actualizado_at);
+  const todos = Array.isArray(p.avisos) ? p.avisos : [];
+  const av = grande ? todos : todos.slice(0, 1);
+  return `<div class="card">
+    ${cabeceraTicker(sym, true, `<span class="fresco">${esc(fr.txt)}</span>`)}
+    <div class="tend" style="margin-top:6px">
+      ${tg('15m', te.m15)} ${tg('hora', te.hora)} ${tg('día', te.dia)}
+      ${volTxt(p.volatilidad)}</div>
+    ${textoRangoTarjeta(p, sym)}
+    ${det}
+    ${graf}
+    ${av.length ? (grande ? `<div class="mut infav" style="margin-top:7px">${av.map(a => `<div>· ${esc(a)}</div>`).join('')}</div>`
+      : `<div class="mut" style="margin-top:7px">${av.map(esc).join(' · ')}</div>`) : ''}
+  </div>`;
 }
 
 // chartHtml: chart inline del ticker (solo en la pestaña Tickers; en el Informe no va).
@@ -1506,13 +1770,15 @@ function tarjetaSenal(s, posic, pl) {
   </div>`;
 }
 // Instrucción GTC de la señal (Informe y Copiloto). La señal dice el 35% doctrinal
-// (SPEC C2) y no se toca; con el Plan 10% se presenta como doctrina y debajo va la
-// línea del plan propio, que es la que manda. Con el Plan 35% sale como siempre.
+// (SPEC C2) y no se toca; con el Plan 10% la línea del plan propio, que es la que manda,
+// va PRIMERO y en grande (.gtcplan) y la instrucción de la señal DEBAJO, pequeña y gris,
+// como doctrina del curso (.gtcdoc) — v63: antes la doctrina iba arriba, dorada y más
+// visible que el plan que manda. Con el Plan 35% sale como siempre.
 function lineasGtcSenal(instruccion, plan) {
   const diez = !!(plan && plan.id === 'PLAN_10');
-  let h = '';
-  if (instruccion) h += `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${diez ? 'Doctrina Plan 35%: ' : ''}${esc(instruccion)}</div>`;
-  if (diez) h += `<div class="mut mono" style="margin-top:4px;color:var(--azul)">Tu plan (manda): GTC +${plan.gtcPct}% · corte -${plan.stopPct}%</div>`;
+  if (!diez) return instruccion ? `<div class="mut mono" style="margin-top:6px;color:var(--oro)">${esc(instruccion)}</div>` : '';
+  let h = `<div class="mono gtcplan">Tu plan (manda): GTC +${plan.gtcPct}% · corte -${plan.stopPct}%</div>`;
+  if (instruccion) h += `<div class="mono gtcdoc">doctrina del curso (Plan 35%): ${esc(instruccion)}</div>`;
   return h;
 }
 

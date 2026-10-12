@@ -809,8 +809,8 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════
   // v54: 31184c9 (v53) ya está publicado; sin subir el número la Mesa instalada no se actualiza sola
-  assert(/config\.js\?v=62/.test(INDEX) && /app\/main\.js\?v=62/.test(INDEX), 'index.html carga config.js?v=62 y app/main.js?v=62 (v62: Cuentas con todo el detalle)');
-  assert(/const VER = 'mesa2-v51';/.test(SW), 'sw.js VER mesa2-v51');
+  assert(/config\.js\?v=63/.test(INDEX) && /app\/main\.js\?v=63/.test(INDEX), 'index.html carga config.js?v=63 y app/main.js?v=63 (v63: el Informe con más detalle y a pantalla completa)');
+  assert(/const VER = 'mesa2-v52';/.test(SW), 'sw.js VER mesa2-v52');
   // v55: el CSS del Diario (envoltorio ancho solo con el Diario, rejilla de tarjetas, historial en línea/apilado por @container)
   assert(/@media \(min-width:900px\)\{#app\.ancho\{max-width:1180px\}/.test(INDEX) && /\.diario\{[^}]*container-type:inline-size/.test(INDEX) && /@container \(min-width:860px\)\{/.test(INDEX), 'v55 CSS: #app.ancho a 1180 px desde 900 px y .diario como contenedor de @container (min-width:860px)');
   assert(/\.dcards\{display:grid;grid-template-columns:1fr 1fr/.test(INDEX) && /\.dcards\{grid-template-columns:repeat\(auto-fill,minmax\(168px,1fr\)\)\}/.test(INDEX) && /\.dcard \.vl\{font-family:var\(--mono\)/.test(INDEX), 'v55 CSS: tarjetas a dos columnas en el iPhone, en filas en el Mac, número monoespaciado');
@@ -858,7 +858,7 @@ function sbGrabador(respuestas) {
     addEventListener() {}, location: { hash: '#/copiloto', reload() {} }, Intl, Date, Math, JSON, Promise,
     setTimeout, setInterval: () => 0, clearInterval() {}, console, fetch: () => Promise.reject(new Error('sin red')),
     navigator: { serviceWorker: { register: () => Promise.resolve(), addEventListener() {} } },
-    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=62' } } };
+    document: { querySelector: () => nodo(), querySelectorAll: () => [], createElement: () => nodo(), addEventListener() {}, body: nodo(), currentScript: { src: './app/main.js?v=63' } } };
   win.window = win;
   vm.createContext(win);
   let cargo = true;
