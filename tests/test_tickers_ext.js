@@ -2,8 +2,9 @@
 /* Pruebas de la v58 (Andrés 2026-10-02, pestaña Tickers: «agregar y remover tickers que vaya usando,
    dependiendo de la semana» + «ver after hours, pre-market y post-market»):
      · chartPrefs.ext, el botón «Extendido» de chartSelectores (on/off, deshabilitado en Día) y chartExt
-     · chartSvg con velas_ext: ventana de 2 sesiones, extendidas sombreadas y aparte, bb/sma troceadas por
-       tramos de regulares (jamás una recta atraviesa una zona extendida), viva extendida, paridad sin datos
+     · chartSvg con velas_ext: ventana de 2 sesiones, extendidas sombreadas y aparte, viva extendida, paridad sin
+       datos; bb/sma (v58: troceadas por tramos de regulares) — v64: CONTINUAS sobre la serie combinada con pre/post
+       (las pruebas a fondo de la v64 están en test_bb_ext.js)
      · chartFrescoTxt con ext (sus tres frases) y la cabecera de chartInline
      · el editor de tickers EN la pestaña (vistaTickers), el ✕ de cada tarjeta y el flujo quitar en dos toques
        (tickerQuitar / tickerQuitarSi / tickerQuitarNo), sin confirm() nativo
@@ -31,7 +32,7 @@ const xsDe = (pts) => pts.split(' ').map(p => Number(p.split(',')[0]));
 const polilineas = (svg, attr) => (svg.match(new RegExp('<polyline ' + attr + '="[^"]*" points="[^"]*"', 'g')) || []).map(m => xsDe(/points="([^"]*)"/.exec(m)[1]));
 const saltoMax = (xs) => xs.slice(1).reduce((m, x, i) => Math.max(m, x - xs[i]), 0);
 
-const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline'],
+const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart'],
   { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
 
 // ════════════════ 1. chartPrefs.ext · botón «Extendido» · editor en los selectores · chartExt ════════════════
@@ -145,28 +146,29 @@ function armarSel(E) {
   assert(/<rect data-ext="1"[^>]*fill="var\(--tx3\)" fill-opacity="\.09"\/>/.test(con), 'sombra tenue del color de texto terciario');
   assert(con.indexOf('data-ext="1"') < con.indexOf('data-bb="banda"') && con.indexOf('data-ext="1"') > con.indexOf('<g clip-path'), 'las sombras van dentro del clip y DEBAJO de las líneas y velas');
   assert(/<rect class="vela ext"[^>]*fill-opacity="\.75"\/>/.test(con), 'las velas extendidas van translúcidas (.75)');
-  igual(cuenta(con, /data-bb="medio"/g), 2, 'la línea media de Bollinger se trocea: una polilínea por tramo de regulares consecutivas (2 sesiones)');
-  igual([cuenta(con, /data-bb="banda"/g), cuenta(con, /data-bb="sup"/g), cuenta(con, /data-bb="inf"/g)], [2, 2, 2], 'y la banda, sup e inf igual');
+  // v64 (Andrés 2026-10-13): con extendido, Bollinger va CONTINUO sobre pre y post (serie combinada): ya no se trocea
+  igual(cuenta(con, /data-bb="medio"/g), 1, 'v64: la línea media de Bollinger es UNA polilínea continua (ya no se trocea por tramos de regulares)');
+  igual([cuenta(con, /data-bb="banda"/g), cuenta(con, /data-bb="sup"/g), cuenta(con, /data-bb="inf"/g)], [1, 1, 1], 'y la banda, sup e inf igual');
   igual([cuenta(sin, /data-bb="medio"/g), cuenta(sin, /data-bb="banda"/g)], [1, 1], 'sin extendido sigue siendo UNA polilínea (dibujo de siempre)');
   const saltos = polilineas(con, 'data-bb').map(saltoMax);
-  assert(saltos.length === 6 && saltos.every(s => s < 2 * bw), 'ninguna polilínea tiene dos puntos consecutivos separados por una zona extendida (salto máximo < 2 velas)', JSON.stringify(saltos.map(s => s.toFixed(1))));
+  assert(saltos.length === 3 && saltos.every(s => s < 1.2 * bw), 'v64: las tres polilíneas cruzan las zonas extendidas sin saltos (paso máximo = una vela)', JSON.stringify(saltos.map(s => s.toFixed(1))));
   cerca(saltoMax(polilineas(sin, 'data-bb')[0]), (400 - 6 - 48) / 78, 'y sin extendido el paso entre puntos es exactamente una vela (±0.1 por el redondeo a un decimal)', 0.1);
   const xsVelas = (con.match(/<rect class="vela[^"]*" x="([^"]*)"/g) || []).map(m => Number(/x="([^"]*)"/.exec(m)[1]));
   assert(xsVelas.length === 124 && xsVelas.every((x, i) => i === 0 || x > xsVelas[i - 1]), 'las 124 velas salen en orden ascendente por tiempo (regulares y extendidas entremezcladas)');
-  assert(/aria-label="AAPL 15 min Bollinger extendido"/.test(con), 'el aria-label añade « extendido»');
+  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida"/.test(con), 'el aria-label añade « extendido» (v64: «con indicadores de sesión extendida»)');
   assert(/aria-label="AAPL 15 min Bollinger"/.test(sin), 'y sin extendido no');
   assert(cuenta(con, /<line x1="[^"]*" y1="8" x2="[^"]*" y2="[^"]*" stroke="var\(--tx3\)" stroke-width="1" opacity="\.45"\/>/g) >= 1, 'el separador de día sigue saliendo (ahora al primer pre del día)');
-  // medias (ventana izquierda) también por tramo
+  // medias (ventana izquierda): v64, continuas también
   const hl = CH.chartSvg(pk, { vista: 'hl', tf: 'm15', ext: true });
-  igual([cuenta(hl, /data-sma="20"/g), cuenta(hl, /data-sma="40"/g)], [2, 2], 'en Medias + H-lines las SMA 20 y 40 también van troceadas en 2 tramos');
-  assert(polilineas(hl, 'data-sma').every(xs => saltoMax(xs) < 2 * bw), 'y ninguna media cruza una zona extendida');
+  igual([cuenta(hl, /data-sma="20"/g), cuenta(hl, /data-sma="40"/g)], [1, 1], 'v64: en Medias + H-lines las SMA 20 y 40 son UNA polilínea continua cada una');
+  assert(polilineas(hl, 'data-sma').every(xs => saltoMax(xs) < 1.2 * bw), 'y cruzan las zonas extendidas vela a vela, sin saltos');
   // vela viva extendida: solo mirando el presente y sin vela viva regular
   const pkV = { ...pk, velas_ext: EXT.slice(0, -1), vela_viva_ext: EXT[EXT.length - 1] };
   const v = CH.chartSvg(pkV, { vista: 'bb', tf: 'm15', ext: true });
   igual(cuenta(v, /<rect class="vela ext viva"/g), 1, 'fuera de la sesión regular la vela extendida en formación se dibuja');
   assert(/<rect class="vela ext viva"[^>]*fill-opacity="\.45" stroke="var\(--[a-z]+\)" stroke-width="1" stroke-dasharray="2 2"\/>/.test(v), 'punteada y translúcida como la viva de siempre');
   igual(cuenta(v, /<rect class="vela ext"/g), 71, 'y las cerradas extendidas son una menos');
-  assert(/aria-label="AAPL 15 min Bollinger extendido"/.test(v), 'cuenta como extendido');
+  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida"/.test(v), 'cuenta como extendido');
   const pkR = { ...pk, vela_viva: fila(T(DIAS[2], '13:30') + 26 * 900, 99), vela_viva_ext: fila(T(DIAS[2], '20:00'), 5) };
   const r = CH.chartSvg(pkR, { vista: 'bb', tf: 'm15', ext: true });
   igual([cuenta(r, /<rect class="vela viva"/g), cuenta(r, /vela ext viva/g)], [1, 0], 'con vela viva REGULAR (sesión en curso) la viva extendida NO se dibuja');
@@ -210,7 +212,7 @@ function armarSel(E) {
   const extH = [1, 2, 3, 4].map(k => fila(ultH + k * 3600, k));
   const h = CH.chartSvg({ ticker: 'AAPL', tf: 'hora', velas: regH, velas_ext: extH }, { vista: 'bb', tf: 'hora', ext: true });
   igual([cuenta(h, /<rect class="vela"/g), cuenta(h, /<rect class="vela ext"/g), cuenta(h, /data-ext="1"/g)], [60, 4, 1], 'en Hora: 60 regulares (MAXV_EXT) + las 4 extendidas del post en una sombra');
-  assert(/aria-label="AAPL Hora Bollinger extendido"/.test(h), 'con su aria-label');
+  assert(/aria-label="AAPL Hora Bollinger extendido con indicadores de sesión extendida"/.test(h), 'con su aria-label');
   igual(cuenta(CH.chartSvg({ ticker: 'AAPL', tf: 'hora', velas: regH }, { vista: 'bb', tf: 'hora', ext: true }), /<rect class="vela"/g), 90, 'en Hora sin velas_ext siguen siendo 90');
   // el gráfico del gestor (m1/m5, con ventana) no cambia aunque llegue ext
   const m5 = { ticker: 'AAPL', tf: 'm5', velas: serie('2026-09-22', '13:30', 100, 300), velas_ext: serie('2026-09-22', '12:00', 10, 300) };
@@ -253,7 +255,7 @@ function armarSel(E) {
   // cabecera de chartInline
   const fila15 = { payload: { ticker: 'AAPL', tf: 'm15', velas: REG, velas_ext: EXT }, actualizado_at: hoy };
   const ci = CH.chartInline('AAPL', fila15, 'bb', 'm15', null, false, true);
-  assert(/<span class="fresco">15 min · Bollinger · extendido<\/span>/.test(ci) && /vela ext/.test(ci), 'chartInline con ext: cabecera «15 min · Bollinger · extendido» y el svg con las extendidas');
+  assert(/<span class="fresco">15 min · Bollinger · extendido \(bandas con pre\/post\)<\/span>/.test(ci) && /vela ext/.test(ci), 'chartInline con ext: cabecera «15 min · Bollinger · extendido (bandas con pre/post)» (v64) y el svg con las extendidas');
   assert(/<span class="fresco">15 min · Bollinger<\/span>/.test(CH.chartInline('AAPL', fila15, 'bb', 'm15', null, false, false)), 'sin ext la cabecera de siempre');
   const sinDatos = CH.chartInline('AAPL', { payload: { ticker: 'AAPL', tf: 'm15', velas: REG } , actualizado_at: hoy }, 'bb', 'm15', null, false, true);
   assert(/<span class="fresco">15 min · Bollinger<\/span>/.test(sinDatos) && /extendido: sin datos aún/.test(sinDatos) && !/vela ext/.test(sinDatos), 'ext sin datos: la cabecera no dice «extendido» pero la frescura dice «sin datos aún»');
@@ -265,7 +267,7 @@ function armarSel(E) {
   const malas = CH.chartInline('AAPL', { payload: { ticker: 'AAPL', tf: 'm15', velas: REG, velas_ext: [[1, 2]] }, actualizado_at: hoy }, 'bb', 'm15', null, false, true);
   assert(/<span class="fresco">15 min · Bollinger<\/span>/.test(malas) && /extendido: sin datos aún/.test(malas) && !/data-ext/.test(malas), 'filas extendidas mal formadas: sin «extendido» en la cabecera y «sin datos aún» en la frescura');
   const soloVivaI = CH.chartInline('AAPL', { payload: { ticker: 'AAPL', tf: 'm15', velas: REG, velas_ext: [], vela_viva_ext: EXT[EXT.length - 1] }, actualizado_at: hoy }, 'bb', 'm15', null, false, true);
-  assert(/<span class="fresco">15 min · Bollinger · extendido<\/span>/.test(soloVivaI) && /vela ext viva/.test(soloVivaI), 'solo con la viva extendida dibujada ya dice «extendido»');
+  assert(/<span class="fresco">15 min · Bollinger · extendido \(bandas con pre\/post\)<\/span>/.test(soloVivaI) && /vela ext viva/.test(soloVivaI), 'solo con la viva extendida dibujada ya dice «extendido»');
 }
 
 // ════════════════ 4. vistaTickers: editor en la pestaña, ✕ por tarjeta y quitar en dos toques ════════════════

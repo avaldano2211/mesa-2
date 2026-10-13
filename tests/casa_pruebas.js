@@ -3,14 +3,17 @@
    con new Function y dependencias falsas — nada se reimplementa en las pruebas,
    porque una prueba que reimplementa la lógica solo se prueba a sí misma.
    Uso: const C = require('./smoke_tmp/casa_pruebas.js')(rutaAMainJs);
-   Cada suite recibe la ruta de main.js como argumento y termina con C.resumen(). */
+   Cada suite recibe la ruta de main.js como argumento y termina con C.resumen().
+   v64: casa(etiqueta, nombre, { auxiliar: true, fuente }) abre OTRO fuente (el texto en `fuente`, p. ej. el main.js
+   de la versión anterior sacado con git show, para comparar byte a byte) sin el aviso de «sin resumen» al salir:
+   sus funciones se construyen igual, pero las aserciones se hacen con la casa principal de la suite. */
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
 
-module.exports = function casa(RUTA, nombreSuite) {
+module.exports = function casa(RUTA, nombreSuite, opCasa) {
   if (!RUTA) { console.error('uso: node ' + (nombreSuite || 'test_x.js') + ' <ruta a main.js>'); process.exit(2); }
-  const FUENTE = fs.readFileSync(RUTA, 'utf8');
+  const FUENTE = (opCasa && typeof opCasa.fuente === 'string') ? opCasa.fuente : fs.readFileSync(RUTA, 'utf8');
 
   // ---------- contadores y aserciones ----------
   let verdes = 0, fallos = 0;
@@ -35,7 +38,7 @@ module.exports = function casa(RUTA, nombreSuite) {
   }
   // Una promesa colgada (un await que nunca vuelve) vacía el bucle de eventos y node
   // sale con 0 en silencio: eso NO es una suite verde. Sin resumen → FALLA y exit 1.
-  process.on('exit', (code) => {
+  if (!(opCasa && opCasa.auxiliar)) process.on('exit', (code) => {
     if (terminado) return;
     console.log('FALLA: la suite terminó sin llegar al resumen (una promesa quedó colgada o hubo una excepción fuera de las pruebas) · ' + verdes + ' asserts verdes antes de morir');
     if (code === 0) process.exitCode = 1;

@@ -209,7 +209,7 @@ const HOY_FIJO = '2026-10-12';   // lunes
         return { data: [], error: null };
       });
       const canal = () => { const c = { on() { return c; }, subscribe() { return c; } }; return c; };
-      const mod = C.cargarModuloEntero({ src: './app/main.js?v=63', hash: '#/informe', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
+      const mod = C.cargarModuloEntero({ src: './app/main.js?v=64', hash: '#/informe', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
       if (!mod.cargo) return { error: mod.error };
       await respirar();
       mod.win.innerWidth = ancho;
@@ -473,9 +473,9 @@ const HOY_FIJO = '2026-10-12';   // lunes
     assert(/#app\.ancho\.inf \.infsen\{display:grid;grid-template-columns:repeat\(auto-fit,minmax\(460px,1fr\)\)/.test(media) && /#app\.ancho\.inf \.infsen>\.sec[^{]*\{grid-column:1\/-1\}/.test(media), 'CSS: señales en rejilla (auto-fit, 460 px) con el encabezado a todo el ancho');
     assert(/#app\.ancho\.inf \.inftk\{display:grid;grid-template-columns:repeat\(auto-fit,minmax\(380px,1fr\)\)/.test(media), 'CSS: tickers en rejilla (auto-fit, 380 px)');
     assert(/\n  \.infarriba,\.infsen,\.inftk\{display:flex;flex-direction:column;gap:11px\}/.test(css), 'fuera de la computadora (un instante, al cambiar el ancho) los envoltorios son una columna');
-    assert(/config\.js\?v=63/.test(INDEX) && /app\/main\.js\?v=63/.test(INDEX), 'index.html carga config.js?v=63 y app/main.js?v=63');
+    assert(/config\.js\?v=64/.test(INDEX) && /app\/main\.js\?v=64/.test(INDEX), 'index.html carga config.js?v=64 y app/main.js?v=64');
     const SW = fs.readFileSync(path.join(path.dirname(process.argv[2]), '..', 'sw.js'), 'utf8');
-    assert(/const VER = 'mesa2-v52';/.test(SW), 'sw.js VER mesa2-v52');
+    assert(/const VER = 'mesa2-v53';/.test(SW), 'sw.js VER mesa2-v53');
   }
 
   // ════════════════ 8. v63 rev · funciones puras de los arreglos ════════════════

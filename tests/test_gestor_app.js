@@ -451,7 +451,7 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
   const T0 = Math.floor(Date.parse('2026-09-28T13:30:00Z') / 1000);
   const velas = (n, paso, base) => Array.from({ length: n }, (_, i) => { const o = base + Math.sin(i / 5), c = o + Math.cos(i / 3) * 0.4; return [T0 - (n - i) * paso, +o.toFixed(2), +(Math.max(o, c) + 0.3).toFixed(2), +(Math.min(o, c) - 0.3).toFixed(2), +c.toFixed(2), 100 + i]; });
   {
-    const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt'], { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
+    const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt'], { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
     const pk = { ticker: 'SPY', tf: 'm5', velas: velas(400, 300, 770), vela_viva: [T0, 770.1, 770.6, 769.9, 770.3, 50], niveles: { spot: 770.3, cierre_ayer: 769.0, apertura_hoy: 769.6, ath: 780.5, atl: 742.0, ath_dias: 120, techos_hora: [{ p: 771.5 }], pisos_hora: [{ p: 768.8 }] } };   // niveles CERCA del precio: un nivel lejano (±35 %) se omite a propósito
     const svg = CH.chartSvg(pk, { vista: 'bb', tf: 'm5', h: 372, w: 1100, ventana: { start: 352, end: 400 }, hlines: true, extra: [{ v: 770, c: 'var(--verde)', lb: '770.00 CALL ×2 +27%', k: 'strike', w: 1.6, op: .95 }] });
     assert(/viewBox="0 0 1100 372"/.test(svg) && /aria-label="SPY 5 min Bollinger"/.test(svg), 'viewBox ancho del Mac (1100 × 372) y «5 min» en el aria-label', svg.slice(0, 120));
