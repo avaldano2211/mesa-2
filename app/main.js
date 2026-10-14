@@ -949,7 +949,8 @@ function smaApp(cierres, n) {
 // horario extendido. TODAS las velas CERRADAS regulares (velas, entera, no solo la ventana) ∪ las extendidas
 // cerradas (velas_ext), en orden de tiempo y sin repetir t (si coinciden, manda la regular); una fila mal formada
 // no entra. Las vivas (vela_viva, vela_viva_ext) NUNCA entran: los indicadores son de velas cerradas.
-// Devuelve { filas, t, c (cierres), pos: Map t → índice en M, ext: Set de los t extendidos }: O(n) salvo el orden.
+// Devuelve { filas, t, c (cierres), pos: Map t → índice en M, ext: Set de los t extendidos, i0ext: índice en M de la
+// primera extendida (−1 si no hay) }: O(n) salvo el orden.
 function serieExtM(velas, velasExt) {
   const porT = new Map(), ext = new Set();
   const meter = (v, esExt) => {
@@ -963,7 +964,24 @@ function serieExtM(velas, velasExt) {
   const filas = [...porT.values()].sort((a, b) => Number(a[0]) - Number(b[0]));
   const t = filas.map(v => Number(v[0])), c = filas.map(v => Number(v[4])), pos = new Map();
   t.forEach((x, i) => pos.set(x, i));
-  return { filas, t, c, pos, ext };
+  return { filas, t, c, pos, ext, i0ext: t.findIndex(x => ext.has(x)) };
+}
+// v64 rev (revisión de Hora): qué SMA van «con pre/post» (smaApp sobre M) y cuáles se quedan con la de la sesión
+// REGULAR (pk.sma del worker, con su historia larga). Una media k va con pre/post SOLO si:
+//   · es pura: tiene valor en la última vela cerrada jL y su ventana de k velas empieza en o después de la primera
+//     extendida publicada (M.i0ext). Las extendidas cubren ~5 días naturales (tasty): en Hora la SMA 200 de M no
+//     existe y la SMA 100 mezclaría días sin pre/post con días con pre/post; decir «con pre/post» de eso sería falso.
+//   · no pierde nada: en ninguna vela de `cubrir[k]` (índices en M de las regulares a la vista que SÍ tienen media
+//     regular) se queda sin valor: la v64 cortaba la SMA 100 por la izquierda y dejaba la 200 en un trocito.
+// Devuelve { sma: { k: serie en M } de las que van con pre/post, reg: [k…] las que se quedan con la regular }.
+function mediasExtM(M, jL, cubrir) {
+  const out = { sma: {}, reg: [] };
+  ['20', '40', '100', '200'].forEach(k => {
+    const n = Number(k), s = smaApp(M.c, n);
+    const pura = jL >= 0 && jL < s.length && M.i0ext >= 0 && s[jL] != null && jL - n + 1 >= M.i0ext;
+    if (pura && ((cubrir && cubrir[k]) || []).every(j => j >= 0 && s[j] != null)) out.sma[k] = s; else out.reg.push(k);
+  });
+  return out;
 }
 // Nuevo máximo / nuevo mínimo de la doctrina: el techo de HORA más próximo POR
 // ENCIMA del precio y el piso de HORA más próximo POR DEBAJO. Se recorren solos
@@ -1017,6 +1035,12 @@ const fmtVol = (v) => { v = Number(v); if (!Number.isFinite(v) || v <= 0) return
 // las zonas sombreadas; la escala incluye esas bandas. El troceo por tramos queda solo para el dibujo sin extendido
 // (un solo tramo). Las señales del worker siguen con la sesión regular (pk.bb): el aria-label lo dice («con
 // indicadores de sesión extendida») y la cabecera / la hoja también. Sin extendido dibujado: la cadena de v63.
+//   v64 rev (revisión): (a) «con pre/post» solo si a la vista hay alguna extendida CERRADA de M (con solo la viva
+// extendida, M son las regulares: todo como en la v63); (b) cada SMA va con pre/post solo si mediasExtM lo admite
+// —pura (su ventana no empieza antes de la primera extendida publicada: las extendidas cubren ~5 días) y sin perder
+// ninguna vela a la vista que la regular sí tenía—; si no, la regular del worker por tramos, como en la v63 (en Hora
+// la SMA 100/200 enteras y no un trocito). El svg lo marca: data-ind-ext="1" y data-sma-ext="20,40" (las que van con
+// pre/post); el aria-label nombra las regulares dibujadas.
 function chartSvg(pk, op) {
   op = Object.assign({ vista: 'bb', h: 200, tf: null, targets: null, dec: 2, fondo: 'var(--card)', w: 400, ventana: null, extra: null, hlines: false, bb: true, ext: false }, op || {});
   const vacio = `<div class="vacio">Sin velas todavía para este marco (el worker las publica cada minuto en sesión)</div>`;
@@ -1084,24 +1108,39 @@ function chartSvg(pk, op) {
   // solo se aceptan las bandas del worker si son las del curso (20, 2); cualquier
   // otra cosa se recalcula aquí en vez de pintarla sin decirlo.
   const bb20 = pk.bb && Number(pk.bb.n) === 20 && Number(pk.bb.k) === 2;
-  // (v64: con extendido dibujado no se calculan: mandan las de la serie combinada, más abajo)
-  const bbSrc = nExt ? null : (bb20 && alin(pk.bb.medio) && alin(pk.bb.sup) && alin(pk.bb.inf)) ? pk.bb : bollingerApp(cierresAll, 20, 2);
-  const bb = nExt ? null : { medio: alin(bbSrc.medio), sup: alin(bbSrc.sup), inf: alin(bbSrc.inf) };
+  // v64 rev: indicadores con pre/post SOLO si a la vista hay alguna extendida CERRADA de la serie combinada M. Con solo
+  // la viva extendida dibujada (velas_ext vacía, o publicadas pero fuera de la ventana) ni una vela de pre/post entra en
+  // el cálculo: bandas, medias y aria-label son entonces los de la v63 (lo que se dice = lo que se calcula).
+  const M = nExt ? serieExtM(pk.velas, pk.velas_ext) : null;
+  const posM = M ? cs.map(c => (c.viva || !M.pos.has(c.t)) ? -1 : M.pos.get(c.t)) : null;
+  const indExt = !!M && cs.some((c, i) => c.ext && posM[i] >= 0 && M.ext.has(c.t));
+  // (v64: con indicadores con pre/post las bandas no se calculan aquí: mandan las de la serie combinada, más abajo)
+  const bbSrc = indExt ? null : (bb20 && alin(pk.bb.medio) && alin(pk.bb.sup) && alin(pk.bb.inf)) ? pk.bb : bollingerApp(cierresAll, 20, 2);
+  const bb = indExt ? null : { medio: alin(bbSrc.medio), sup: alin(bbSrc.sup), inf: alin(bbSrc.inf) };
   const SMAS = [['20', 'var(--oro)', 1], ['40', 'var(--rojo)', 1], ['100', 'var(--verde)', 1.8], ['200', 'var(--morado)', 2.4]];
   const smaSrc = pk.sma || {};
   const smas = {};
-  if (!nExt) SMAS.forEach(([k]) => { smas[k] = alin(smaSrc[k]) || smaApp(cierresAll, Number(k)).slice(start); });
-  // v64: con extendido dibujado, bb y sma de la serie combinada M, alineados con cs (null en las vivas y donde aún
-  // no hay 20 velas de historia); se calculan una sola vez por llamada (índice por t, nada de búsquedas por vela)
+  // las de la sesión regular, siempre (v64 rev: también con pre/post, para las medias que se quedan con la regular)
+  SMAS.forEach(([k]) => { smas[k] = alin(smaSrc[k]) || smaApp(cierresAll, Number(k)).slice(start); });
+  // v64: con indicadores con pre/post, bb y sma de la serie combinada M, alineados con cs (null en las vivas y donde
+  // aún no hay historia); se calculan una sola vez por llamada (índice por t, nada de búsquedas por vela).
+  // v64 rev: cada SMA va con pre/post solo si mediasExtM lo admite (pura en la última vela cerrada a la vista y sin
+  // perder ninguna vela regular a la vista que tenga media regular); si no, se queda con la REGULAR y se dibuja como en
+  // la v63, por tramos. Se deciden las 4 en las dos vistas (ix.conExt → data-sma-ext): la lectura de la hoja y la
+  // cabecera dicen lo que este gráfico decidió.
   let ix = null;
-  if (nExt) {
-    const M = serieExtM(pk.velas, pk.velas_ext);
-    const pos = cs.map(c => (c.viva || !M.pos.has(c.t)) ? -1 : M.pos.get(c.t));
-    const en = (a) => pos.map(j => (j >= 0 && a[j] != null ? a[j] : null));
-    ix = { bb: null, sma: {} };
+  if (indExt) {
+    const en = (a) => posM.map(j => (j >= 0 && a[j] != null ? a[j] : null));
+    ix = { bb: null, sma: {}, conExt: [] };
     if (conBB) { const b = bollingerApp(M.c, 20, 2); ix.bb = { medio: en(b.medio), sup: en(b.sup), inf: en(b.inf) }; }
-    if (hl) SMAS.forEach(([k]) => { ix.sma[k] = en(smaApp(M.c, Number(k))); });
+    let jL = -1; posM.forEach(j => { if (j > jL) jL = j; });
+    const cubrir = {};
+    SMAS.forEach(([k]) => { cubrir[k] = []; for (let q = 0; q < nCerr; q++) if (smas[k][q] != null) cubrir[k].push(posM[posReg[q]]); });
+    const md = mediasExtM(M, jL, cubrir);
+    SMAS.forEach(([k]) => { if (md.sma[k]) { ix.sma[k] = en(md.sma[k]); ix.conExt.push(k); } });
   }
+  // las medias que, con pre/post a la vista, se quedan con la regular y SÍ se dibujan (algún tramo con 2 puntos)
+  const smaRegDib = (hl && ix) ? SMAS.map(([k]) => k).filter(k => !ix.sma[k] && tramos.some(([a, b]) => { let c = 0; for (let q = a; q <= b; q++) if (smas[k][q] != null) c++; return c >= 2; })) : [];
 
   // --- geometría -----------------------------------------------------------
   const W = Math.max(320, Number(op.w) || 400), H = Math.max(120, Number(op.h) || 200);
@@ -1144,13 +1183,17 @@ function chartSvg(pk, op) {
   const span0 = (hi - lo) || (hi * 0.01) || 1;
   // un nivel lejano aplastaría las velas a una franja: solo entra lo que está cerca (±35 %)
   const cerca = (v) => v > lo - span0 * 0.35 && v < hi + span0 * 0.35;
-  if (hl) SMAS.forEach(([k]) => (ix ? ix.sma[k] : smas[k]).forEach(v => { if (v != null && cerca(Number(v))) { lo = Math.min(lo, Number(v)); hi = Math.max(hi, Number(v)); } }));
+  if (hl) SMAS.forEach(([k]) => ((ix && ix.sma[k]) || smas[k]).forEach(v => { if (v != null && cerca(Number(v))) { lo = Math.min(lo, Number(v)); hi = Math.max(hi, Number(v)); } }));
   niv.forEach(o => { if (cerca(o.v)) { lo = Math.min(lo, o.v); hi = Math.max(hi, o.v); } });
   const m = ((hi - lo) * 0.06) || (hi * 0.002) || 0.25; lo -= m; hi += m;
   const Y = (v) => pad.t + ih - (v - lo) / (hi - lo) * ih;
   const cp = 'cp-' + String(pk.ticker || 'x').replace(/[^A-Za-z0-9]/g, '') + '-' + tf + '-' + (hl ? 'hl' : 'bb') + '-' + H + '-' + W;
 
-  let out = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc((pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger') + (nExt ? ' extendido con indicadores de sesión extendida' : ''))}" style="display:block;font-family:var(--mono);font-size:9px">`;
+  // v64 rev: con indicadores con pre/post el svg lo marca (data-ind-ext) y dice qué medias van con pre/post
+  // (data-sma-ext): chartInline y la lectura de la hoja lo leen de aquí; el aria-label nombra las que siguen regulares
+  const ariaExt = !nExt ? '' : ' extendido' + (ix ? ' con indicadores de sesión extendida' + (smaRegDib.length ? ` (SMA ${smaRegDib.join('/')} de la sesión regular)` : '') : '');
+  const marcaExt = ix ? ' data-ind-ext="1"' + (ix.conExt.length ? ` data-sma-ext="${ix.conExt.join(',')}"` : '') : '';
+  let out = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"${marcaExt} aria-label="${esc((pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger') + ariaExt)}" style="display:block;font-family:var(--mono);font-size:9px">`;
   out += `<defs><clipPath id="${cp}"><rect x="${pad.l}" y="${pad.t}" width="${f1(iw)}" height="${f1(ih)}"/></clipPath></defs>`;
 
   // 1) rejilla horizontal + eje de precios en múltiplos redondos --------------
@@ -1225,14 +1268,15 @@ function chartSvg(pk, op) {
     });
   }
   // 4) medias simples (ventana izquierda), también por tramo ------------------
-  //    v64: con extendido, cada media continua sobre la serie combinada M
-  if (hl && ix) {
+  //    v64: con pre/post, cada media continua sobre la serie combinada M; v64 rev: las que se quedan con la regular
+  //    (mediasExtM), por tramo como en la v63
+  if (hl) {
     SMAS.forEach(([k, col, w]) => {
-      const pts = []; for (let i = 0; i < n; i++) if (ix.sma[k][i] != null) pts.push(`${f1(X(i))},${f1(Y(Number(ix.sma[k][i])))}`);
-      if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
-    });
-  } else if (hl) {
-    SMAS.forEach(([k, col, w]) => {
+      if (ix && ix.sma[k]) {
+        const pts = []; for (let i = 0; i < n; i++) if (ix.sma[k][i] != null) pts.push(`${f1(X(i))},${f1(Y(Number(ix.sma[k][i])))}`);
+        if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
+        return;
+      }
       tramos.forEach(([a, b]) => {
         const pts = []; for (let q = a; q <= b; q++) if (smas[k][q] != null) pts.push(`${f1(X(posReg[q]))},${f1(Y(Number(smas[k][q])))}`);
         if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
@@ -1313,12 +1357,25 @@ function chartFrescoTxt(fila, tf, ext) {
 // velas_ext fuera de la ventana o mal formadas no lo dice: lo que se dice = lo que se ve.
 //   v64: con extendido dibujado, Bollinger y medias son las de la serie con pre/post (chartSvg) y la cabecera lo
 // dice: «15 min · Bollinger · extendido (bandas con pre/post)» (en Medias + H-lines, «(medias con pre/post)»).
+//   v64 rev: lo dice SOLO si el svg lo marca (data-ind-ext: alguna extendida CERRADA a la vista; con solo la viva
+// extendida, « · extendido» a secas, como en la v63), y en Medias + H-lines nombra las que siguen con la sesión
+// regular: «(medias con pre/post salvo SMA 100/200)», o «(medias de la sesión regular)» si ninguna va con pre/post.
 function chartInline(sym, fila, vista, tf, tg, grande, ext) {
   const pk = fila && fila.payload;
   const svg = chartSvg(pk, { vista, tf, h: grande ? 320 : 200, w: grande ? 720 : 400, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)', ext: ext === true });   // v57: en grande, viewBox 720×320
   const hayExt = ext === true && /data-ext="1"/.test(svg);
+  let ind = '';
+  if (hayExt && /data-ind-ext="1"/.test(svg)) {
+    if (vista !== 'hl') ind = ' (bandas con pre/post)';
+    else {
+      const conExt = ((/data-sma-ext="([^"]*)"/.exec(svg) || [])[1] || '').split(',').filter(Boolean);
+      const dib = (k) => svg.includes(`data-sma="${k}"`);
+      const e = conExt.filter(dib), r = ['20', '40', '100', '200'].filter(k => !conExt.includes(k) && dib(k));
+      ind = e.length ? ` (medias con pre/post${r.length ? ` salvo SMA ${r.join('/')}` : ''})` : r.length ? ' (medias de la sesión regular)' : '';
+    }
+  }
   return `<div class="chart" role="button" onclick="MZ.chartAbrir('${esc(sym)}')">
-    <div class="fila"><span class="fresco">${esc(nombreTf(tf))} · ${esc(nombreVista(vista))}${hayExt ? ` · extendido (${vista === 'hl' ? 'medias' : 'bandas'} con pre/post)` : ''}</span>
+    <div class="fila"><span class="fresco">${esc(nombreTf(tf))} · ${esc(nombreVista(vista))}${hayExt ? ' · extendido' + ind : ''}</span>
       <span class="fresco">${esc(chartFrescoTxt(fila, tf, ext === true))}</span></div>${svg}</div>`;
 }
 
@@ -1362,7 +1419,13 @@ async function cargarTargets(forzar) {
 // (la viva extendida solo sin viva regular, como la dibuja chartSvg: post-mercado en curso) y Bollinger y medias
 // salen de M (último valor no nulo), con su rótulo y la nota de honestidad (las señales usan la sesión regular).
 // Sin ext, la lectura de siempre (byte a byte la de v63).
-function lecturaChart(pk, tf, dec, ext) {
+//   v64 rev: lo que se dice = lo que el GRÁFICO calculó. svg (opcional) es el gráfico que se enseña (pintarChart lo
+// pasa); sin él, el de Extendido por defecto (la misma ventana: el tamaño y la vista no cambian estas decisiones).
+// Bollinger y medias con pre/post solo si ese gráfico los calculó así (data-ind-ext; con solo la viva extendida, el
+// rótulo, la nota y los valores de la v63, aunque la «última vela» sea la viva extendida), y cada SMA con pre/post
+// solo si el gráfico la decidió así (data-sma-ext); las demás, la del worker con «SMA k (sesión regular)» y la nota
+// lo explica (en Hora las extendidas cubren ~5 días: no hay historia con pre/post para la SMA 100/200).
+function lecturaChart(pk, tf, dec, ext, svg) {
   if (!pk || !Array.isArray(pk.velas) || !pk.velas.length) return '';
   const viva = (Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5) ? pk.vela_viva : null;
   let u = viva || pk.velas[pk.velas.length - 1];
@@ -1373,29 +1436,41 @@ function lecturaChart(pk, tf, dec, ext) {
   const M = (ext === true && (tf === 'm15' || tf === 'hora') && Array.isArray(pk.velas_ext)) ? serieExtM(pk.velas, pk.velas_ext) : null;
   const vivaExt = (M && !viva && Array.isArray(pk.vela_viva_ext) && pk.vela_viva_ext.length >= 5
     && [0, 1, 2, 3, 4].every(i => Number.isFinite(Number(pk.vela_viva_ext[i])))) ? pk.vela_viva_ext : null;
-  if (M && M.filas.length && (M.ext.size || vivaExt)) {
+  const fuente = !(M && M.filas.length) ? '' : typeof svg === 'string' ? svg : chartSvg(pk, { vista: 'bb', tf, ext: true });
+  const conInd = /data-ind-ext="1"/.test(fuente);
+  if (M && M.filas.length && (conInd || vivaExt)) {
     const uM = M.filas[M.filas.length - 1];
     let mejor = [uM, M.ext.has(Number(uM[0])) ? 'última vela (extendida)' : 'última vela'];
     [[viva, 'vela en curso'], [vivaExt, 'vela extendida en curso']].forEach(([v, et]) => { if (v && Number(v[0]) > Number(mejor[0][0])) mejor = [v, et]; });
     u = mejor[0]; etU = mejor[1];
+  }
+  const K4 = ['20', '40', '100', '200'], reg = new Set();   // reg: las medias que se quedan con la sesión regular (v64 rev)
+  const lista = (ks) => (ks.length === 1 ? 'la SMA ' : 'las SMA ') + ks.join('/');
+  let faltanTxt = null;
+  if (conInd) {
     const b = bollingerApp(M.c, 20, 2);
     bb = { sup: b.sup, medio: b.medio, inf: b.inf };
-    sma = {}; ['20', '40', '100', '200'].forEach(k => { sma[k] = smaApp(M.c, Number(k)); });
-    rotulo = `Bollinger y medias con pre/post · última vela cerrada (${chartTiempo(M.t[M.t.length - 1]).hm})`;
-    nota = `<div class="mut" data-nota-ext="1" style="font-size:11px;margin:2px 0 6px">Con Extendido, Bollinger y medias se calculan con las velas de pre y post; las señales de la Mesa usan solo la sesión regular.</div>`;
+    const ce = ((/data-sma-ext="([^"]*)"/.exec(fuente) || [])[1] || '').split(','), smaW = pk.sma || {};
+    sma = {}; K4.forEach(k => { if (ce.includes(k)) sma[k] = smaApp(M.c, Number(k)); else { sma[k] = smaW[k]; reg.add(k); } });
+    const E = K4.filter(k => !reg.has(k) && ult(sma[k]) != null), R = K4.filter(k => reg.has(k) && ult(sma[k]) != null), F = K4.filter(k => ult(sma[k]) == null);
+    rotulo = `${E.length ? 'Bollinger y medias' : 'Bollinger'} con pre/post · última vela cerrada (${chartTiempo(M.t[M.t.length - 1]).hm})`;
+    const txt = !R.length ? 'Con Extendido, Bollinger y medias se calculan con las velas de pre y post; las señales de la Mesa usan solo la sesión regular.'
+      : `Con Extendido, Bollinger${E.length ? ' y ' + lista(E) + ' se calculan' : ' se calcula'} con las velas de pre y post; ${lista(R)} ${R.length === 1 ? 'sigue' : 'siguen'} con la sesión regular (con pre/post no hay historia suficiente: las extendidas cubren ~5 días). Las señales de la Mesa usan solo la sesión regular.`;
+    nota = `<div class="mut" data-nota-ext="1" style="font-size:11px;margin:2px 0 6px">${esc(txt)}</div>`;
+    if (F.length) faltanTxt = `en este marco no hay historia para ${lista(F)}, ni con pre/post (las extendidas cubren ~5 días; el curso decide las medias en hora y día)`;
   }
   const tt = chartTiempo(u[0]);
   const cuando = tf === 'dia' ? tt.dia : `${tt.hm} · ${tt.dia}`;
   // Las bandas y las medias son de la última vela CERRADA, aunque arriba se
   // muestre la vela en curso: decirlo evita leer como vivo un dato que no lo es.
-  const medias = ['20', '40', '100', '200'].map(k => ({ k, v: ult(sma[k]) })).filter(x => x.v != null);
+  const medias = K4.map(k => ({ k, v: ult(sma[k]) })).filter(x => x.v != null);
   const faltan = 4 - medias.length;
   return `${nota}<div class="hist">${c(etU, cuando)}${c('apertura', f(u[1]))}${c('cierre', f(u[4]))}</div>
     <div class="hist">${c('máximo', f(u[2]))}${c('mínimo', f(u[3]))}${c('volumen', fmtVol(u[5]))}</div>
     <div class="mut" style="font-size:11px;margin-top:6px">${esc(rotulo)}</div>
     <div class="hist">${c('BB superior', f(ult(bb.sup)))}${c('BB medio', f(ult(bb.medio)))}${c('BB inferior', f(ult(bb.inf)))}</div>
-    ${medias.length ? `<div class="hist" style="grid-template-columns:repeat(${medias.length},1fr)">${medias.map(x => c('SMA ' + x.k, f(x.v))).join('')}</div>` : ''}
-    ${faltan ? `<div class="mut" style="font-size:11px">en este marco no hay historia para ${faltan === 1 ? 'una media' : faltan + ' medias'} (el curso decide las medias en hora y día)</div>` : ''}`;
+    ${medias.length ? `<div class="hist" style="grid-template-columns:repeat(${medias.length},1fr)">${medias.map(x => c('SMA ' + x.k + (reg.has(x.k) ? ' (sesión regular)' : ''), f(x.v))).join('')}</div>` : ''}
+    ${faltan ? `<div class="mut" style="font-size:11px">${faltanTxt ? esc(faltanTxt) : `en este marco no hay historia para ${faltan === 1 ? 'una media' : faltan + ' medias'} (el curso decide las medias en hora y día)`}</div>` : ''}`;
 }
 function hlinesLista(pk, tg, dec) {
   const nv = (pk && pk.niveles) || {};
@@ -1497,8 +1572,9 @@ function pintarChart(fila, tg) {
   const grande = anchoVista() >= GESTOR_ANCHO_TABLA;   // v57: la hoja del gráfico también crece en pantallas anchas (#modalChart .hoja 1000 px)
   const svg = chartSvg(pk, { vista, tf, h: grande ? 380 : 300, w: grande ? 880 : 400, targets: tg, dec, fondo: 'var(--bg2)', ext });
   $('#chSvg').innerHTML = svg;
-  // v64: la lectura con pre/post (y su nota) solo si el gráfico DIBUJÓ extendidas (el criterio de chartInline)
-  $('#chLectura').innerHTML = lecturaChart(pk, tf, dec, ext === true && /data-ext="1"/.test(svg));
+  // v64: la lectura con pre/post (y su nota) solo si el gráfico DIBUJÓ extendidas (el criterio de chartInline);
+  // v64 rev: y dice lo que ESE gráfico calculó (data-ind-ext / data-sma-ext del svg)
+  $('#chLectura').innerHTML = lecturaChart(pk, tf, dec, ext === true && /data-ext="1"/.test(svg), svg);
   $('#chHlines').innerHTML = hlinesLista(pk, tg, dec);
   // el editor de target se rellena también si los targets llegaron DESPUÉS de
   // abrir la hoja (sin pisar lo que se esté escribiendo)

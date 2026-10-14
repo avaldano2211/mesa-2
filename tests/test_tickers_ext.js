@@ -32,7 +32,7 @@ const xsDe = (pts) => pts.split(' ').map(p => Number(p.split(',')[0]));
 const polilineas = (svg, attr) => (svg.match(new RegExp('<polyline ' + attr + '="[^"]*" points="[^"]*"', 'g')) || []).map(m => xsDe(/points="([^"]*)"/.exec(m)[1]));
 const saltoMax = (xs) => xs.slice(1).reduce((m, x, i) => Math.max(m, x - xs[i]), 0);
 
-const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart'],
+const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart'],
   { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
 
 // ════════════════ 1. chartPrefs.ext · botón «Extendido» · editor en los selectores · chartExt ════════════════
@@ -267,7 +267,9 @@ function armarSel(E) {
   const malas = CH.chartInline('AAPL', { payload: { ticker: 'AAPL', tf: 'm15', velas: REG, velas_ext: [[1, 2]] }, actualizado_at: hoy }, 'bb', 'm15', null, false, true);
   assert(/<span class="fresco">15 min · Bollinger<\/span>/.test(malas) && /extendido: sin datos aún/.test(malas) && !/data-ext/.test(malas), 'filas extendidas mal formadas: sin «extendido» en la cabecera y «sin datos aún» en la frescura');
   const soloVivaI = CH.chartInline('AAPL', { payload: { ticker: 'AAPL', tf: 'm15', velas: REG, velas_ext: [], vela_viva_ext: EXT[EXT.length - 1] }, actualizado_at: hoy }, 'bb', 'm15', null, false, true);
-  assert(/<span class="fresco">15 min · Bollinger · extendido \(bandas con pre\/post\)<\/span>/.test(soloVivaI) && /vela ext viva/.test(soloVivaI), 'solo con la viva extendida dibujada ya dice «extendido»');
+  // v64 rev: con solo la viva extendida ni una vela de pre/post entra en el cálculo (M = las regulares): dice «extendido»
+  // (se ve la viva extendida) pero NO «(bandas con pre/post)», y el svg no se marca con indicadores extendidos
+  assert(/<span class="fresco">15 min · Bollinger · extendido<\/span>/.test(soloVivaI) && /vela ext viva/.test(soloVivaI) && !/data-ind-ext|pre\/post|indicadores de sesión extendida/.test(soloVivaI), 'solo con la viva extendida dibujada ya dice «extendido», pero no «con pre/post» (v64 rev: ninguna vela de pre/post entra en las bandas)');
 }
 
 // ════════════════ 4. vistaTickers: editor en la pestaña, ✕ por tarjeta y quitar en dos toques ════════════════

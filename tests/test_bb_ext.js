@@ -13,6 +13,14 @@
      6. lecturaChart con ext: la última vela es la más reciente de M ∪ vivas, BB y SMA de la combinada, rótulo nuevo;
         sin ext, idéntica a v63
      7. la cabecera de chartInline, el aria-label y la nota de honestidad de la hoja (pintarChart) solo con Extendido
+   v64 rev (arreglos de la revisión):
+     8. Hora con la forma REAL del worker (velas_pub: 150 regulares de ~64 sesiones con pk.bb/pk.sma calculadas sobre
+        TODA la historia; extendidas de ~5 días naturales, 35 y las 60 de N_EXT_MAX): la SMA 20/40 con pre/post y
+        continuas; la SMA 100/200 se quedan con la regular del worker, ENTERAS y por tramos como en la v63 (la v64 las
+        dejaba en 0/11 puntos y 81/111); cabecera «(medias con pre/post salvo SMA 100/200)», aria-label, lectura «SMA k
+        (sesión regular)» y la nota que lo explica; mediasExtM (pureza + cobertura) por separado
+     9. solo la viva extendida a la vista (ninguna extendida CERRADA entra en el cálculo): ni «con pre/post» ni
+        data-ind-ext ni la nota; SVG byte a byte el de la v63; la lectura usa la viva extendida para la «última vela»
    Funciones REALES del fuente con dependencias falsas (casa_pruebas.js).
    Uso: node test_bb_ext.js mesa-2-app/app/main.js */
 'use strict';
@@ -23,7 +31,7 @@ const casa = require(path.join(__dirname, 'casa_pruebas.js'));
 const C = casa(process.argv[2], 'test_bb_ext.js');
 const { assert, igual, cerca, construir, esc, haceCuanto, localStorageFalso, nodo } = C;
 
-const NOMBRES = ['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart'];
+const NOMBRES = ['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart'];
 const CONSTS = ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'];
 const CH = construir(NOMBRES, { esc, haceCuanto }, { consts: CONSTS });
 
@@ -36,7 +44,7 @@ try {
   const src = execFileSync('git', ['-C', path.dirname(path.resolve(process.argv[2])), 'show', V63 + ':app/main.js'],
     { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
   const C63 = casa('git:' + V63 + ':app/main.js', 'v63', { auxiliar: true, fuente: src });
-  CH63 = C63.construir(NOMBRES.filter(n => n !== 'serieExtM'), { esc, haceCuanto }, { consts: CONSTS });
+  CH63 = C63.construir(NOMBRES.filter(n => n !== 'serieExtM' && n !== 'mediasExtM'), { esc, haceCuanto }, { consts: CONSTS });
 } catch (e) { console.log('nota: sin el main.js de la v63 (git show ' + V63 + ' falló: ' + String(e && e.message).split('\n')[0] + '): se omite la comparación byte a byte'); }
 
 // ---------- velas de juguete: tres sesiones (mar 22 → jue 24 sep 2026, horario de verano NY = UTC−4) ----------
@@ -168,6 +176,7 @@ assert(/data-ext="1"/.test(R.svg) && /<rect class="vela viva"/.test(R.svg), 'rea
   // solo la viva extendida (velas_ext vacía): M = las regulares; una sola banda, sin reventar
   const sv0 = CH.chartSvg({ ...PK, velas_ext: [], vela_viva_ext: EXT[EXT.length - 1] }, { vista: 'bb', tf: 'm15', ext: true });
   igual([cuenta(sv0, /data-bb="medio"/g), cuenta(sv0, /vela ext viva/g)], [1, 1], 'solo con la viva extendida: una banda (de las regulares) y la viva');
+  assert(!/data-ind-ext|indicadores de sesión extendida/.test(sv0) && /aria-label="AAPL 15 min Bollinger extendido"/.test(sv0), 'v64 rev: y sin «con indicadores de sesión extendida» ni data-ind-ext (ninguna vela de pre/post entra en las bandas)');
 }
 
 // ════════════════ 3. Medias + H-lines: las SMA continuas igual ════════════════
@@ -196,11 +205,11 @@ revisarSMA('REAL AAPL', PR);
 // ════════════════ 4. rendimiento: M y los indicadores UNA vez por llamada ════════════════
 {
   const reg = { bb: [], sma: [] };
-  const P = construir(['chartSvg', 'serieExtM', 'techoPisoProximos', 'chartTiempo'], { esc, haceCuanto,
+  const P = construir(['chartSvg', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo'], { esc, haceCuanto,
     bollingerApp: (c, n, k) => { reg.bb.push(c.slice()); return CH.bollingerApp(c, n, k); },
     smaApp: (c, n) => { reg.sma.push([n, c.length]); return CH.smaApp(c, n); } }, { consts: CONSTS });
   P.chartSvg(PR, { vista: 'bb', tf: 'm15', ext: true });
-  igual([reg.bb.length, reg.sma.length], [1, 0], 'Bollinger con extendido: bollingerApp UNA vez por llamada y ninguna SMA (el pk.bb regular ni se toca)');
+  igual([reg.bb.length, reg.sma], [1, [[20, 191], [40, 191], [100, 191], [200, 191]]], 'Bollinger con extendido: bollingerApp UNA vez por llamada; las 4 SMA una vez cada una sobre M (v64 rev: para decidir cuáles van con pre/post — la lectura de la hoja lo dice en las dos vistas); las regulares vienen de pk.sma, nada recalculado');
   igual(reg.bb[0], combinada(PR).map(x => x.c), 'y sobre los cierres de la serie combinada M (191, sin la viva)');
   reg.bb = []; reg.sma = [];
   P.chartSvg(PR, { vista: 'hl', tf: 'm15', ext: true });
@@ -266,7 +275,8 @@ if (CH63) {
   assert(l.includes('Bollinger y medias con pre/post · última vela cerrada (19:45)'), 'rótulo «Bollinger y medias con pre/post · última vela cerrada (hh:mm)»');
   assert(l.includes(celda('BB superior', f2(ult(bO.sup)))) && l.includes(celda('BB medio', f2(ult(bO.medio)))) && l.includes(celda('BB inferior', f2(ult(bO.inf)))), 'BB superior/medio/inferior de la serie combinada (último valor no nulo de M)');
   const s20 = ult(CH.smaApp(O.map(x => x.c), 20)), s100 = ult(CH.smaApp(O.map(x => x.c), 100));
-  assert(l.includes(celda('SMA 20', f2(s20))) && l.includes(celda('SMA 100', f2(s100))) && !/SMA 200/.test(l) && /no hay historia para una media/.test(l), 'SMA 20/40/100 de la combinada; la 200 no tiene historia en M (186) y se dice');
+  assert(l.includes(celda('SMA 20', f2(s20))) && l.includes(celda('SMA 100', f2(s100))) && !/<span>SMA 200/.test(l) && !/sesión regular\)/.test(l), 'SMA 20/40/100 de la combinada (puras: sus ventanas no empiezan antes de la primera extendida); la 200 no tiene historia en M (186)');
+  assert(/<div class="mut" style="font-size:11px">en este marco no hay historia para la SMA 200, ni con pre\/post \(las extendidas cubren ~5 días; el curso decide las medias en hora y día\)<\/div>/.test(l), 'v64 rev: y se dice CUÁL falta y por qué («la SMA 200, ni con pre/post (las extendidas cubren ~5 días…)»)');
   assert(/^<div class="mut" data-nota-ext="1"[^>]*>Con Extendido, Bollinger y medias se calculan con las velas de pre y post; las señales de la Mesa usan solo la sesión regular\.<\/div>/.test(l), 'arriba, pegada al gráfico, la nota de honestidad');
   // post-mercado EN CURSO: la viva extendida es la más nueva
   const pkV = { ...PK, velas_ext: EXT.slice(0, -1), vela_viva_ext: u };
@@ -286,13 +296,26 @@ if (CH63) {
   assert(lrr.includes(celda('vela en curso', `${tv.hm} · ${tv.dia}`)), 'con vela viva regular la viva extendida no cuenta (chartSvg tampoco la dibuja)');
 }
 
+// la hoja: pintarChart con las preferencias de verdad (localStorage), sus nodos falsos y las funciones reales
+function hoja(almacen, fila) {
+  const nodos = {}; ['#chSel', '#chFresco', '#chSvg', '#chLectura', '#chHlines', '#modalChart', '#tgT', '#tgA', '#tgB', '#tgF', '#tgS'].forEach(id => { nodos[id] = nodo(); });
+  const P = construir(['pintarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'serieExtM', 'mediasExtM',
+    'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
+    $: (s) => nodos[s] || null, localStorage: localStorageFalso(almacen), esc, haceCuanto, document: { activeElement: null } },
+  { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', '_velas', '_targets'], prefijo: 'let _ch = { sym: "AAPL", gen: 0, timer: null };' });
+  P.pintarChart(fila, null);
+  return nodos;
+}
+const cab = (h) => (/<span class="fresco">([^<]*)<\/span>/.exec(h) || [])[1];
+
 // ════════════════ 7. cabecera, aria-label y la nota de la hoja: solo con Extendido ════════════════
 {
   const hoy = new Date().toISOString(), fila15 = { payload: PK, actualizado_at: hoy };
-  const cab = (h) => (/<span class="fresco">([^<]*)<\/span>/.exec(h) || [])[1];
   igual(cab(CH.chartInline('AAPL', fila15, 'bb', 'm15', null, false, true)), '15 min · Bollinger · extendido (bandas con pre/post)', 'cabecera con Extendido: «15 min · Bollinger · extendido (bandas con pre/post)»');
   igual(cab(CH.chartInline('AAPL', fila15, 'hl', 'm15', null, true, true)), '15 min · Medias + H-lines · extendido (medias con pre/post)', 'en Medias + H-lines: «(medias con pre/post)»');
   igual(cab(CH.chartInline('AAPL', { payload: PR, actualizado_at: hoy }, 'bb', 'hora', null, false, true)), 'Hora · Bollinger · extendido (bandas con pre/post)', 'en Hora igual');
+  igual(cab(CH.chartInline('AAPL', { payload: PR, actualizado_at: hoy }, 'hl', 'm15', null, false, true)), '15 min · Medias + H-lines · extendido (medias con pre/post)', 'real m15 en Medias + H-lines: «(medias con pre/post)» (la SMA 200 no se dibuja con ninguna de las dos: no se nombra)');
+  igual(/data-sma-ext="([^"]*)"/.exec(CH.chartSvg(PR, { vista: 'bb', tf: 'm15', ext: true }))[1], '20,40,100', 'v64 rev: el svg marca qué medias van con pre/post (data-sma-ext), también en la vista Bollinger (la lectura lo usa)');
   igual(cab(CH.chartInline('AAPL', fila15, 'bb', 'm15', null, false, false)), '15 min · Bollinger', 'sin Extendido, la de siempre');
   igual(cab(CH.chartInline('AAPL', fila15, 'bb', 'dia', null, false, true)), 'Día · Bollinger', 'en Día, la de siempre');
   igual(cab(CH.chartInline('AAPL', { payload: { ...PK, velas_ext: EXT.slice(0, 36) }, actualizado_at: hoy }, 'bb', 'm15', null, false, true)), '15 min · Bollinger', 'extendidas fuera de la ventana (ni una dibujada): no dice «extendido» (lo que se dice = lo que se ve)');
@@ -300,16 +323,7 @@ if (CH63) {
   assert(/aria-label="AAPL 15 min medias y H-lines extendido con indicadores de sesión extendida"/.test(CH.chartSvg(PK, { vista: 'hl', tf: 'm15', ext: true })), 'también en Medias + H-lines');
   assert(/aria-label="AAPL 15 min Bollinger"/.test(CH.chartSvg(PK, { vista: 'bb', tf: 'm15' })), 'sin Extendido no');
 
-  // la hoja: pintarChart con las preferencias de verdad (localStorage) y su nota bajo el gráfico
-  function hoja(almacen, fila) {
-    const nodos = {}; ['#chSel', '#chFresco', '#chSvg', '#chLectura', '#chHlines', '#modalChart', '#tgT', '#tgA', '#tgB', '#tgF', '#tgS'].forEach(id => { nodos[id] = nodo(); });
-    const P = construir(['pintarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'serieExtM',
-      'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
-      $: (s) => nodos[s] || null, localStorage: localStorageFalso(almacen), esc, haceCuanto, document: { activeElement: null } },
-    { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', '_velas', '_targets'], prefijo: 'let _ch = { sym: "AAPL", gen: 0, timer: null };' });
-    P.pintarChart(fila, null);
-    return nodos;
-  }
+  // la hoja (hoja(), arriba): la nota bajo el gráfico
   const filaR = { payload: PR, actualizado_at: hoy };
   const on = hoja({ mz_chart_ext: '1' }, filaR);
   assert(/data-nota-ext="1"/.test(on['#chLectura'].innerHTML) && /Con Extendido, Bollinger y medias se calculan con las velas de pre y post; las señales de la Mesa usan solo la sesión regular\./.test(on['#chLectura'].innerHTML), 'hoja con Extendido: debajo del gráfico, la nota de honestidad');
@@ -323,6 +337,148 @@ if (CH63) {
   assert(!/data-nota-ext/.test(fuera['#chLectura'].innerHTML), 'ni con extendidas publicadas pero ninguna a la vista (la lectura dice lo que el gráfico enseña)');
   const dia = hoja({ mz_chart_ext: '1', mz_chart_tf: 'dia' }, filaR);
   assert(!/data-nota-ext/.test(dia['#chLectura'].innerHTML), 'ni en Día');
+}
+
+// ════════════════ 8. v64 rev · Hora con la forma REAL del worker: SMA 20/40 con pre/post, SMA 100/200 regulares ENTERAS ════════════════
+{
+  // velas_pub.armar_tf (hora): pk.bb / pk.sma sobre TODA la historia regular (~90 días naturales) y recortadas con las
+  // velas a las últimas 150 (N_MAX). Malla :30 de dxfeed: regulares 9:30…15:30 ET (7 por sesión); _ext_hora agrega por
+  // bucket cuya apertura cae en extendida: pre 4:30…8:30 (5) y post 16:30…19:30 (4). «Ahora» = lun 12 oct 2026 13:50 ET:
+  // cerradas hasta el bucket de las 12:30, la viva regular es el de las 13:30.
+  const dias = []; for (let d = new Date(Date.UTC(2026, 9, 12)); dias.length < 64; d = new Date(d.getTime() - 86400000)) { const w = d.getUTCDay(); if (w && w < 6) dias.unshift(d.toISOString().slice(0, 10)); }
+  const TH = (ymd, h, m) => Math.floor(Date.parse(ymd + 'T00:00:00Z') / 1000) + (h + 4) * 3600 + (m || 0) * 60;   // EDT = UTC−4
+  let semilla = 11; const rnd = () => (semilla = (semilla * 16807) % 2147483647) / 2147483647;
+  let px = 220; const barra = (t) => { const o = px; px = px * (1 + (rnd() - 0.5) * 0.012); const c = px; return [t, +o.toFixed(2), +(Math.max(o, c) + 0.25).toFixed(2), +(Math.min(o, c) - 0.25).toFixed(2), +c.toFixed(2), 1000]; };
+  const regH = [], extH = [];
+  dias.forEach(d => { [4, 5, 6, 7, 8].forEach(h => extH.push(barra(TH(d, h, 30)))); [9, 10, 11, 12, 13, 14, 15].forEach(h => regH.push(barra(TH(d, h, 30)))); [16, 17, 18, 19].forEach(h => extH.push(barra(TH(d, h, 30)))); });
+  const ahora = TH('2026-10-12', 13, 50);
+  const cerrH = regH.filter(v => v[0] + 3600 <= ahora), vivaH = regH.find(v => v[0] <= ahora && ahora < v[0] + 3600), extC = extH.filter(v => v[0] + 3600 <= ahora);
+  const cAll = cerrH.map(v => v[4]), bW = CH.bollingerApp(cAll, 20, 2), k0 = cerrH.length - 150;
+  const smaW = {}; ['20', '40', '100', '200'].forEach(k => { smaW[k] = CH.smaApp(cAll, Number(k)).slice(k0); });
+  const base = { ticker: 'AAPL', tf: 'hora', velas: cerrH.slice(k0), vela_viva: vivaH, vela_viva_ext: null, niveles: {},
+    bb: { n: 20, k: 2, medio: bW.medio.slice(k0), sup: bW.sup.slice(k0), inf: bW.inf.slice(k0) }, sma: smaW };
+  igual([base.velas.length, ['20', '40', '100', '200'].map(k => smaW[k].filter(x => x != null).length)], [150, [150, 150, 150, 150]],
+    'Hora fiel al worker: 150 regulares publicadas y pk.sma con las 4 medias COMPLETAS (historia de ' + cerrH.length + ' velas)');
+  const f2 = (v) => Number(v).toFixed(2), celda = (et, val) => `<div><span>${et}</span><b class="mono">${val}</b></div>`;
+  const ult = (a) => { for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+  const hoy = new Date().toISOString();
+  [['5 días naturales (tasty)', extC.filter(v => v[0] >= ahora - 5 * 86400)], ['35 extendidas', extC.slice(-35)], ['60 extendidas (N_EXT_MAX)', extC.slice(-60)]].forEach(([nom, ext]) => {
+    const pkH = Object.assign({}, base, { velas_ext: ext }), op = { vista: 'hl', tf: 'hora', ext: true, w: 880, h: 380 };
+    const svg = CH.chartSvg(pkH, op), O = combinada(pkH), { cerr, casa: casaM } = velasEnM(svg, O), zonas = zonasExt(svg);
+    const bw = (cerr[cerr.length - 1].cx - cerr[0].cx) / (cerr.length - 1), nReg = cerr.filter(v => !/ext/.test(v.clase)).length;
+    const N = 'Hora ' + nom + ' (' + ext.length + ' ext)';
+    assert(casaM && zonas.length >= 2 && nReg === 60, N + ': 60 regulares (MAXV_EXT) + las extendidas sombreadas; las velas casan con M');
+    igual([/data-ind-ext="1"/.test(svg), (/data-sma-ext="([^"]*)"/.exec(svg) || [])[1]], [true, '20,40'], N + ': el svg marca indicadores con pre/post y que SOLO la SMA 20/40 van con pre/post');
+    // SMA 20/40: con pre/post, UNA polilínea continua sobre las zonas sombreadas
+    const pv = [];
+    ['20', '40'].forEach(k => {
+      const ps = polis(svg, 'data-sma', k), s = CH.smaApp(O.map(x => x.c), Number(k));
+      igual([ps.length, (ps[0] || []).length], [1, cerr.filter(v => s[v.j] != null).length], N + ': SMA ' + k + ' con pre/post: UNA polilínea, un punto por vela cerrada a la vista (regular o extendida)');
+      assert(saltoMax(ps[0]) < 1.2 * bw && ps[0].some(([x]) => enZona(x, zonas)), N + ': SMA ' + k + ' continua y sobre las zonas sombreadas');
+      emparejar(ps[0], cerr, s, bw).forEach(p => pv.push(p));
+    });
+    // SMA 100/200: la REGULAR del worker (pk.sma, historia larga) ENTERA, por tramos de regulares como en la v63
+    const mapaReg = (k) => { const m = new Map(pkH.velas.map((v, i) => [Number(v[0]), smaW[k][i]])); return O.map(x => x.ext ? NaN : m.get(x.t)); };
+    ['100', '200'].forEach(k => {
+      const ps = polis(svg, 'data-sma', k), pts = ps.reduce((a, p) => a.concat(p), []);
+      igual(pts.length, 60, N + ': SMA ' + k + ' regular ENTERA: un punto por cada una de las 60 regulares a la vista (la v64 dejaba ' + (k === '200' ? '0–11' : '81–111 de 120') + ')');
+      assert(ps.length >= 2 && ps.every(p => !p.some(([x]) => enZona(x, zonas))), N + ': SMA ' + k + ' troceada por tramos (' + ps.length + '): ninguna recta atraviesa una zona extendida');
+      const em = emparejar(pts, cerr, mapaReg(k), bw);
+      assert(em.every(p => Number.isFinite(p[0]) && p[2] && !/ext/.test(p[2].clase)), N + ': SMA ' + k + ': cada punto cae sobre una regular, con el valor de pk.sma del worker');
+      em.forEach(p => pv.push(p));
+      if (CH63) igual(ps.map(p => p.map(q => q[0])), polis(CH63.chartSvg(pkH, op), 'data-sma', k).map(p => p.map(q => q[0])), N + ': SMA ' + k + ': los mismos tramos y las mismas X que la v63');
+    });
+    const A = ajuste(pv), res = Math.max(...pv.map(([v, y]) => Math.abs(A.Y(v) - y)));
+    const tk = ticks(svg), resTk = Math.max(...tk.map(([v, y]) => Math.abs(A.Y(v) - y)));
+    assert(A.b < 0 && res <= 0.1 && resTk <= 0.1, N + ': las Y: SMA 20/40 = smaApp sobre M, SMA 100/200 = pk.sma del worker, con la escala del eje (±0,1 px; ' + res.toFixed(3) + ' / ' + resTk.toFixed(3) + ')');
+    assert(new RegExp('aria-label="AAPL Hora medias y H-lines extendido con indicadores de sesión extendida \\(SMA 100/200 de la sesión regular\\)"').test(svg), N + ': el aria-label nombra las que siguen regulares');
+    igual(cab(CH.chartInline('AAPL', { payload: pkH, actualizado_at: hoy }, 'hl', 'hora', null, true, true)), 'Hora · Medias + H-lines · extendido (medias con pre/post salvo SMA 100/200)', N + ': cabecera «(medias con pre/post salvo SMA 100/200)»');
+    igual(cab(CH.chartInline('AAPL', { payload: pkH, actualizado_at: hoy }, 'bb', 'hora', null, true, true)), 'Hora · Bollinger · extendido (bandas con pre/post)', N + ': en Bollinger, «(bandas con pre/post)»');
+    // la lectura: SMA 20/40 de M; SMA 100/200 las del worker con «(sesión regular)»; nada de «no hay historia»
+    const sM = (k) => ult(CH.smaApp(O.map(x => x.c), Number(k)));
+    const l = CH.lecturaChart(pkH, 'hora', 2, true, svg);
+    assert(l.includes(celda('SMA 20', f2(sM(20)))) && l.includes(celda('SMA 40', f2(sM(40)))), N + ': lectura: SMA 20/40 con pre/post (último valor de M)');
+    assert(l.includes(celda('SMA 100 (sesión regular)', f2(ult(smaW['100'])))) && l.includes(celda('SMA 200 (sesión regular)', f2(ult(smaW['200'])))), N + ': lectura: «SMA 100 (sesión regular)» y «SMA 200 (sesión regular)» = las del worker (' + f2(ult(smaW['100'])) + ' / ' + f2(ult(smaW['200'])) + ')');
+    assert(!/no hay historia para/.test(l) && /el curso decide/.test(CH.lecturaChart(Object.assign({}, pkH, { sma: {} }), 'hora', 2, true, svg)) && !/el curso decide/.test(l), N + ': y ya no dice «en este marco no hay historia… (el curso decide las medias en hora y día)» estando en Hora');
+    assert(l.includes('Con Extendido, Bollinger y las SMA 20/40 se calculan con las velas de pre y post; las SMA 100/200 siguen con la sesión regular (con pre/post no hay historia suficiente: las extendidas cubren ~5 días). Las señales de la Mesa usan solo la sesión regular.'), N + ': la nota dice cuáles van con pre/post y por qué las otras no');
+    igual(CH.lecturaChart(pkH, 'hora', 2, true), l, N + ': sin svg, la lectura decide lo MISMO que el gráfico (el de Extendido por defecto)');
+    igual(CH.lecturaChart(pkH, 'hora', 2, true, CH.chartSvg(pkH, Object.assign({}, op, { vista: 'bb' }))), l, N + ': y lo mismo con el svg de la vista Bollinger (las 4 medias se deciden en las dos vistas)');
+    if (CH63) {
+      ['bb', 'hl'].forEach(v => igual(CH.chartSvg(pkH, { vista: v, tf: 'hora', w: 880, h: 380 }), CH63.chartSvg(pkH, { vista: v, tf: 'hora', w: 880, h: 380 }), N + ': Extendido apagado (' + v + '): byte a byte la v63'));
+      igual(CH.lecturaChart(pkH, 'hora', 2), CH63.lecturaChart(pkH, 'hora', 2), N + ': y la lectura sin ext, byte a byte la v63');
+    }
+    if (ext.length === 60) {
+      // el caso de la revisión: con 60 extendidas la SMA 100 de M es PURA (su ventana empieza después de la primera
+      // extendida) pero NO llega a las primeras regulares a la vista: la cobertura la deja con la regular
+      const i0 = O.findIndex(x => x.ext), jL = O.length - 1, s100 = CH.smaApp(O.map(x => x.c), 100), j0 = cerr.find(v => !/ext/.test(v.clase)).j;
+      assert(jL - 99 >= i0 && s100[j0] == null && smaW['100'][90] != null, N + ': la SMA 100 con pre/post sería pura (ventana desde ' + (jL - 99) + ' ≥ primera extendida ' + i0 + ') pero no tiene valor en la primera regular a la vista (la regular sí): la cobertura manda');
+    }
+    // la hoja de verdad (pintarChart, Hora + Medias + H-lines + Extendido)
+    const nodos = hoja({ mz_chart_ext: '1', mz_chart_tf: 'hora', mz_chart_vista: 'hl' }, { payload: pkH, actualizado_at: hoy });
+    assert(nodos['#chLectura'].innerHTML.includes(celda('SMA 200 (sesión regular)', f2(ult(smaW['200'])))) && cuenta(nodos['#chSvg'].innerHTML, /data-sma="200"/g) >= 2, N + ': en la hoja, la SMA 200 dibujada (regular, por tramos) y leída como «(sesión regular)»');
+  });
+}
+
+// ════════════════ 8b. mediasExtM: pureza y cobertura ════════════════
+{
+  // M de juguete: 30 regulares (t 1000…1029), 15 extendidas (1031…1059) y 15 regulares más (1060…1088): la primera
+  // extendida en el índice 30
+  const reg = Array.from({ length: 45 }, (_, i) => [i < 30 ? 1000 + i : 1000 + 2 * i, 1, 2, 0.5, 1 + i, 9]);
+  const ext = Array.from({ length: 15 }, (_, i) => [1031 + 2 * i, 1, 2, 0.5, 50 + i, 9]);
+  const M = CH.serieExtM(reg, ext), jL = M.c.length - 1;
+  igual([M.c.length, M.i0ext, M.t[30], M.ext.has(M.t[30]), M.ext.has(M.t[29])], [60, 30, 1031, true, false], 'M de 60 con su primera extendida en i0ext = 30');
+  const md = CH.mediasExtM(M, jL, null);
+  igual([Object.keys(md.sma), md.reg], [['20'], ['40', '100', '200']], 'pura: la SMA 20 (ventana de 20 desde ' + (jL - 19) + ' ≥ ' + M.i0ext + '); la 40 empieza antes de la primera extendida; la 100/200 sin valor');
+  igual(md.sma['20'], CH.smaApp(M.c, 20), 'y la serie es smaApp sobre M');
+  igual(CH.mediasExtM(M, jL, { '20': [jL, jL - 5] }).reg.includes('20'), false, 'cubre: con valor en todas las velas que hay que cubrir, sigue con pre/post');
+  igual(CH.mediasExtM(M, jL, { '20': [jL, 10] }).reg.includes('20'), true, 'no cubre: una vela a cubrir (índice 10) sin valor en M → se queda con la regular');
+  igual(CH.mediasExtM(M, jL, { '20': [-1] }).reg.includes('20'), true, 'una regular a cubrir que no está en M (−1) → la regular');
+  igual(CH.mediasExtM(CH.serieExtM(reg, []), 44, null).reg, ['20', '40', '100', '200'], 'sin extendidas en M (i0ext −1) ninguna va con pre/post');
+  igual(CH.mediasExtM(M, -1, null).reg.length, 4, 'sin vela cerrada a la vista (jL −1) tampoco');
+}
+
+// ════════════════ 8c. la pureza en el gráfico: m15 real con solo 38 extendidas (el pre de hoy + el post del viernes) ════════════════
+{
+  // la SMA 100 de M tiene valor en la última vela, pero su ventana de 100 empieza en días SIN pre/post publicados (mezcla):
+  // no se dibuja «con pre/post» (el worker no publica SMA 100 en 15 min: no hay regular que poner) y la lectura lo dice
+  const pk = Object.assign({}, PR, { velas_ext: PR.velas_ext.slice(-38) });
+  const M = CH.serieExtM(pk.velas, pk.velas_ext), jL = M.c.length - 1, s100 = CH.smaApp(M.c, 100);
+  assert(s100[jL] != null && jL - 99 < M.i0ext, 'm15 con 38 extendidas: la SMA 100 de M existe en la última vela pero su ventana empieza en ' + (jL - 99) + ', antes de la primera extendida (' + M.i0ext + ')');
+  const svg = CH.chartSvg(pk, { vista: 'hl', tf: 'm15', ext: true });
+  igual([(/data-sma-ext="([^"]*)"/.exec(svg) || [])[1], cuenta(svg, /data-sma="100"/g), cuenta(svg, /data-sma="20"/g)], ['20,40', 0, 1], 'impura → la SMA 100 no va con pre/post (y sin regular publicada, no se dibuja); la SMA 20 sí, continua');
+  const l = CH.lecturaChart(pk, 'm15', 2, true, svg);
+  assert(!/<span>SMA 100/.test(l) && l.includes('en este marco no hay historia para las SMA 100/200, ni con pre/post (las extendidas cubren ~5 días; el curso decide las medias en hora y día)'), 'y la lectura no la da y dice cuáles faltan y por qué');
+  const svg60 = CH.chartSvg(Object.assign({}, PR, { velas_ext: PR.velas_ext.slice(-60) }), { vista: 'hl', tf: 'm15', ext: true });
+  igual((/data-sma-ext="([^"]*)"/.exec(svg60) || [])[1], '20,40,100', 'con 60 extendidas su ventana ya empieza en o después de la primera extendida: la SMA 100 va con pre/post');
+}
+
+// ════════════════ 9. v64 rev · solo la viva extendida a la vista: nada «con pre/post» ════════════════
+{
+  const hoy = new Date().toISOString();
+  const tViva = Number(PR.velas[PR.velas.length - 1][0]) + 2.25 * 3600;           // lun 12 oct 16:00 ET (post en curso)
+  const vivaX = [tViva, 255.1, 255.6, 254.9, 255.4, 1234];
+  const casos = [
+    ['velas_ext vacía + la viva extendida', Object.assign({}, PR, { vela_viva: null, velas_ext: [], vela_viva_ext: vivaX })],
+    ['extendidas publicadas pero fuera de la ventana + la viva extendida', Object.assign({}, PR, { vela_viva: null, velas_ext: PR.velas_ext.filter(v => Number(v[0]) < Number(PR.velas[0][0]) + 3600), vela_viva_ext: vivaX })],
+  ];
+  casos.forEach(([nom, pk]) => {
+    ['bb', 'hl'].forEach(v => {
+      const svg = CH.chartSvg(pk, { vista: v, tf: 'm15', ext: true });
+      assert(/<rect class="vela ext viva"/.test(svg) && cuenta(svg, /<rect class="vela ext"/g) === 0, nom + ' (' + v + '): se dibuja la viva extendida y ninguna extendida cerrada');
+      assert(!/data-ind-ext|indicadores de sesión extendida/.test(svg) && new RegExp('aria-label="AAPL 15 min ' + (v === 'hl' ? 'medias y H-lines' : 'Bollinger') + ' extendido"').test(svg), nom + ' (' + v + '): sin data-ind-ext ni «con indicadores de sesión extendida»');
+      if (CH63) igual(svg, CH63.chartSvg(pk, { vista: v, tf: 'm15', ext: true }), nom + ' (' + v + '): SVG byte a byte el de la v63');
+    });
+    igual([cab(CH.chartInline('AAPL', { payload: pk, actualizado_at: hoy }, 'bb', 'm15', null, false, true)), cab(CH.chartInline('AAPL', { payload: pk, actualizado_at: hoy }, 'hl', 'm15', null, false, true))],
+      ['15 min · Bollinger · extendido', '15 min · Medias + H-lines · extendido'], nom + ': la cabecera dice «extendido» (se ve) pero no «con pre/post»');
+    const svg = CH.chartSvg(pk, { vista: 'bb', tf: 'm15', ext: true }), l = CH.lecturaChart(pk, 'm15', 2, true, svg), tt = CH.chartTiempo(tViva);
+    assert(l.includes(`<div><span>vela extendida en curso</span><b class="mono">${tt.hm} · ${tt.dia}</b></div>`) && l.includes('<div><span>cierre</span><b class="mono">255.40</b></div>'), nom + ': la «última vela» de la lectura sí es la viva extendida (16:00)');
+    assert(l.includes('Bollinger y medias · última vela cerrada<') && !/data-nota-ext|pre\/post/.test(l), nom + ': pero el rótulo es el de la v63 y no hay nota de pre/post');
+    const resto = (h) => { const i = h.indexOf('</div>\n'); return h.slice(h.indexOf('</div>\n', i + 1)); };
+    if (CH63) igual(resto(l), resto(CH63.lecturaChart(pk, 'm15', 2)), nom + ': Bollinger y medias: los de la v63 (las del worker, sesión regular), byte a byte');
+    igual(CH.lecturaChart(pk, 'm15', 2, true), l, nom + ': sin svg, lo mismo');
+    const nodos = hoja({ mz_chart_ext: '1' }, { payload: pk, actualizado_at: hoy });
+    assert(!/data-nota-ext|pre\/post/.test(nodos['#chLectura'].innerHTML) && /vela extendida en curso/.test(nodos['#chLectura'].innerHTML), nom + ': en la hoja tampoco (y la última vela es la viva extendida)');
+  });
 }
 
 C.resumen();

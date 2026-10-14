@@ -20,7 +20,7 @@ function velas(n, op) {
   }
   return out;
 }
-const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'lecturaChart', 'hlinesLista', 'fmtFechaNY'],
+const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'lecturaChart', 'hlinesLista', 'fmtFechaNY'],
   { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
 
 // ════════════════ 1. bollingerApp / smaApp / techoPisoProximos ════════════════
@@ -266,7 +266,7 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'techoP
     const pk = { ticker: 'AAPL', tf: 'm15', velas: velas(40), niveles: { spot: 100.4 } };
     let velasResp = { AAPL: { payload: pk, actualizado_at: new Date().toISOString() } }, esperarVelas = null;
     const reg = { cargasVelas: [] };
-    const P = construir(['pintarChart', 'cargarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'serieExtM',
+    const P = construir(['pintarChart', 'cargarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'serieExtM', 'mediasExtM',
       'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
       $: (s) => nodos[s] || null, localStorage: localStorageFalso({}), esc, haceCuanto, document: { activeElement: nodos['#tgT'] },
       cargarVelas: async (syms, tf, forzar) => { reg.cargasVelas.push([syms, tf, forzar]); if (esperarVelas) await esperarVelas.promesa; return velasResp; },
