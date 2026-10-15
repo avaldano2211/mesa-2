@@ -201,7 +201,8 @@ module.exports = function casa(RUTA, nombreSuite, opCasa) {
       const cadena = [];
       const q = {};
       // v62: también range (las lecturas paginadas del libro de fills y de las señales de Cuentas)
-      ['select', 'eq', 'in', 'not', 'like', 'order', 'limit', 'range', 'insert', 'update', 'upsert', 'delete', 'is', 'gte', 'lte'].forEach(m => {
+      // v65: también gt (la lectura INCREMENTAL del libro pide id > el mayor de la caché)
+      ['select', 'eq', 'in', 'not', 'like', 'order', 'limit', 'range', 'insert', 'update', 'upsert', 'delete', 'is', 'gte', 'lte', 'gt'].forEach(m => {
         q[m] = (...args) => { cadena.push([m, args]); return q; };
       });
       const consulta = () => { llamadas.push({ tabla, cadena: cadena.slice() }); return Promise.resolve().then(() => enrutar(tabla, cadena)); };
@@ -223,6 +224,7 @@ module.exports = function casa(RUTA, nombreSuite, opCasa) {
     const canales = [];
     const canal = (nombre) => { const c = { nombre, tablas: [], on(_e, cfg) { c.tablas.push(cfg && cfg.table); return c; }, subscribe() { c.suscrito = true; return c; } }; canales.push(c); return c; };
     const consulta = () => { const q = { select: () => q, eq: () => q, in: () => q, not: () => q, like: () => q, order: () => q, limit: () => q,
+      range: () => q, gt: () => q,   // v65: el libro se lee paginado (range) y, con caché, solo lo nuevo (gt)
       insert: () => q, update: () => q, upsert: () => q, delete: () => q, maybeSingle: () => q, single: () => q,
       then: (f) => Promise.resolve({ data: [], error: null }).then(f) }; return q; };
     const win = { MESA2: { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_ANON_KEY: 'k', PROXY_URL: 'https://proxy' },

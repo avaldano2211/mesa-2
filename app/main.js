@@ -36,17 +36,41 @@ const TABS = [
 // Login por REST directo, sin la maquinaria de sesión/locks de supabase-js (que
 // falla en iOS): token grant → escribir la sesión donde supabase-js la lee →
 // recargar (la recuperación de sesión al arrancar sí funciona en iOS).
-$('#loginForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
+// v65 (2026-10-14): al entrar, UN fetch que fallaba por red (el iPhone despertando, el wifi que cambia, Tailscale que aún
+// no levantó) dejaba «Sin conexión» a la primera, sin reintentar. Ahora se reintenta 2 veces (a 1 s y a 3 s) diciendo
+// «Reintentando…»; solo si las tres fallan se dice que no hubo contacto. Una RESPUESTA del servidor (400/401 de
+// credenciales, cualquier estado) no es un fallo de red y NO se reintenta: repetir una contraseña mala no la arregla.
+const LOGIN_REINTENTOS_MS = [1000, 3000];
+const LOGIN_SIN_RED = 'No pude contactar con el servidor de la Mesa. Revisa tu internet (o Tailscale) e inténtalo de nuevo.';
+let _loginEnCurso = false;   // un segundo toque a «Entrar» mientras se reintenta no abre otro intento en paralelo
+// Pide el token. → { r, ses } con la respuesta del servidor (sea cual sea su estado) o { red: true } si las tres
+// peticiones fallaron por red. `alReintentar(n)` avisa antes de cada reintento (n = 1, 2).
+async function tokenLogin(email, password, alReintentar) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
+        method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }) });
+      const ses = await r.json().catch(() => ({}));
+      return { r, ses: ses || {} };
+    } catch (_) {
+      if (i >= LOGIN_REINTENTOS_MS.length) return { red: true };
+      if (typeof alReintentar === 'function') alReintentar(i + 1);
+      await new Promise(res => setTimeout(res, LOGIN_REINTENTOS_MS[i]));
+    }
+  }
+}
+async function entrarLogin(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  if (_loginEnCurso) return;
   const err = $('#loginErr'); err.textContent = 'Entrando…';
   const email = $('#email').value.trim().toLowerCase(), password = $('#pass').value;
-  let r, ses = {};
-  try {
-    r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
-      method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }) });
-    ses = await r.json().catch(() => ({}));
-  } catch (_) { err.textContent = 'Sin conexión. Inténtalo de nuevo.'; return; }
+  let t;
+  _loginEnCurso = true;
+  try { t = await tokenLogin(email, password, () => { err.textContent = 'Reintentando…'; }); }
+  finally { _loginEnCurso = false; }
+  if (!t || t.red) { err.textContent = LOGIN_SIN_RED; return; }
+  const r = t.r, ses = t.ses;
   if (!r.ok || !ses.access_token) {
     const m = String(ses.error_description || ses.msg || ses.error || '');
     err.textContent = /invalid|credentials/i.test(m) ? 'Correo o contraseña incorrectos.'
@@ -58,7 +82,8 @@ $('#loginForm').addEventListener('submit', async (e) => {
     localStorage.setItem(claveSesion(), JSON.stringify(ses));
   } catch (_) { err.textContent = 'Este navegador no deja guardar la sesión (¿modo privado?).'; return; }
   location.reload();
-});
+}
+$('#loginForm').addEventListener('submit', entrarLogin);
 
 sb.auth.onAuthStateChange((_e, session) => arrancar(session));
 sb.auth.getSession().then(({ data }) => arrancar(data.session));
@@ -104,6 +129,11 @@ function arrancar(session) {
     if (!window._mzTimerTickers) window._mzTimerTickers = setInterval(() => { cargarTickers().then(c => { if (c) ruta(); }).catch(() => {}); }, 10 * 60000);
     // v56: ritmo EN VIVO del gestor (cotización cada 5 s y cartera cada 20 s, solo con el mercado abierto y el Copiloto a la vista)
     if (!window._mzTimerVivo) window._mzTimerVivo = setInterval(() => { try { tickVivo(); } catch (_) {} }, VIVO_MS);
+    // v65: E*TRADE y Schwab al libro EN SEGUNDO PLANO desde cualquier pestaña (antes solo al abrir el Diario: los trades
+    // del 9-oct entraron el 11-oct). El tic solo MIRA si toca (2 min en sesión regular, 15 fuera: syncBrokersFondo);
+    // al arrancar se mira ya, sin esperar al primer tic (el tope de syncTtlAhora sigue frenando una recarga en bucle).
+    if (!window._mzTimerLibro) window._mzTimerLibro = setInterval(() => { try { syncBrokersFondo(); } catch (_) {} }, LIBRO_SYNC_TIC_MS);
+    setTimeout(() => { try { syncBrokersFondo(true); } catch (_) {} }, 1500);
   } else if (timer) { clearInterval(timer); }
 }
 window.addEventListener('hashchange', ruta);
@@ -150,6 +180,9 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { _ocultaDesde = Date.now(); return; }
   buscarVersionNueva();                                   // al volver a la app: ¿hay versión nueva?
   setTimeout(() => { try { tickVivo(); } catch (_) {} }, 300);   // v56: y una cotización en vivo ya, sin esperar el tic de 5 s
+  // v65: y el libro (E*TRADE/Schwab) al volver, sin esperar al tic: iOS congela los timers con la PWA en el fondo. 800 ms
+  // para que la red del iPhone despierte (iOS corta los fetch en vuelo al congelar); el tope de syncTtlAhora sigue mandando.
+  setTimeout(() => { try { syncBrokersFondo(true); } catch (_) {} }, 800);
   if (!sesionActiva || !_ocultaDesde || Date.now() - _ocultaDesde < 30000) return;
   _ocultaDesde = 0;
   ruta();
@@ -198,6 +231,15 @@ function suscribir() {
   sb.channel('mesa2-broker')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posiciones_broker' }, fotoBrokerCambio)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'posiciones_broker' }, fotoBrokerCambio)
+    .subscribe();
+  // v65 (sql 0021): el LIBRO de fills en vivo. Lo que escribe el worker (moomoo, tasty y el spot de spot_fills) o otro
+  // equipo llega a la caché del libro sin releerlo (libroFillNuevo / libroFillCambiado) y el Diario o Cuentas a la vista
+  // se repintan con un debounce de 1,5 s. En su PROPIO canal, como posiciones_broker: si 0021 no está aplicada este canal
+  // falla solo y lo demás sigue; el libro llega entonces por la lectura incremental (leerFillsTodos). Solo INSERT y
+  // UPDATE (pasan por RLS: cada usuario recibe solo sus fills); nunca '*': los DELETE no pasan por RLS y en fills no ocurren.
+  sb.channel('mesa2-fills')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'fills' }, libroFillNuevo)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'fills' }, libroFillCambiado)
     .subscribe();
 }
 
@@ -3108,8 +3150,19 @@ async function etradePinEnviar(rt) {
 // round-trips ya emparejados se guardan en broker_trades (RLS: solo tú). Así el
 // historial persiste aunque la sesión diaria de E*TRADE muera y se ve en todos
 // tus equipos. Mismo emparejado FIFO por contrato que tasty (tasty_cuenta.py).
-const ET_SYNC_TTL = 10 * 60 * 1000;
+const ET_SYNC_TTL = 10 * 60 * 1000;   // v65: el tope FUERA de la sesión regular (en sesión, ET_SYNC_TTL_SESION)
 const ET_DIAS_HIST = 180;
+// v65 (diagnóstico 2026-10-14: E*TRADE llegaba al libro con mediana 503 min de retraso y p90 de 55 h): en la sesión
+// regular el tope entre dos lecturas del historial de E*TRADE/Schwab baja a 2 min — es lo que tarda un fill en verse en el
+// Diario. Fuera de la sesión no se opera y se queda en 10 min: el proxy y el bróker no se martillean por nada.
+const ET_SYNC_TTL_SESION = 2 * 60 * 1000;
+// PURA: el tope según la sesión de NY (sesionNY: regular · extendida · cerrado).
+function ttlSyncLibro(ses) { return ses === 'regular' ? ET_SYNC_TTL_SESION : ET_SYNC_TTL; }
+// El tope de AHORA, con el último latido que leyó ruta() (sin latido fresco, el reloj de NY). Lo usan las dos
+// sincronizaciones y Cuentas para decir «sincronizando…» solo cuando de verdad toca una lectura (la verdad sobre «en curso»).
+function syncTtlAhora() {
+  try { return ttlSyncLibro(sesionNY(typeof _hbUltimo === 'undefined' ? null : _hbUltimo)); } catch (_) { return ET_SYNC_TTL; }
+}
 
 function emparejarEtrade(txs) {
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -3213,8 +3266,8 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
   return { expirado: false, txs: todas, dias };
 }
 
-// Sincroniza (con tope de 10 min por dispositivo). Devuelve el resumen para la
-// vista y `cambio` = true si escribió algo nuevo (para re-dibujar).
+// Sincroniza (con tope por dispositivo: 2 min en sesión regular, 10 fuera — syncTtlAhora, v65). Devuelve el
+// resumen para la vista y `cambio` = true si escribió algo nuevo (para re-dibujar).
 // Guarda de concurrencia: si ya hay una sincronización en vuelo (la vista se
 // re-dibuja por Realtime, el timer o «sincronizar»), todos esperan la misma.
 let _etSyncEnVuelo = null;
@@ -3229,10 +3282,10 @@ async function etradeSincronizarImpl(forzar) {
   if (etDiaVencido()) return { estado: 'expirado', cambio: false };   // sin llamar al proxy
   let prev = null;
   try { prev = JSON.parse(localStorage.getItem(ET_K.sync) || 'null'); } catch (_) {}
-  if (!forzar && prev && Date.now() - prev.ts < ET_SYNC_TTL) return { ...prev.resumen, estado: prev.resumen.estado, cambio: false };
+  if (!forzar && prev && Date.now() - prev.ts < syncTtlAhora()) return { ...prev.resumen, estado: prev.resumen.estado, cambio: false };
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
-  // Todo resultado (también expirado/error) se cachea con su hora: el tope de
-  // 10 min evita martillar el proxy; reconectar E*TRADE borra el caché.
+  // Todo resultado (también expirado/error) se cachea con su hora: el tope (2 min
+  // en sesión, 10 fuera) evita martillar el proxy; reconectar E*TRADE borra el caché.
   const fin = (resumen) => {
     resumen.ts = Date.now();
     try { localStorage.setItem(ET_K.sync, JSON.stringify({ ts: resumen.ts, resumen })); } catch (_) {}
@@ -3749,7 +3802,7 @@ async function schwabSincronizarImpl(forzar) {
   if (swVencido()) return { estado: 'expirado', cambio: false };
   let prev = null;
   try { prev = JSON.parse(localStorage.getItem(SW_K_SYNC) || 'null'); } catch (_) {}
-  if (!forzar && prev && Date.now() - prev.ts < ET_SYNC_TTL) return { ...prev.resumen, cambio: false };
+  if (!forzar && prev && Date.now() - prev.ts < syncTtlAhora()) return { ...prev.resumen, cambio: false };   // v65: mismo tope que E*TRADE
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
   const fin = (resumen) => {
     resumen.ts = Date.now();
@@ -5647,11 +5700,15 @@ async function vistaCuentasSaldos() {
   // encima de lo que hay ahora.
   if ((location.hash.replace('#/', '') || 'informe') !== 'cuentas' || _cuentasVista !== 'cuentas') return;
   // Historial E*TRADE: se muestra el resumen cacheado y se sincroniza en segundo
-  // plano; se re-dibuja al terminar (el tope de 10 min evita bucles).
+  // plano; se re-dibuja al terminar (el tope evita bucles).
+  // v65: el tope es el de AHORA (2 min en sesión regular, 10 fuera), el MISMO que aplicará etradeSincronizar en este
+  // instante: «sincronizando…» solo sale si de verdad va a haber una lectura (con el de 10 min fijo, en sesión la línea
+  // diría «sincronizando…» o el resumen viejo cuando la sincronización hace otra cosa).
+  const ttlSync = syncTtlAhora();
   let etHist = null, swHist = null;
   try { const p = JSON.parse(localStorage.getItem(ET_K.sync) || 'null'); etHist = p ? p.resumen : null; } catch (_) {}
   if (etCreds() && !etExpirado) {
-    const enCurso = !etHist || Date.now() - (etHist.ts || 0) >= ET_SYNC_TTL;
+    const enCurso = !etHist || Date.now() - (etHist.ts || 0) >= ttlSync;
     if (enCurso) etHist = { estado: 'sincronizando' };
     // Solo se re-dibuja si el usuario sigue en Cuentas (la sincronización tarda).
     const enCuentas = () => (location.hash.replace('#/', '') || 'informe') === 'cuentas';
@@ -5660,7 +5717,7 @@ async function vistaCuentasSaldos() {
   // Historial Schwab: mismo esquema (resumen cacheado, sincroniza en segundo plano).
   try { const p = JSON.parse(localStorage.getItem(SW_K_SYNC) || 'null'); swHist = p ? p.resumen : null; } catch (_) {}
   if (swCreds() && !swExpirado) {
-    const enCursoSw = !swHist || Date.now() - (swHist.ts || 0) >= ET_SYNC_TTL;
+    const enCursoSw = !swHist || Date.now() - (swHist.ts || 0) >= ttlSync;
     if (enCursoSw) swHist = { estado: 'sincronizando' };
     const enCuentasSw = () => (location.hash.replace('#/', '') || 'informe') === 'cuentas';
     schwabSincronizar().then(s => { if (s && (s.cambio || enCursoSw) && enCuentasSw()) vistaCuentas(); });
@@ -9177,10 +9234,22 @@ async function guardarFills(filas, uid) {
 // Todo el libro, paginado (PostgREST corta en 1000 filas por petición y el libro crece para siempre).
 // Con caché de 60 s en memoria: cada redibujo del Diario lo pedía entero (en sesión, hasta dos veces
 // por minuto en el teléfono) aunque nada hubiera cambiado. Quien mete fills nuevos (las
-// sincronizaciones) lo invalida con libroInvalidar(); «Sincronizar ahora» fuerza la relectura.
-const _libro = { filas: null, ts: 0 };
+// sincronizaciones) lo invalida con libroInvalidar(); «Sincronizar ahora» fuerza la relectura COMPLETA.
+// v65 (diagnóstico 2026-10-14: el Diario bajaba el libro ENTERO —~650 KB, ~990 fills— en cada refresco): la caché se
+// conserva y, vencida, se piden SOLO las filas nuevas (id > el mayor id de la caché: el libro es append-only y el id es
+// una identidad que solo crece). Lo que una lectura incremental no ve —un UPDATE (el spot que escribe spot_fills) o una
+// fila de id menor que confirmó tarde una transacción concurrente— llega por Realtime (libroFillNuevo/libroFillCambiado,
+// sql 0021) y, si Realtime no está, por la lectura COMPLETA que se hace igualmente cada 15 min (y con forzar).
+//   rt / rtSeq: diario corto de lo que trajo Realtime. Una lectura que estaba en vuelo cuando llegó un evento puede
+//   traer la fila de ANTES (su consulta se resolvió antes del UPDATE): al terminar se vuelven a aplicar encima los
+//   eventos que llegaron mientras leía. repTimer: el debounce del repintado (libroRepintarPronto).
+const _libro = { filas: null, ts: 0, tsCompleta: 0, rt: [], rtSeq: 0, repTimer: null };
 const LIBRO_TTL_MS = 60000;
-function libroInvalidar() { _libro.ts = 0; }
+const LIBRO_COMPLETA_MS = 15 * 60000;   // v65: una lectura completa cada 15 min recoge lo que no llegó por Realtime
+const LIBRO_RT_MAX = 500;               // tope del diario de eventos (una lectura dura segundos: sobra)
+const LIBRO_REPINTAR_MS = 1500;         // debounce del repintado tras eventos de Realtime o una sincronización con cambios
+// `completa` (v65): la siguiente lectura será COMPLETA y no incremental (un toque de Andrés: «Sincronizar ahora»).
+function libroInvalidar(completa) { _libro.ts = 0; if (completa) _libro.tsCompleta = 0; }
 // v62 rev4: el libro de fills para unirOperaciones (quita las filas de E*TRADE sustituidas: filasEtradeVigentes) en
 // TODAS las pantallas que suman operaciones, para que Cuentas, Disciplina, el cupo del Copiloto y el de la hoja de
 // orden cuenten lo mismo (la lección de v50: «las dos pantallas volvían a contradecirse»). null si no se pudo leer:
@@ -9188,18 +9257,140 @@ function libroInvalidar() { _libro.ts = 0; }
 async function libroParaUnir() {
   try { const r = await leerFillsTodos(); return r && !r.error ? r.filas : null; } catch (_) { return null; }
 }
-async function leerFillsTodos(forzar) {
-  if (!forzar && _libro.filas && Date.now() - _libro.ts < LIBRO_TTL_MS) return { filas: _libro.filas, error: null };
-  const filas = []; let desde = 0; const PAG = 1000; let error = null;
-  for (let v = 0; v < 30; v++) {
-    const r = await sb.from('fills').select('*').order('ejecutado_at', { ascending: true }).order('id', { ascending: true }).range(desde, desde + PAG - 1);
-    if (r.error) { error = textoErrorFills(r.error); break; }
-    const d = r.data || []; filas.push(...d);
-    if (d.length < PAG) break;
-    desde += PAG;
+// v65 · PURA: un timestamptz de la base (PostgREST o Realtime) → microsegundos desde 1970, para ordenar el libro en
+// memoria EXACTAMENTE como la base (order by ejecutado_at, id): Date.parse se queda en el milisegundo y dos fills del
+// mismo milisegundo con distinto microsegundo saldrían en otro orden. null si no se entiende (va al final, como NULLS LAST).
+function instanteLibro(v) {
+  if (v == null || v === '') return null;
+  const s = String(v).trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d+))?)?\s*(Z|[+-]\d{2}(?::?\d{2})?)?$/i.exec(s);
+  if (m) {
+    let ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+    const tz = m[8];
+    if (tz && tz.toUpperCase() !== 'Z') {
+      const d = tz.slice(1).replace(':', '');
+      ms -= (tz[0] === '-' ? -1 : 1) * (Number(d.slice(0, 2)) * 60 + Number(d.slice(2, 4) || 0)) * 60000;
+    }
+    return ms * 1000 + Number(String(m[7] || '').padEnd(6, '0').slice(0, 6));
   }
-  if (!error) { _libro.filas = filas; _libro.ts = Date.now(); }   // una lectura a medias no se cachea
-  return { filas, error };
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t * 1000 : null;
+}
+// v65 · PURA: el libro en el orden de la base (ejecutado_at asc, id asc; sin instante al final). Copia nueva: quien
+// tenga la anterior (el Diario, el historial de Cuentas) no ve cambiar su arreglo bajo los pies.
+function ordenarLibro(filas) {
+  const idN = (f) => { const n = Number(f && f.id); return Number.isFinite(n) ? n : Infinity; };
+  return (filas || []).map(f => ({ f, t: instanteLibro(f && f.ejecutado_at), id: idN(f) }))
+    .sort((a, b) => {
+      if (a.t !== b.t) { if (a.t == null) return 1; if (b.t == null) return -1; return a.t - b.t; }
+      return a.id - b.id;
+    }).map(x => x.f);
+}
+// v65 · PURA: el mayor id del libro (0 si está vacío): la lectura incremental pide id > este.
+function maxIdLibro(filas) {
+  let max = 0;
+  for (const f of (filas || [])) { const n = Number(f && f.id); if (Number.isFinite(n) && n > max) max = n; }
+  return max;
+}
+// v65 · PURA: aplica cambios al libro por id y lo devuelve ordenado (copia nueva). Cada cambio es { fila, modo }:
+//   insert   (Realtime INSERT) solo AÑADE: si el id ya está, lo de la caché vale igual o más (una lectura posterior ya
+//            pudo traer el spot que la fila recién insertada aún no tenía).
+//   update   (Realtime UPDATE) REEMPLAZA los campos que trae, sobre la fila que hubiera: un UPDATE de Realtime no trae
+//            las columnas grandes que no cambiaron (TOAST, p. ej. `crudo`) y no se pueden perder.
+//   lectura  (lo que devolvió la base) manda entera.
+function fusionarLibro(base, cambios) {
+  const porId = new Map(), sinId = [];
+  for (const f of (base || [])) { if (f && f.id != null) porId.set(String(f.id), f); else if (f) sinId.push(f); }
+  for (const c of (cambios || [])) {
+    const f = c && c.fila; if (!f || typeof f !== 'object' || f.id == null) continue;
+    const k = String(f.id), prev = porId.get(k);
+    if (c.modo === 'insert') { if (!prev) porId.set(k, f); }
+    else if (c.modo === 'update') porId.set(k, prev ? Object.assign({}, prev, f) : f);
+    else porId.set(k, f);
+  }
+  return ordenarLibro([...porId.values()].concat(sinId));
+}
+// v65 · PURA: una fila tal como la manda Realtime, con sus instantes (columnas *_at) en el formato de PostgREST si
+// llegaran con espacio y zona corta («2026-10-09 13:32:15+00»): Safari no entiende ese formato en new Date() y el resto de
+// la app (ymdNY, horaNY, la hora de cada fill) lo usa así.
+function filaLibroRT(f) {
+  const o = Object.assign({}, f);
+  for (const k of Object.keys(o)) {
+    const v = o[k];
+    if (/_at$/.test(k) && typeof v === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(v))
+      o[k] = v.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00');
+  }
+  return o;
+}
+async function leerFillsTodos(forzar) {
+  const ahora = Date.now();
+  if (!forzar && _libro.filas && ahora - _libro.ts < LIBRO_TTL_MS) return { filas: _libro.filas, error: null };
+  // v65: completa sin caché, con forzar o cada 15 min; si no, incremental (solo id > el mayor que ya hay)
+  const completa = !!forzar || !_libro.filas || ahora - _libro.tsCompleta >= LIBRO_COMPLETA_MS;
+  const desdeId = completa ? 0 : maxIdLibro(_libro.filas);
+  const seq0 = _libro.rtSeq;
+  const leidas = []; const PAG = 1000; let error = null;
+  for (let v = 0; v < 30; v++) {
+    const q = sb.from('fills').select('*');
+    const qo = completa ? q.order('ejecutado_at', { ascending: true }).order('id', { ascending: true })
+      : q.gt('id', desdeId).order('id', { ascending: true });   // id asc: paginar estable mientras entran filas
+    const r = await qo.range(v * PAG, v * PAG + PAG - 1);
+    if (r.error) { error = textoErrorFills(r.error); break; }
+    const d = r.data || []; leidas.push(...d);
+    if (d.length < PAG) break;
+  }
+  // una lectura a medias no se cachea. La incremental que falla devuelve la caché que había (es verdad hasta su
+  // hora) CON el error, para que la vista lo diga; la caché queda vencida y la próxima vuelve a intentarlo.
+  if (error) return { filas: completa ? leidas : _libro.filas, error };
+  const tarde = _libro.rt.filter(e => e.seq > seq0);   // eventos de Realtime llegados mientras se leía
+  let filas;
+  if (completa) filas = tarde.length ? fusionarLibro(leidas, tarde) : leidas;   // la base ya lo trae en su orden
+  else if (leidas.length || tarde.length) filas = fusionarLibro(_libro.filas, leidas.map(f => ({ fila: f, modo: 'lectura' })).concat(tarde));
+  else filas = _libro.filas;   // nada nuevo: el mismo arreglo (nadie redibuja por nada)
+  _libro.filas = filas; _libro.ts = Date.now();
+  if (completa) _libro.tsCompleta = _libro.ts;
+  return { filas, error: null };
+}
+// v65 · Realtime de `fills` (canal 'mesa2-fills', sql 0021): cada evento se FUSIONA en la caché (INSERT añade, UPDATE
+// reemplaza: así llega también el spot que escribe spot_fills) y el Diario o Cuentas, si están a la vista, se repintan
+// con un debounce de 1,5 s (una sincronización mete decenas de filas de golpe: un solo repintado). Sin caché no hay nada
+// que fusionar: la primera lectura ya trae la fila. La muralla la pone la RLS; aquí, por si acaso, una fila de otro
+// usuario se ignora.
+function libroFillRT(payload, modo) {
+  const f = payload && payload.new;
+  if (!f || typeof f !== 'object' || f.id == null) return false;
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid || (f.user_id != null && f.user_id !== uid)) return false;
+  const e = { seq: ++_libro.rtSeq, fila: filaLibroRT(f), modo: modo === 'update' ? 'update' : 'insert' };
+  _libro.rt.push(e);
+  if (_libro.rt.length > LIBRO_RT_MAX) _libro.rt.splice(0, _libro.rt.length - LIBRO_RT_MAX);
+  if (_libro.filas) _libro.filas = fusionarLibro(_libro.filas, [e]);
+  libroRepintarPronto();
+  return true;
+}
+function libroFillNuevo(payload) { return libroFillRT(payload, 'insert'); }
+function libroFillCambiado(payload) { return libroFillRT(payload, 'update'); }
+// v65: ¿qué vista que USA el libro está a la vista? 'diario' | 'cuentas' | null (cualquier otra pestaña: nada que repintar;
+// el Informe, Disciplina y el Copiloto lo leen de la caché en su próximo pintado).
+function vistaLibroAbierta() {
+  if (!sesionActiva) return null;
+  if ((location.hash.replace('#/', '') || 'informe') !== 'cuentas') return null;
+  return _cuentasVista === 'cuentas' ? 'cuentas' : 'diario';
+}
+// v65: repinta SOLO la vista abierta que usa el libro, con los guardas de siempre: con un cuadro abierto (orden, PIN, fill
+// a mano) no se repinta debajo, y con un campo de #vista en uso (la nota del Diario; diarioEnUso mira cualquier campo de
+// la vista) no se le pisa lo que escribe. Lo que no se pinta ahora sale en el próximo repintado (el de 60 s).
+function repintarVistaLibro() {
+  const v = vistaLibroAbierta();
+  if (!v) return false;
+  if (document.querySelector('.modal')) return false;
+  if (diarioEnUso()) return false;
+  Promise.resolve().then(() => (v === 'diario' ? vistaDiario() : vistaCuentas())).catch(() => {});
+  return true;
+}
+function libroRepintarPronto() {
+  if (_libro.repTimer) clearTimeout(_libro.repTimer);
+  _libro.repTimer = setTimeout(() => { _libro.repTimer = null; try { repintarVistaLibro(); } catch (_) {} }, LIBRO_REPINTAR_MS);
 }
 
 // ---------- 2) EL DIARIO: funciones PURAS sobre el libro ----------
@@ -10092,8 +10283,8 @@ async function vistaCuentas() {
   if (_cuentasVista === 'cuentas') return vistaCuentasSaldos();
   return vistaDiario();
 }
-// Sincroniza E*TRADE y Schwab en segundo plano (mismo tope de 10 min por equipo) y redibuja el
-// Diario si entraron ejecuciones nuevas al libro. Nada se bloquea esperando al bróker.
+// Sincroniza E*TRADE y Schwab en segundo plano (el tope por equipo de syncTtlAhora: 2 min en sesión regular, 10
+// fuera) y redibuja el Diario si entraron ejecuciones nuevas al libro. Nada se bloquea esperando al bróker.
 // SOLO se mira `cambio`: una sincronización REAL lo pone en true si entraron round-trips o fills, y
 // la cacheada (dentro del TTL) devuelve el resumen guardado con cambio: false aunque su `fills` —las
 // de la ÚLTIMA sincronización real— sea > 0. Mirar `fills` hacía que cada vistaDiario disparara otro
@@ -10102,6 +10293,57 @@ function sincronizarLibroFondo() {
   const enDiario = () => (location.hash.replace('#/', '') || 'informe') === 'cuentas' && _cuentasVista === 'diario' && !document.querySelector('.modal');
   if (etCreds() && !etDiaVencido()) etradeSincronizar().then(s => { if (s && s.cambio && enDiario()) vistaDiario(); }).catch(() => {});
   if (swCreds() && !swVencido()) schwabSincronizar().then(s => { if (s && s.cambio && enDiario()) vistaDiario(); }).catch(() => {});
+}
+// ---------- v65 · el libro al día desde CUALQUIER pestaña ----------
+// Diagnóstico 2026-10-14 (7 días de datos reales): los fills de E*TRADE llegaban al libro con una mediana de 503 min y un
+// p90 de 55 h, porque SOLO se escribían al abrir el Diario (sincronizarLibroFondo se llamaba únicamente desde vistaDiario):
+// los trades del 9-oct entraron el 11-oct a las 16:48. Ahora un timer propio, con la app visible y la sesión del bróker
+// válida en ESTE equipo (opción B: los tokens viven aquí; el servidor no puede hacerlo por nosotros), llama a
+// etradeSincronizar()/schwabSincronizar() cada 2 min en la sesión regular y cada 15 min fuera, en cualquier pestaña; y
+// también al arrancar y al volver del fondo. Solo LEE transacciones del bróker y escribe en fills y broker_trades, como
+// siempre: nada de esto arma ni manda órdenes. Un fallo no rompe nada ni martillea: cada sincronización guarda su
+// resultado (también el error) con su hora y el tope de syncTtlAhora frena la siguiente; este timer, además, no relanza
+// un bróker antes de su cadencia aunque el almacenamiento local falle (lanzado[b]).
+const LIBRO_SYNC_SESION_MS = 120000;       // sesión regular: un fill tarda ~2 min en verse en el Diario
+const LIBRO_SYNC_FUERA_MS = 15 * 60000;    // fuera de la sesión regular (pre/post, noche, fin de semana)
+const LIBRO_SYNC_TIC_MS = 15000;           // el tic solo MIRA si toca: así el paso a la sesión regular (9:30) se nota enseguida
+const _syncFondo = { lanzado: { etrade: 0, schwab: 0 } };
+// PURA: cada cuánto se sincroniza en segundo plano según la sesión de NY (sesionNY).
+function cadenciaSyncLibro(ses) { return ses === 'regular' ? LIBRO_SYNC_SESION_MS : LIBRO_SYNC_FUERA_MS; }
+// La última sincronización REAL de un bróker según su resumen guardado (la que hizo cualquiera: el timer, el Diario,
+// Cuentas o «sincronizar»): { ts, estado }.
+function ultimaSyncBroker(clave) {
+  try { const p = JSON.parse(localStorage.getItem(clave) || 'null'); return { ts: Number(p && p.ts) || 0, estado: (p && p.resumen && p.resumen.estado) || null }; }
+  catch (_) { return { ts: 0, estado: null }; }
+}
+// Lo que hace el timer con el resultado: si entraron fills o round-trips, la caché del libro se invalida y se repinta
+// SOLO la vista abierta que lo usa (Diario o Cuentas), con sus guardas y el debounce de libroRepintarPronto.
+function syncFondoResultado(s) {
+  if (!s || !s.cambio) return false;
+  libroInvalidar();
+  libroRepintarPronto();
+  return true;
+}
+// `ya` = al arrancar o al volver del fondo: sin esperar a la cadencia (el tope de syncTtlAhora sigue mandando). Devuelve
+// los brókeres que lanzó (para las pruebas).
+function syncBrokersFondo(ya) {
+  if (!sesionActiva) return [];
+  try { if (document.visibilityState && document.visibilityState !== 'visible') return []; } catch (_) {}   // oculta: no corre
+  const ses = sesionNY(_hbUltimo), ahora = Date.now(), lanzados = [];
+  const uno = (b, valida, clave, sincronizar) => {
+    let ok = false; try { ok = !!valida(); } catch (_) {}
+    if (!ok) return;                                        // sin sesión del bróker en este equipo (o caducada): nada
+    const u = ultimaSyncBroker(clave);
+    // con la sesión del bróker muerta a media jornada (401: «expirado») no se insiste cada 2 min: la cadencia de fuera
+    const cad = u.estado === 'expirado' ? LIBRO_SYNC_FUERA_MS : cadenciaSyncLibro(ses);
+    if (!ya && ahora - Math.max(u.ts, _syncFondo.lanzado[b] || 0) < cad) return;
+    _syncFondo.lanzado[b] = ahora;
+    lanzados.push(b);
+    Promise.resolve().then(() => sincronizar()).then(syncFondoResultado).catch(() => {});
+  };
+  uno('etrade', () => etCreds() && !etDiaVencido(), ET_K.sync, etradeSincronizar);
+  uno('schwab', () => swCreds() && !swVencido(), SW_K_SYNC, schwabSincronizar);
+  return lanzados;
 }
 // `forzar` = lo pidió Andrés con un toque (período, filtro, sincronizar): se redibuja aunque tenga un
 // campo con el foco. Sin él (timer, Realtime, vuelta del fondo) un campo en uso frena el redibujo.
@@ -10580,7 +10822,7 @@ window.MZ = Object.assign(window.MZ || {}, {
     try { localStorage.removeItem(ET_K.sync); localStorage.removeItem(SW_K_SYNC); } catch (_) {}
     toast('Sincronizando ' + tiene.join(' y ') + '…');
     await Promise.all([etradeSincronizar(true).catch(() => null), schwabSincronizar(true).catch(() => null)]);
-    libroInvalidar();
+    libroInvalidar(true);   // v65: un toque de Andrés relee el libro ENTERO (no solo las filas nuevas): también los spot que no llegaron por Realtime
     vistaDiario(true);
   },
   notaGuardar, notaEditarGuardar, notaBorrar,
