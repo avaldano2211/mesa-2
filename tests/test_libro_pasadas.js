@@ -10,6 +10,9 @@
    (ignoreDuplicates) y un reloj que avanza a mano (Date de juguete). Las funciones son las REALES del fuente
    (casa_pruebas.js); las que aún no existen en un fuente viejo simplemente no se cargan, para que estas pruebas
    FALLEN por comportamiento (y no por una excepción) al correrlas contra la versión sin el arreglo.
+     [2] con la app OCULTA no se leía al bróker solo desde el timer: ruta() cada 60 s → Diario/Cuentas → sincronizar lo
+         hacía cada 2 min toda la sesión; y el freno de 15 min tras un «expirado» tampoco valía en ese camino (16
+         intentos en 30 min). Los dos frenos viven ahora en pasadaSyncAhora, por donde pasan todos.
    Uso: node test_libro_pasadas.js mesa-2-app/app/main.js */
 'use strict';
 const path = require('path');
@@ -57,7 +60,7 @@ function generarOrdenesSw(n) {
 }
 
 // ---------- el mundo ----------
-const FN_MUNDO = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincronizarLigera', 'pasadaSyncAhora', 'ultimaPasadaSync', 'tipoPasadaSync',
+const FN_MUNDO = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincronizarLigera', 'pasadaSyncAhora', 'appOcultaSync', 'ultimaPasadaSync', 'tipoPasadaSync',
   'syncTtlAhora', 'ttlSyncLibro', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro', 'resumenSyncGuardado', 'etradeTransacciones', 'etRead', 'etRenovar',
   'etMarcarMuerto', 'etError', 'etCuentaKey', 'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills',
   'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
@@ -65,7 +68,7 @@ const FN_MUNDO = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincroniz
   'emparejarFillsSchwab', 'vencidasASobrar', 'fillsDeOrdenesSchwabLibro', 'desOsi',
   'syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'syncFondoResultado', 'sincronizarLibroFondo'];
 const CONST_MUNDO = ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SW_DIAS_HIST', 'SW_TRAMO_DIAS',
-  'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_DIAS_LIGERA', 'SW_K', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_TRAS_CIERRE_MS', '_syncFondo',
+  'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_DIAS_LIGERA', 'SW_K', 'SYNC_EXPIRADO_MS', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_TRAS_CIERRE_MS', '_syncFondo',
   '_etSyncEnVuelo', '_etRenovando', '_swSyncEnVuelo', '_ultimaRegular'];
 
 function armarMundo(op) {
@@ -153,7 +156,7 @@ function armarMundo(op) {
 (async () => {
   // ════════════════ 0. [1] las funciones PURAS de las dos pasadas ════════════════
   if (existe('tipoPasadaSync')) {
-    const P = construir(['ultimaPasadaSync', 'tipoPasadaSync', 'resumenHistorialSync', 'resumenSyncGuardado'], {}, { consts: ['ET_SYNC_TTL'].concat(existeConst('LIBRO_SYNC_FUERA_MS') ? ['LIBRO_SYNC_FUERA_MS'] : []) });
+    const P = construir(['ultimaPasadaSync', 'tipoPasadaSync', 'resumenHistorialSync', 'resumenSyncGuardado'], {}, { consts: ['ET_SYNC_TTL'].concat(existeConst('SYNC_EXPIRADO_MS') ? ['SYNC_EXPIRADO_MS'] : []) });
     const prev = { ts: 1000, resumen: { estado: 'ok', txs: 9 } };
     igual(P.ultimaPasadaSync(null, { ts: 5000, estado: 'ok' }), null, 'ultimaPasadaSync: sin completa guardada → null (la próxima es completa, aunque haya una ligera)');
     igual(P.ultimaPasadaSync(prev, null), { tc: 1000, ts: 1000, estado: 'ok' }, 'solo la completa: su hora y su estado');
@@ -169,6 +172,9 @@ function armarMundo(op) {
     igual(P.tipoPasadaSync(u(T0, T0), T0 + 5 * MIN, 10 * MIN, false), 'guardada', 'fuera de sesión (tope = el de la completa) nunca hay ligera');
     igual(P.resumenHistorialSync(prev, { ts: 3000, estado: 'ok', fills: 2 }), { estado: 'ok', txs: 9, lig: { ts: 3000, estado: 'ok', fills: 2, fills_err: null, detalle: null } }, 'resumenHistorialSync: el resumen de la completa con la ligera posterior en `lig`');
     igual([P.resumenHistorialSync(prev, { ts: 900, estado: 'ok' }), P.resumenHistorialSync(null, { ts: 3000 })], [{ estado: 'ok', txs: 9 }, null], 'sin `lig` si la ligera es anterior; null sin completa');
+    igual([P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 6 * MIN, 2 * MIN, false), P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 17 * MIN, 2 * MIN, false), P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 18 * MIN + 1, 2 * MIN, false)],
+      ['guardada', 'guardada', 'completa'], '[2] tras un «expirado» (de la completa o de la ligera) no se insiste hasta 15 min después; luego, la completa (aunque la completa venciera antes)');
+    igual(P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 4 * MIN, 2 * MIN, true), 'completa', '[2] «sincronizar» (forzar) pasa igual');
     igual([P.resumenSyncGuardado(prev), P.resumenSyncGuardado(null)], [{ estado: 'ok', txs: 9, cambio: false }, { cambio: false }], 'resumenSyncGuardado: lo guardado sin cambio (y sin inventar un estado si no hay nada)');
   } else C.falla('[1] no existe tipoPasadaSync: no hay pasada ligera');
 
@@ -314,6 +320,74 @@ function armarMundo(op) {
     igual(X.M.syncBrokersFondo(), [], 'al minuto de la ligera el tic no lanza: la cadencia cuenta desde la ligera, no desde la completa de hace 3 min');
     X.W.T += 61000; X.latir();
     igual(X.M.syncBrokersFondo(), ['etrade'], 'y a los 2 min de la ligera, sí');
+  }
+
+  // ════════════════ 7. [2] con la app OCULTA no se lee al bróker por NINGÚN camino ════════════════
+  {
+    const X = armarMundo({ sw: true, hash: '#/cuentas', vista: 'diario' });
+    await X.M.etradeSincronizar(); await X.M.schwabSincronizar();   // la completa, con la app a la vista
+    const et0 = X.ls.getItem('mz_et_sync2'), sw0 = X.ls.getItem('mz_sw_sync');
+    X.W.visible = 'hidden';
+    const tOculta = X.W.T;
+    // 30 min de sesión con la Mesa en una pestaña de fondo, el Diario abierto: el tic del timer (15 s), ruta() cada 60 s
+    // (→ vistaDiario → sincronizarLibroFondo) y Cuentas (→ etradeSincronizar/schwabSincronizar sin forzar)
+    for (let s = 0; s < 30 * 4; s++) {
+      X.W.T += 15000; X.latir();
+      X.M.syncBrokersFondo();
+      if (s % 4 === 0) { X.M.sincronizarLibroFondo(); X.M.etradeSincronizar(); X.M.schwabSincronizar(); }
+      await X.correr();
+    }
+    igual([X.W.reg.et.filter(x => x.t > tOculta).length, X.W.reg.sw.filter(x => x.t > tOculta).length], [0, 0], '30 min con la app oculta en el Diario (timer, ruta() cada 60 s y Cuentas): ni una llamada a E*TRADE ni a Schwab');
+    igual([X.ls.getItem('mz_et_sync2') === et0, X.ls.getItem('mz_sw_sync') === sw0, X.guardado('mz_et_sync_lig'), X.guardado('mz_sw_sync_lig')], [true, true, null, null], 'y no se escribe nada (ni completa ni ligera): la próxima, al volver');
+    // «sincronizar» es un toque de Andrés: pasa aunque la app esté oculta
+    const tF = X.W.T;
+    await X.M.etradeSincronizar(true);
+    igual(X.lecturasTx(tF).length, 10, 'forzar («sincronizar») pasa con la app oculta (la completa)');
+    // al volver a la vista: syncBrokersFondo(true) pone el libro al día enseguida
+    X.W.visible = 'visible'; X.W.T += 3 * MIN; X.latir();
+    const tV = X.W.T;
+    igual(X.M.syncBrokersFondo(true).join(), 'etrade,schwab', 'al volver a la vista, el timer lanza los dos con «ya»');
+    await X.correr();
+    assert(X.lecturasTx(tV).length >= 1 && X.W.reg.sw.filter(x => x.t >= tV).length >= 1, 'y los dos leen (E*TRADE la ligera; Schwab la completa vencida)');
+  }
+
+  // ════════════════ 8. [2] tras un «expirado», 15 min de freno también en el camino de ruta()/Diario/Cuentas ════════════════
+  {
+    // E*TRADE contesta 401 y el renew da 5xx: etRenovar no puede decidir y el token NO se marca muerto (se sigue probando)
+    const X = armarMundo({ hash: '#/cuentas', vista: 'diario' });
+    X.W.et401 = true; X.W.renew = { status: 503, data: { error: 'E*TRADE 5xx' } };
+    for (let s = 0; s < 30 * 4; s++) {   // 30 min visible en el Diario: tic de 15 s + ruta() cada 60 s + Cuentas
+      X.latir();
+      X.M.syncBrokersFondo();
+      if (s % 4 === 0) { X.M.sincronizarLibroFondo(); X.M.etradeSincronizar(); }
+      await X.correr();
+      X.W.T += 15000;
+    }
+    const lect = X.W.reg.et.filter(x => x.ruta === '/etrade/read').length, renews = X.W.reg.et.filter(x => x.ruta === '/etrade/renew').length;
+    igual(renews, 2, '30 min con la sesión de E*TRADE «expirada» y el Diario abierto: 2 intentos (al empezar y a los 15 min), no 16');
+    assert(lect <= 4, '… y ≤ 4 lecturas con 401 (' + lect + '; antes 32)');
+    igual(X.ls.getItem('mz_et_dia') === 'muerto', false, '(el token no se dio por muerto: el renew no pudo decidir; por eso hace falta el freno)');
+    // la ligera que da «expirado» frena igual
+    const Y = armarMundo({ hash: '#/cuentas', vista: 'diario' });
+    await Y.M.etradeSincronizar();
+    Y.W.et401 = true; Y.W.renew = { status: 503, data: {} };
+    Y.W.T += 2 * MIN + 5000; Y.latir();
+    await Y.M.etradeSincronizar();   // ligera → expirado
+    const t1 = Y.W.T;
+    for (let m = 1; m <= 14; m++) { Y.W.T = t1 + m * MIN; Y.latir(); Y.M.sincronizarLibroFondo(); await Y.M.etradeSincronizar(); await Y.correr(); }
+    igual(Y.W.reg.et.filter(x => x.t > t1).length, 0, 'una ligera que dio «expirado»: el Diario y Cuentas no vuelven a preguntar en 15 min');
+    Y.W.T = t1 + 15 * MIN + 1000; Y.latir();
+    await Y.M.etradeSincronizar();
+    igual(Y.W.reg.et.filter(x => x.t > t1 + 15 * MIN && /list\.json/.test(x.path || '')).length >= 1, true, 'a los 15 min se vuelve a intentar (la completa)');
+    // Schwab, igual
+    const Z = armarMundo({ et: false, sw: true, hash: '#/cuentas', vista: 'diario' });
+    Z.W.sw401 = true;
+    for (let s = 0; s < 30 * 4; s++) {
+      Z.latir(); Z.M.syncBrokersFondo();
+      if (s % 4 === 0) { Z.M.sincronizarLibroFondo(); Z.M.schwabSincronizar(); }
+      await Z.correr(); Z.W.T += 15000;
+    }
+    igual(Z.W.reg.sw.length, 2, 'Schwab «sin sesión» (401) con el Diario abierto 30 min: 2 intentos, no 15');
   }
 
   C.resumen();

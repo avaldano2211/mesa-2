@@ -3167,6 +3167,11 @@ const ET_DIAS_HIST = 180;
 // resultado en SU clave (ET_K.lig / SW_K_SYNC_LIG) y no pisa el resumen de la completa, que es lo que enseña Cuentas.
 const ET_SYNC_TTL_SESION = 2 * 60 * 1000;
 const ET_DIAS_LIGERA = 4;   // un fin de semana largo cabe; en 4 días caben de sobra los fills de un día en 1 página de 50
+// v65 rev: con la sesión del bróker muerta (último resultado «expirado»: 401 y el renew no pudo decidir) no se insiste
+// hasta pasados 15 min, venga de donde venga la llamada (timer, Diario, Cuentas). Antes el freno vivía SOLO en el timer y
+// el camino de siempre —ruta() cada 60 s → Diario/Cuentas → sincronizar— volvía a probar cada 2 min: medido, 16 intentos
+// (32 lecturas 401 y 16 renews) en 30 min, justo cuando E*TRADE está fallando.
+const SYNC_EXPIRADO_MS = 15 * 60000;
 // PURA: el tope de la pasada LIGERA según la sesión de NY (sesionNY: regular · extendida · cerrado). Fuera de la sesión
 // regular es el de la completa: no hay ligera.
 function ttlSyncLibro(ses) { return ses === 'regular' ? ET_SYNC_TTL_SESION : ET_SYNC_TTL; }
@@ -3187,24 +3192,36 @@ function ultimaPasadaSync(prev, lig) {
 }
 // PURA (v65 rev): qué pasada toca → 'completa' | 'ligera' | 'guardada' (devolver el resumen guardado sin preguntar).
 //   · forzar («sincronizar», reconectar) o sin completa guardada → completa.
+//   · la última (completa o ligera) dio «expirado» → guardada hasta SYNC_EXPIRADO_MS (15 min); luego, completa.
 //   · la completa vencida (ET_SYNC_TTL, 10 min) → completa, aunque haya una ligera reciente.
 //   · dentro del tope de ahora (`ttl`: 2 min en sesión, 10 fuera) → guardada. Fuera de sesión el tope es el de la
 //     completa: la ligera solo existe en sesión.
 //   · si no → ligera.
 function tipoPasadaSync(u, ahora, ttl, forzar) {
   if (forzar || !u) return 'completa';
+  if (u.estado === 'expirado') return ahora - u.ts < SYNC_EXPIRADO_MS ? 'guardada' : 'completa';   // v65 rev: el freno, para todos
   if (!(ahora - u.tc < ET_SYNC_TTL)) return 'completa';
   if (ahora - u.ts < ttl) return 'guardada';
   return 'ligera';
 }
+// ¿La app está OCULTA (pestaña de fondo, ventana minimizada, PWA en el fondo)? Sin `document` (pruebas), no.
+function appOcultaSync() {
+  try { return typeof document !== 'undefined' && !!document.visibilityState && document.visibilityState !== 'visible'; } catch (_) { return false; }
+}
 // Lo que hará AHORA la sincronización de un bróker, leyendo sus dos registros (`clave` la completa, `claveLig` la
 // ligera): { prev, lig, u, tipo }. Lo usan la propia sincronización y Cuentas, que dice «sincronizando…» solo si va a
 // haber una COMPLETA (la única que rehace su línea y deja su hora: con otra decisión, «en curso» la repintaría sin fin).
+// v65 rev: con la app OCULTA no se lee al bróker (guardada). El timer ya lo miraba, pero el camino de siempre no: ruta()
+// corre cada 60 s (y con cada latido) aunque la Mesa esté en una pestaña de fondo o minimizada, y con el Diario o Cuentas
+// abiertos llamaba a la sincronización: medido, la Mac leía el historial de E*TRADE cada 2 min toda la sesión con la app
+// oculta. Este es el sitio por el que pasan todos los caminos. «Sincronizar» (forzar) es un toque de Andrés: pasa. Al
+// volver a la vista, syncBrokersFondo(true) a los 800 ms pone el libro al día.
 function pasadaSyncAhora(clave, claveLig, forzar) {
   let prev = null, lig = null;
   try { prev = JSON.parse(localStorage.getItem(clave) || 'null'); } catch (_) {}
   try { lig = JSON.parse(localStorage.getItem(claveLig) || 'null'); } catch (_) {}
   const u = ultimaPasadaSync(prev, lig);
+  if (!forzar && appOcultaSync()) return { prev, lig, u, tipo: 'guardada' };
   return { prev, lig, u, tipo: tipoPasadaSync(u, Date.now(), syncTtlAhora(), forzar) };
 }
 // PURA: el resultado de una sincronización que no pregunta al bróker: el resumen de la última completa, sin cambio.
@@ -5848,7 +5865,8 @@ async function vistaCuentasSaldos() {
   // v65 rev: la línea es el resumen de la pasada COMPLETA (180 días) y «sincronizando…» habla de ella: sale solo si la
   // sincronización que se lanza aquí va a hacer una COMPLETA (pasadaSyncAhora: la MISMA decisión que tomará en este
   // instante), que es la única que rehace la línea y deja su hora; si no, «en curso» repintaría Cuentas sin fin. La
-  // ligera de cada 2 min en sesión no rehace el resumen: la línea dice aparte cuándo puso el libro al día.
+  // ligera de cada 2 min en sesión no rehace el resumen: la línea dice aparte cuándo puso el libro al día. Con la app
+  // OCULTA (ruta() sigue corriendo cada 60 s) o tras un «expirado» reciente no hay lectura: tampoco «sincronizando…».
   const etP = pasadaSyncAhora(ET_K.sync, ET_K.lig), swP = pasadaSyncAhora(SW_K_SYNC, SW_K_SYNC_LIG);
   let etHist = resumenHistorialSync(etP.prev, etP.lig), swHist = resumenHistorialSync(swP.prev, swP.lig);
   if (etCreds() && !etExpirado) {
@@ -10437,6 +10455,8 @@ async function vistaCuentas() {
 }
 // Sincroniza E*TRADE y Schwab en segundo plano (el tope por equipo de pasadaSyncAhora: la completa cada 10 min y, en
 // sesión, la ligera cada 2) y redibuja el Diario si entraron ejecuciones nuevas al libro. Nada se bloquea esperando al bróker.
+// v65 rev: ruta() la trae aquí cada 60 s aunque la app esté OCULTA; los frenos (app oculta, 15 min tras un «expirado»)
+// están en pasadaSyncAhora, por donde pasan este camino, Cuentas y el timer.
 // SOLO se mira `cambio`: una sincronización REAL lo pone en true si entraron round-trips o fills, y
 // la cacheada (dentro del TTL) devuelve el resumen guardado con cambio: false aunque su `fills` —las
 // de la ÚLTIMA sincronización real— sea > 0. Mirar `fills` hacía que cada vistaDiario disparara otro
@@ -10490,8 +10510,9 @@ function syncBrokersFondo(ya) {
     let ok = false; try { ok = !!valida(); } catch (_) {}
     if (!ok) return;                                        // sin sesión del bróker en este equipo (o caducada): nada
     const u = ultimaSyncBroker(clave, claveLig);
-    // con la sesión del bróker muerta a media jornada (401: «expirado») no se insiste cada 2 min: la cadencia de fuera
-    const cad = u.estado === 'expirado' ? LIBRO_SYNC_FUERA_MS : cadenciaSyncLibro(ses);
+    // con la sesión del bróker muerta a media jornada (401: «expirado») no se insiste cada 2 min: el mismo freno de 15
+    // min que aplica pasadaSyncAhora a todos los caminos (SYNC_EXPIRADO_MS)
+    const cad = u.estado === 'expirado' ? SYNC_EXPIRADO_MS : cadenciaSyncLibro(ses);
     if (!ya && ahora - Math.max(u.ts, _syncFondo.lanzado[b] || 0) < cad) return;
     _syncFondo.lanzado[b] = ahora;
     lanzados.push(b);

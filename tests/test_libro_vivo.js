@@ -116,7 +116,7 @@ function armarLibro(canon, op) {
       const reg = { completa: 0, ligera: 0 };
       const alm = { mz_sw_acct: 'h1' };
       if (E.cacheMs != null) { const c = JSON.stringify({ ts: Date.now() - E.cacheMs, resumen: { estado: 'ok', txs: 4, ops: 2, rts: 1, fills: 0, ts: Date.now() - E.cacheMs } }); alm.mz_et_sync2 = c; alm.mz_sw_sync = c; }
-      const M = construir(['etradeSincronizarImpl', 'schwabSincronizarImpl', 'etradeSincronizarLigera', 'schwabSincronizarLigera', 'pasadaSyncAhora',
+      const M = construir(['etradeSincronizarImpl', 'schwabSincronizarImpl', 'etradeSincronizarLigera', 'schwabSincronizarLigera', 'pasadaSyncAhora', 'appOcultaSync',
         'ultimaPasadaSync', 'tipoPasadaSync', 'resumenSyncGuardado', 'syncTtlAhora', 'ttlSyncLibro', 'sesionNY'], {
         haceCuanto, localStorage: localStorageFalso(alm), ET_K: { sync: 'mz_et_sync2', lig: 'mz_et_sync_lig' }, SW_K_SYNC: 'mz_sw_sync', SW_K_SYNC_LIG: 'mz_sw_sync_lig', SW_K: { acct: 'mz_sw_acct' },
         etCreds: () => ({ token: 't', token_secret: 's' }), etDiaVencido: () => false, swCreds: () => ({ token: 't' }), swVencido: () => false,
@@ -126,7 +126,7 @@ function armarLibro(canon, op) {
         swCuenta: async () => { reg.completa++; throw new Error('Schwab: sesión caducó'); },
         etCuentaKey: async () => { reg.ligera++; throw new Error('La sesión de E*TRADE expiró.'); },
         schwabOrdenesHistoricas: async () => { reg.ligera++; return { expirado: true, ordenes: [] }; },
-      }, { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_LIGERA', 'SW_DIAS_LIGERA', 'LIBRO_SYNC_FUERA_MS'], prefijo: 'let _hbUltimo = ' + JSON.stringify(E.hb) + ';' });
+      }, { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_LIGERA', 'SW_DIAS_LIGERA', 'SYNC_EXPIRADO_MS'], prefijo: 'let _hbUltimo = ' + JSON.stringify(E.hb) + ';' });
       return { M, reg };
     }
     for (const b of ['etrade', 'schwab']) {
@@ -165,7 +165,7 @@ function armarLibro(canon, op) {
       etradeSincronizar: () => { reg.et++; return E.etLanza ? Promise.reject(new Error('sin red')) : Promise.resolve(reg.resEt); },
       schwabSincronizar: () => { reg.sw++; return Promise.resolve(reg.resSw); },
       libroInvalidar: (c) => { reg.inval.push(c); }, libroRepintarPronto: () => { reg.repintar++; },
-    }, { consts: ['_syncFondo', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS'] });
+    }, { consts: ['_syncFondo', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'SYNC_EXPIRADO_MS'] });
     return { M, reg, E };
   }
   const guardada = (msAtras, estado) => JSON.stringify({ ts: Date.now() - msAtras, resumen: { estado: estado || 'ok' } });
@@ -578,6 +578,7 @@ function armarLibro(canon, op) {
         // como la de verdad cuando hace la COMPLETA: deja su hora guardada (sin eso, «en curso» repintaría Cuentas sin fin)
         mod.ev("etradeSincronizar = () => { window.__et++; localStorage.setItem('mz_et_sync2', JSON.stringify({ ts: Date.now(), resumen: { estado: 'ok', txs: 7, ops: 5, rts: 2, dias: 180, ts: Date.now() } })); return Promise.resolve({ estado: 'ok', cambio: false }); };");
       }
+      if (E.oculta) mod.win.document.visibilityState = 'hidden';
       let revento = null;
       try { await mod.ev('vistaCuentasSaldos()'); } catch (e) { revento = String((e && e.stack) || e); }
       for (let i = 0; i < 30; i++) await respirar();
@@ -615,6 +616,14 @@ function armarLibro(canon, op) {
     const RC = await correrCuentas(hbDe('regular'), 11 * 60000, { real: true });
     assert(/historial: sincronizando…/.test(RC.html) && !RC.syncIgual, 'REAL, con la completa de hace 11 min: «sincronizando…» y la COMPLETA deja su hora nueva');
     igual(RC.pintados, 2, 'y se repinta una sola vez al terminar (sin bucle)');
+    // [2] con la app OCULTA (ruta() sigue corriendo cada 60 s en la Mac) no hay lectura: tampoco «sincronizando…»
+    const RO = await correrCuentas(hbDe('regular'), 11 * 60000, { real: true, oculta: true });
+    assert(!RO.revento && !/historial: sincronizando…/.test(RO.html) && /historial 180 d:/.test(RO.html), 'REAL con la app OCULTA y la completa de hace 11 min: el resumen guardado, no «sincronizando…»');
+    igual([RO.px.length, RO.syncIgual, RO.lig, RO.pintados], [0, true, null, 1], 'y ni una llamada al proxy, nada escrito, un solo pintado (sin repintar en bucle con la app al fondo)');
+    // [2] tras un «expirado» reciente (aquí, de la ligera) no se insiste: la línea lo dice y no hay «sincronizando…»
+    const RX = await correrCuentas(hbDe('regular'), 11 * 60000, { real: true, lig: { ts: Date.now() - 3 * 60000, estado: 'expirado' } });
+    assert(/historial: sesión de E\*TRADE expirada — reconecta/.test(RX.html) && !/sincronizando…/.test(RX.html), 'REAL con un «expirado» de hace 3 min: la línea de expirada, no «sincronizando…»');
+    igual([RX.px.length, RX.pintados], [0, 1], 'y no se pregunta al bróker (freno de 15 min también desde Cuentas)');
   }
 
   // ════════════════ 10. C4 · el login reintenta SOLO si falla la red ════════════════
