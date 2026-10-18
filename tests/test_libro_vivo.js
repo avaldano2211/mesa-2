@@ -395,6 +395,21 @@ function armarLibro(canon, op) {
     E.st.error = null;
     r = await E.M.leerFillsTodos();
     igual([r.error, ids(r.filas)], [null, ids(canon.filter(f => f.id <= K))], 'y la siguiente se recupera');
+    // v65 rev2: la COMPLETA de cada 15 min que falla a mitad (la página 2: timeout de la base) devuelve la caché buena con el
+    // error, no las 1000 filas más VIEJAS que llegó a leer (el Diario se pintaba sin lo de hoy en cada reintento)
+    {
+      const grande = libroCanonico(1500, 7);
+      const P = armarLibro(grande);
+      await P.M.leerFillsTodos();
+      const cacheP = P.M._libro.filas;
+      P.M._libro.ts = 0; P.M._libro.tsCompleta = Date.now() - 15 * 60000 - 1;
+      const p0 = P.st.pedidas.length;
+      Object.defineProperty(P.st, 'error', { configurable: true, get() { return P.st.pedidas.length - p0 >= 1 ? { message: 'canceling statement due to statement timeout' } : null; } });
+      const rp = await P.M.leerFillsTodos();
+      igual([P.st.pedidas[p0].gt, P.st.pedidas[p0].n, !!P.st.pedidas[p0 + 1].error], [null, 1000, true], '(v65 rev2) la completa de los 15 min lee la página 1 (1000 filas, las más viejas) y la 2 falla');
+      igual([rp.error, rp.filas.length, P.M._libro.filas === cacheP, P.M._libro.ts], ['canceling statement due to statement timeout', 1500, true, 0], '(v65 rev2) devuelve las 1500 de la caché CON el error (la vista lo dice) y la deja vencida para reintentar');
+      igual(rp.filas[rp.filas.length - 1].ejecutado_at, cacheP[cacheP.length - 1].ejecutado_at, '(v65 rev2) con el último fill de la caché (lo de hoy), no el último de la página 1');
+    }
     const E0 = armarLibro(canon); E0.st.error = { code: 'PGRST205', message: 'Could not find the table public.fills' };
     r = await E0.M.leerFillsTodos();
     igual([r.error, r.filas.length, E0.M._libro.filas], ['la tabla fills aún no está en la base (migración pendiente)', 0, null], 'la primera (completa) que falla: el error de siempre y nada en caché');

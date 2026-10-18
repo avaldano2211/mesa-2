@@ -9596,9 +9596,11 @@ async function leerFillsTodos(forzar) {
     const d = r.data || []; leidas.push(...d);
     if (d.length < PAG) break;
   }
-  // una lectura a medias no se cachea. La incremental que falla devuelve la caché que había (es verdad hasta su
-  // hora) CON el error, para que la vista lo diga; la caché queda vencida y la próxima vuelve a intentarlo.
-  if (error) return { filas: libroVigente(completa ? leidas : _libro.filas), error };
+  // una lectura a medias no se cachea. La que falla devuelve la caché que había (es verdad hasta su hora) CON el error,
+  // para que la vista lo diga; la caché queda vencida y la próxima vuelve a intentarlo. v65 rev2: también la COMPLETA de
+  // cada 15 min: lo leído a medias son las páginas más VIEJAS (orden por ejecutado_at) y el Diario se pintaba sin lo de
+  // hoy (P&L de Hoy, abiertos y viajes mal) en cada reintento mientras fallara. Sin caché, lo leído (como siempre).
+  if (error) return { filas: libroVigente(_libro.filas || leidas), error };
   const tarde = _libro.rt.filter(e => e.seq > seq0);   // eventos de Realtime llegados mientras se leía
   let filas;
   if (completa) filas = tarde.length ? fusionarLibro(leidas, tarde) : leidas;   // la base ya lo trae en su orden
