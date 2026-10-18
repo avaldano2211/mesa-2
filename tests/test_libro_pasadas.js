@@ -465,5 +465,82 @@ function armarMundo(op) {
     igual(X.lecturasTx(t0).length, 10, 'pre-mercado del día siguiente: UNA pasada (la completa vencida) y luego el ritmo de fuera, no una cada 2 min');
   }
 
+  // ════════════════ 10. (v65 rev2) los IDs PROVISIONALES de E*TRADE: el Diario cuenta UNA operación, no dos ════════════════
+  // E*TRADE enseña la operación del día con IDs provisionales («Bought»/«Sold») y días después la contabiliza con otros
+  // («Bought To Open»/«Sold To Close», ~2 min antes, fee 1.03; caso real del 17-sep, test_cuentas). La pasada de cada 2 min
+  // escribe la provisional; la contabilizada entra luego con otra clave_ext y el libro (no-delete) guarda las cuatro. Todo
+  // REAL: etradeSincronizar (ligera y completa), guardarFills, leerFillsTodos/libroParaUnir y emparejarFillsFIFO, sobre una
+  // tabla fills de juguete con su clave única y su id que solo crece.
+  {
+    const W = { T: Date.UTC(2026, 9, 16, 15, 20), txs: [] };
+    class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(W.T); } static now() { return W.T; } }
+    const ymdNY = (iso) => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(iso || W.T)); } catch (_) { return ''; } };
+    const hoyNY = () => ymdNY(new Date(W.T).toISOString());
+    const ls = localStorageFalso({ mz_et_tok: 't', mz_et_sec: 's', mz_et_dia: hoyNY(), mz_et_acct: 'k1' });
+    const tx = (id, ms, tipo, qty, price, fee) => ({ transactionId: id, transactionDate: ms, postDate: ms, amount: 0, description: tipo, transactionType: tipo,
+      brokerage: { product: { symbol: 'SPY', securityType: 'OPTN', callPut: 'CALL', expiryYear: 26, expiryMonth: 10, expiryDay: 16, strikePrice: 764 }, quantity: qty, price, fee } });
+    const etProxy = async (ruta, body) => {
+      if (ruta !== '/etrade/read') return { status: 200, data: {} };
+      if (body.path === '/v1/accounts/list.json') return { status: 200, data: { AccountListResponse: { Accounts: { Account: [{ accountIdKey: 'k1', accountStatus: 'ACTIVE' }] } } } };
+      const arr = W.txs.slice().sort((a, b) => b.transactionDate - a.transactionDate);
+      return arr.length ? { status: 200, data: { TransactionListResponse: { moreTransactions: false, totalCount: arr.length, Transaction: arr } } } : { status: 204, data: null };
+    };
+    const tabla = []; let idSig = 1;
+    const sb = sbFalso((t, cadena) => {
+      if (t !== 'fills') return { data: [], error: null };
+      const up = cadena.find(c => c[0] === 'upsert');
+      if (up) {
+        const nuevas = [];
+        for (const f of up[1][0]) {
+          if (tabla.some(x => x.user_id === f.user_id && x.broker === f.broker && x.clave_ext === f.clave_ext)) continue;   // ignoreDuplicates
+          const fila = Object.assign(JSON.parse(JSON.stringify(f)), { id: idSig++ }); tabla.push(fila); nuevas.push({ id: fila.id });
+        }
+        return { data: nuevas, error: null };
+      }
+      if (cadena.some(c => c[0] === 'delete')) throw new Error('nadie borra del libro');
+      const gt = cadena.find(c => c[0] === 'gt'), rg = cadena.find(c => c[0] === 'range');
+      const porId = cadena.filter(c => c[0] === 'order').map(c => c[1][0]).join() === 'id';
+      let d = tabla.filter(f => !gt || f.id > Number(gt[1][1]))
+        .sort(porId ? (a, b) => a.id - b.id : (a, b) => Date.parse(a.ejecutado_at) - Date.parse(b.ejecutado_at) || a.id - b.id);
+      if (rg) d = d.slice(rg[1][0], rg[1][1] + 1);
+      return { data: JSON.parse(JSON.stringify(d)), error: null };
+    });
+    const FN = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincronizarLigera', 'pasadaSyncAhora', 'appOcultaSync', 'ultimaPasadaSync', 'tipoPasadaSync', 'syncTtlAhora',
+      'ttlSyncLibro', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro', 'resumenSyncGuardado', 'etradeTransacciones', 'etRead', 'etRenovar', 'etMarcarMuerto', 'etError', 'etCuentaKey',
+      'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
+      'leerFillsTodos', 'libroInvalidar', 'libroParaUnir', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro', 'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade',
+      'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'].filter(existe);
+    const M = construir(FN, { Date: FakeDate, ymdNY, hoyNY, localStorage: ls, URL, sb, etProxy, sesionActiva: { user: { id: 'u' } },
+      haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), etCreds: () => ({ token: 't', token_secret: 's' }),
+      document: { visibilityState: 'visible' }, libroRepintarPronto: () => {} },
+      { consts: ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SYNC_EXPIRADO_MS', 'LIBRO_TRAS_CIERRE_MS', '_etSyncEnVuelo', '_etRenovando',
+        '_ultimaRegular', '_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_GEMELA_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst),
+        prefijo: 'let _hbUltimo = null; function __hb(h) { _hbUltimo = h; }', extras: ['__hb'] });
+    const latir = () => M.__hb({ sesion: 'regular', latido_at: new Date(W.T - 20000).toISOString() });
+    const diario = (filas) => { const F = M.emparejarFillsFIFO(filas, hoyNY()); return [F.cerradas.length, F.cerradas.reduce((s, c) => s + c.contratos, 0), Math.round(F.cerradas.reduce((s, c) => s + c.pnl, 0) * 100) / 100]; };
+    latir(); await M.etradeSincronizar();   // 11:20 ET, la completa (aún sin la operación)
+    // 11:19 compra y 11:24 vende 1 SPY CALL 764: E*TRADE la enseña al momento con los IDs PROVISIONALES
+    const t19 = Date.UTC(2026, 9, 16, 15, 19, 16), t24 = Date.UTC(2026, 9, 16, 15, 24, 50);
+    W.txs.push(tx(26289201484550, t19, 'Bought', 1, 0.14, 1.0), tx(26289201541834, t24, 'Sold', -1, 0.11, 1.0));
+    W.T = Date.UTC(2026, 9, 16, 15, 26); latir();
+    const r1 = await M.etradeSincronizar();   // la LIGERA de cada 2 min
+    let r = await M.leerFillsTodos();
+    igual([r1.cambio, tabla.map(f => f.clave_ext).sort(), diario(r.filas)], [true, ['26289201484550', '26289201541834'], [1, 1, -5]], '(v65 rev2) a las 11:26 la ligera mete la PROVISIONAL y el Diario ya la ve: 1 operación ×1 (−$5.00 con las comisiones del día)');
+    // el lunes E*TRADE la CONTABILIZA: otros IDs, ~2 min antes, otra comisión; las provisionales desaparecen de su API
+    W.txs = [tx(26289501293386, t19 - 122000, 'Bought To Open', 1, 0.14, 1.03), tx(26289501293387, t24 - 123000, 'Sold To Close', -1, 0.11, 1.03)];
+    W.T = Date.UTC(2026, 9, 19, 15, 0); ls.setItem('mz_et_dia', hoyNY()); latir();
+    const r2 = await M.etradeSincronizar();   // la COMPLETA (180 días): la contabilizada entra con otra clave_ext
+    igual([r2.cambio, tabla.length], [true, 4], '(v65 rev2) la contabilizada ENTRA en el libro (otra clave_ext) y nada se borra: la tabla guarda las 4 ejecuciones');
+    r = await M.leerFillsTodos();   // la sincronización invalidó la caché: lectura incremental (id > 2)
+    igual([r.error, r.filas.map(f => f.clave_ext)], [null, ['26289501293386', '26289501293387']], '(v65 rev2) leerFillsTodos (incremental) devuelve el libro VIGENTE: la compra y la venta contabilizadas, sin sus provisionales');
+    igual(diario(r.filas), [1, 1, -5.06], '(v65 rev2) el Diario (emparejarFillsFIFO real): UNA operación ×1 −$5.06, no dos ×2 −$10.06');
+    r = await M.leerFillsTodos(true);
+    igual([r.filas.length, diario(r.filas)], [2, [1, 1, -5.06]], '(v65 rev2) y lo mismo con la lectura COMPLETA («Sincronizar ahora»)');
+    const u = await M.libroParaUnir();
+    igual((u || []).map(f => f.clave_ext), ['26289501293386', '26289501293387'], '(v65 rev2) libroParaUnir (Cuentas, Disciplina y los cupos): el mismo libro vigente');
+    const r3 = await M.leerFillsTodos();
+    assert(r3.filas === r.filas, '(v65 rev2) dentro de los 60 s, el MISMO arreglo (la vista vigente se recuerda: nadie redibuja por nada)');
+  }
+
   C.resumen();
 })().catch(e => { console.log('FALLA: excepción inesperada → ' + (e && e.stack || e)); C.resumen(); });

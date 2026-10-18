@@ -82,13 +82,15 @@ function baseFalsa(canon) {
   return { sb, st };
 }
 const LIBRO_FN = ['leerFillsTodos', 'libroInvalidar', 'libroParaUnir', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro',
-  'textoErrorFills', 'textoErrorTabla', 'libroFillRT', 'libroFillNuevo', 'libroFillCambiado', 'filaLibroRT'];
+  'textoErrorFills', 'textoErrorTabla', 'libroFillRT', 'libroFillNuevo', 'libroFillCambiado', 'filaLibroRT',
+  // v65 rev2: lo que devuelve es el libro VIGENTE (sin las provisionales de E*TRADE con gemela contabilizada)
+  'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato'];
 function armarLibro(canon, op) {
   op = op || {};
   const { sb, st } = baseFalsa(canon);
   const reg = { repintar: 0 };
   const M = construir(LIBRO_FN, { sb, sesionActiva: op.sesion === undefined ? { user: { id: 'u' } } : op.sesion, libroRepintarPronto: () => { reg.repintar++; } },
-    { consts: ['_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX'] });
+    { consts: ['_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_GEMELA_MS', 'ET_TIPO_PROVISIONAL'] });
   return { M, st, reg };
 }
 

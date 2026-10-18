@@ -30,9 +30,11 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   // v62 rev2
   'senalCortaCuentas', 'tituloCelda', 'duracionTablaCuentas',
   // v62 rev3
-  'filasEtradeVigentes'];
+  'filasEtradeVigentes',
+  // v65 rev2: el libro VIGENTE de E*TRADE (la provisional con gemela contabilizada no cuenta)
+  'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill'];
 const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'BROKERS_CON_COMISION', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
-  'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_GEMELA_MS'];
+  'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_GEMELA_MS', 'ET_TIPO_PROVISIONAL'];
 function cuentas(op) {
   op = op || {};
   return construir(NOMBRES, { ymdNY, $: op.$ || (() => null), anchoVista: op.anchoVista || (() => 1400) },
@@ -780,6 +782,35 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const vv = { ...vb, cerrada_at: '2026-09-17T08:31:38+00:00', clave_ext: 'm#846>551#5', raw: { abre: '846', cierra: '551', tipo: 'Option Expired' } };
     const libM = [{ ...bm, broker: 'etrade', clave_ext: '846', lado: 'compra', contratos: 5 }, { ...bm, broker: 'etrade', clave_ext: '379', lado: 'vencimiento', contratos: 7 }];
     igual(K.unirOperaciones([], [vb, vv], libM).ops.map(o => [o.contratos, o.resultado_usd]), [[5, -857.56]], '(rev3) el vencimiento anotado dos veces (mismo lote de apertura, cierre fuera del libro): ×5 −$857.56, no ×10');
+    // v65 rev2 · el MISMO cambio de ID, ahora DENTRO del libro: la pasada de cada 2 min escribe la provisional («Bought»/
+    // «Sold», los IDs reales del 17-sep) y días después entra la contabilizada con otros IDs; el libro (no-delete) tiene
+    // las cuatro. Se descarta AL LEER la provisional con gemela contabilizada (mismo contrato, lado, contratos y precio, ±3 min).
+    const FX = (id, lado, at, precio, fee, tipo) => ({ ...FL(id, lado, at), precio, comision: fee, crudo: { tipo, quantity: lado === 'compra' ? 1 : -1, price: precio, fee } });
+    const pC = FX('26260201484550', 'compra', '2026-09-17T18:19:16+00:00', 0.14, 1.0, 'Bought'), pV = FX('26260201541834', 'venta', '2026-09-17T18:24:50+00:00', 0.11, 1.0, 'Sold');
+    const cC = FX('26260501293386', 'compra', '2026-09-17T18:17:14+00:00', 0.14, 1.03, 'Bought To Open'), cV = FX('26260501293387', 'venta', '2026-09-17T18:22:47+00:00', 0.11, 1.03, 'Sold To Close');
+    const libro4 = [cC, pC, cV, pV];
+    igual(K.fillsEtradeVigentes(libro4).map(f => f.clave_ext), ['26260501293386', '26260501293387'], '(v65 rev2) libro con la provisional y la contabilizada de las dos patas: quedan SOLO las contabilizadas (1 compra y 1 venta, no 2 y 2)');
+    igual(libro4.length, 4, '(v65 rev2) y no se toca el libro: el filtro es al leer (no-delete)');
+    const soloProv = [pC, pV];
+    assert(K.fillsEtradeVigentes(soloProv) === soloProv, '(v65 rev2) antes de que E*TRADE contabilice (solo las provisionales): el MISMO arreglo, la provisional es la única verdad que hay');
+    const sinEt = [{ ...pC, broker: 'tasty' }, { ...cC, broker: 'tasty' }];
+    assert(K.fillsEtradeVigentes(sinEt) === sinEt, '(v65 rev2) otros brókeres no se tocan aunque se parezcan');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, precio: 0.15 }]).length, 2, '(v65 rev2) con otro precio no es gemela: las dos se quedan');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, ejecutado_at: '2026-09-17T18:20:20+00:00' }]).length, 2, '(v65 rev2) a más de 3 min (3:06) no es gemela');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, contratos: 2 }]).length, 2, '(v65 rev2) con otros contratos no es gemela');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, strike: 765 }]).length, 2, '(v65 rev2) otro contrato (strike): no es gemela');
+    igual(K.fillsEtradeVigentes([pV, cV]).map(f => f.clave_ext), ['26260501293387'], '(v65 rev2) la venta provisional («Sold», +2:03) con su gemela «Sold To Close»: una');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, crudo: undefined }]).length, 2, '(v65 rev2) un fill sin crudo.tipo (anterior al crudo) no se toca');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, crudo: JSON.stringify(pC.crudo) }]).length, 1, '(v65 rev2) el crudo como texto JSON también se entiende');
+    igual(K.fillsEtradeVigentes([cC, { ...cC, clave_ext: 'otra-contabilizada', crudo: { tipo: 'Bought To Open' } }]).length, 2, '(v65 rev2) dos contabilizadas iguales (dos compras de verdad): ninguna se toca');
+    // dos operaciones IGUALES de verdad a un minuto: cada provisional casa con SU contabilizada (1:1 y por orden de hora)
+    const pC2 = { ...pC, clave_ext: '26260201490000', ejecutado_at: '2026-09-17T18:20:16+00:00' }, cC2 = { ...cC, clave_ext: '26260501293390', ejecutado_at: '2026-09-17T18:18:14+00:00' };
+    igual(K.fillsEtradeVigentes([cC, cC2, pC, pC2]).map(f => f.clave_ext), ['26260501293386', '26260501293390'], '(v65 rev2) dos compras iguales a un minuto: las dos provisionales casan cada una con la suya (quedan 2 compras, no 4 ni 1)');
+    igual(K.fillsEtradeVigentes([cC, pC, pC2]).map(f => f.clave_ext).sort(), ['26260201490000', '26260501293386'], '(v65 rev2) con UNA sola contabilizada, solo UNA provisional se va: la otra sigue siendo una compra de verdad (2 compras)');
+    // y las filas de broker_trades: con el libro de las cuatro, la sustituida vuelve a descartarse (Cuentas, Disciplina, cupos)
+    igual(K.filasEtradeVigentes([vieja, buena], libro4), [buena], '(v65 rev2) filasEtradeVigentes con la provisional Y la contabilizada en el libro: descarta la fila «Sold» (antes, con sus IDs en el libro, se quedaban las dos)');
+    igual(K.unirOperaciones([], [vieja, buena], libro4).ops.map(o => [o.contratos, o.resultado_usd]), [[1, -4.03]], '(v65 rev2) Cuentas con ese libro: UNA operación ×1 −$4.03, no ×2 −$8.03');
+    igual(K.filasEtradeVigentes([vieja], soloProv), [vieja], '(v65 rev2) el mismo día, con solo la provisional en el libro y en broker_trades: la fila se queda (es la operación)');
     // Cuentas y la comprobación del Diario pasan el libro (sin él si la lectura falló)
     assert(/unirOperaciones\(posR\.data \|\| \[\], btR\.data \|\| \[\], fillsR\.error \? null : fillsR\.filas\)/.test(extraer('vistaCuentasSaldos')), 'vistaCuentasSaldos: unirOperaciones con el libro de fills (null si la lectura falló)');
     assert(/unirOperaciones\(posic, btR\.data \|\| \[\], fillsR\.error \? null : fills\)/.test(extraer('vistaDiario')), 'vistaDiario: «¿coincide con Cuentas?» con el mismo libro');

@@ -8940,10 +8940,58 @@ function nombreMesNY() {
 // mismo lote de apertura, raw.abre: un vencimiento anotado dos veces con otro ID de cierre). Sin libro (lectura caída o
 // vacía) o sin gemela en él la fila se queda: nunca se tira un viaje que el libro no puede desmentir. PURA.
 const ET_GEMELA_MS = 3 * 60 * 1000;
+// v65 rev2 · Los fills de E*TRADE que SIGUEN vigentes en el LIBRO (el mismo cambio de ID, ahora en `fills`). Durante el
+// día E*TRADE enseña la operación con IDs PROVISIONALES (crudo.tipo «Bought»/«Sold»: 26260201484550/…541834, fee 1.00) y
+// días después la CONTABILIZA con otros («Bought To Open»/«Sold To Close»: 26260501293386/7, ~2 min antes, fee 1.03); la
+// provisional desaparece de su API. En la v64 E*TRADE solo entraba al libro al abrir el Diario (mediana 503 min) y casi
+// siempre ya contabilizada; desde la v65 la pasada de cada 2 min escribe SIEMPRE la provisional, y la contabilizada llega
+// luego con otra clave_ext: el upsert la inserta y, como el libro no se borra nunca (no-delete), se quedaban las dos y el
+// Diario contaba la operación dos veces (×2 contratos y el P&L doble) para siempre. No se borra nada: se descarta AL LEER la
+// provisional que tiene su gemela contabilizada (el mismo contrato, lado, contratos y precio, a ±ET_GEMELA_MS). El
+// emparejado es 1:1 y por orden de hora: dos operaciones iguales de verdad necesitan dos gemelas, y mientras E*TRADE no
+// contabiliza, la provisional es la única verdad que hay y se queda. Un fill sin crudo.tipo (anterior al crudo) no se toca.
+// Devuelve el MISMO arreglo si no sobra nada (nadie redibuja por nada). PURA.
+const ET_TIPO_PROVISIONAL = /^(bought|sold)$/i;
+function tipoFillEtrade(f) {
+  let c = f && f.crudo;
+  if (typeof c === 'string') { try { c = JSON.parse(c); } catch (_) { c = null; } }
+  return String((c && typeof c === 'object' && c.tipo) || '').trim();
+}
+function fillsEtradeVigentes(filas) {
+  if (!Array.isArray(filas)) return filas;
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const instante = (f) => Date.parse((f && f.ejecutado_at) || '');
+  // la gemela es la MISMA ejecución: contrato, lado, contratos y precio (a 4 decimales: 0.14 es 0.14 venga como venga)
+  const clave = (f) => { const p = num(f.precio); return [claveFill(f), f.lado, num(f.contratos), p == null ? '?' : Math.round(p * 10000)].join('#'); };
+  const prov = [], cont = new Map();
+  for (const f of filas) {
+    if (!f || f.broker !== 'etrade') continue;
+    const tipo = tipoFillEtrade(f);
+    if (!tipo || !Number.isFinite(instante(f))) continue;
+    if (ET_TIPO_PROVISIONAL.test(tipo)) { prov.push(f); continue; }
+    const k = clave(f);
+    if (!cont.has(k)) cont.set(k, []);
+    cont.get(k).push(f);
+  }
+  if (!prov.length || !cont.size) return filas;
+  const porHora = (a, b) => instante(a) - instante(b);
+  cont.forEach(l => l.sort(porHora));
+  const usadas = new Set(), sobra = new Set();
+  // por orden de hora, cada provisional se lleva la contabilizada libre MÁS TEMPRANA dentro de la ventana: E*TRADE corre
+  // todas ~2 min, así que dos operaciones iguales a un minuto casan cada una con la suya (la más cercana se cruzaría)
+  for (const p of prov.slice().sort(porHora)) {
+    const tp = instante(p);
+    const g = (cont.get(clave(p)) || []).find(c => !usadas.has(c) && Math.abs(instante(c) - tp) <= ET_GEMELA_MS);
+    if (g) { usadas.add(g); sobra.add(p); }
+  }
+  return sobra.size ? filas.filter(f => !sobra.has(f)) : filas;
+}
 function filasEtradeVigentes(trades, fills) {
   if (!Array.isArray(trades)) return trades;
   const ids = new Set();
-  for (const f of (Array.isArray(fills) ? fills : [])) {
+  // v65 rev2: los IDs del libro VIGENTE. Con la provisional y la contabilizada de una operación en el libro, los IDs de las
+  // dos filas de broker_trades estaban «en el libro» y las dos se quedaban (Cuentas, Disciplina y los cupos, ×2)
+  for (const f of (fillsEtradeVigentes(Array.isArray(fills) ? fills : []) || [])) {
     if (f && f.broker === 'etrade' && f.clave_ext != null && f.clave_ext !== '') ids.add(String(f.clave_ext));
   }
   if (!ids.size) return trades;
@@ -9439,11 +9487,23 @@ async function guardarFills(filas, uid) {
 //   el 12 de E*TRADE, la incremental pedía id > 12 y el 11 —ya en la base— faltaba en el Diario hasta la completa (15
 //   min), con el FIFO y el P&L mal y presentados como frescos. Con el cursor de lecturas pide id > 10: el 12 se baja
 //   una vez más y la fusión lo deduplica por id. Realtime NO lo toca.
-const _libro = { filas: null, ts: 0, tsCompleta: 0, rt: [], rtSeq: 0, repTimer: null, maxLeido: 0 };
+//   vigBase / vig (v65 rev2): la vista VIGENTE de E*TRADE (libroVigente) de la última `filas` que se devolvió.
+const _libro = { filas: null, ts: 0, tsCompleta: 0, rt: [], rtSeq: 0, repTimer: null, maxLeido: 0, vigBase: null, vig: null };
 const LIBRO_TTL_MS = 60000;
 const LIBRO_COMPLETA_MS = 15 * 60000;   // v65: una lectura completa cada 15 min recoge lo que no llegó por Realtime
 const LIBRO_RT_MAX = 500;               // tope del diario de eventos (una lectura dura segundos: sobra)
 const LIBRO_REPINTAR_MS = 1500;         // debounce del repintado tras eventos de Realtime o una sincronización con cambios
+// v65 rev2 · lo que ven TODAS las pantallas (Diario, Cuentas y, por libroParaUnir, Disciplina y los cupos): el libro sin las
+// provisionales de E*TRADE que ya tienen su gemela contabilizada (fillsEtradeVigentes). La caché (_libro.filas) sigue siendo
+// la base tal cual —el cursor de la incremental y la fusión de Realtime trabajan sobre ella—; solo se filtra al devolver. Se
+// recuerda la última vista: con la misma `filas` se devuelve el MISMO arreglo (nadie redibuja por nada).
+function libroVigente(filas) {
+  if (!Array.isArray(filas)) return filas;
+  if (_libro.vigBase === filas) return _libro.vig;
+  const v = fillsEtradeVigentes(filas);
+  _libro.vigBase = filas; _libro.vig = v;
+  return v;
+}
 // `completa` (v65): la siguiente lectura será COMPLETA y no incremental (un toque de Andrés: «Sincronizar ahora»).
 function libroInvalidar(completa) { _libro.ts = 0; if (completa) { _libro.tsCompleta = 0; _libro.maxLeido = 0; } }
 // v62 rev4: el libro de fills para unirOperaciones (quita las filas de E*TRADE sustituidas: filasEtradeVigentes) en
@@ -9521,7 +9581,7 @@ function filaLibroRT(f) {
 }
 async function leerFillsTodos(forzar) {
   const ahora = Date.now();
-  if (!forzar && _libro.filas && ahora - _libro.ts < LIBRO_TTL_MS) return { filas: _libro.filas, error: null };
+  if (!forzar && _libro.filas && ahora - _libro.ts < LIBRO_TTL_MS) return { filas: libroVigente(_libro.filas), error: null };
   // v65: completa sin caché, con forzar o cada 15 min; si no, incremental (solo id > el mayor que ya se LEYÓ: maxLeido)
   const completa = !!forzar || !_libro.filas || ahora - _libro.tsCompleta >= LIBRO_COMPLETA_MS;
   const desdeId = completa ? 0 : (Number(_libro.maxLeido) || 0);
@@ -9538,7 +9598,7 @@ async function leerFillsTodos(forzar) {
   }
   // una lectura a medias no se cachea. La incremental que falla devuelve la caché que había (es verdad hasta su
   // hora) CON el error, para que la vista lo diga; la caché queda vencida y la próxima vuelve a intentarlo.
-  if (error) return { filas: completa ? leidas : _libro.filas, error };
+  if (error) return { filas: libroVigente(completa ? leidas : _libro.filas), error };
   const tarde = _libro.rt.filter(e => e.seq > seq0);   // eventos de Realtime llegados mientras se leía
   let filas;
   if (completa) filas = tarde.length ? fusionarLibro(leidas, tarde) : leidas;   // la base ya lo trae en su orden
@@ -9548,7 +9608,7 @@ async function leerFillsTodos(forzar) {
   // el cursor solo avanza con lo que trajo la base (lo de Realtime —`tarde` incluido— no cuenta: ver maxLeido)
   _libro.maxLeido = completa ? maxIdLibro(leidas) : Math.max(Number(_libro.maxLeido) || 0, maxIdLibro(leidas));
   if (completa) _libro.tsCompleta = _libro.ts;
-  return { filas, error: null };
+  return { filas: libroVigente(filas), error: null };
 }
 // v65 · Realtime de `fills` (canal 'mesa2-fills', sql 0021): cada evento se FUSIONA en la caché (INSERT añade, UPDATE
 // reemplaza: así llega también el spot que escribe spot_fills) y el Diario o Cuentas, si están a la vista, se repintan
