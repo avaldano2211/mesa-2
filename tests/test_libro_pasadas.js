@@ -332,6 +332,35 @@ function armarMundo(op) {
     X.W.T += 61000; X.latir();
     igual(X.M.syncBrokersFondo(), ['etrade'], 'y a los 2 min de la ligera, sí');
   }
+  // v65 rev2: un «ya» DENTRO de la cadencia (volver de la app del bróker, arrancar, TOKEN_REFRESHED) que acaba en «guardada»
+  // no reinicia la cadencia: la siguiente lectura real llega cuando tocaba, no una cadencia entera después
+  {
+    // tics de 15 s desde `desde` hasta `hasta` (s); devuelve los segundos (desde t0) de los tics que LEYERON al bróker
+    const lecturas = async (X, t0, desde, hasta) => {
+      const out = [];
+      for (let s = desde; s <= hasta; s += 15) {
+        X.W.T = t0 + s * 1000; X.latir();
+        const n0 = X.lecturasTx(t0 + 1).length;
+        X.M.syncBrokersFondo(); await X.correr();
+        if (X.lecturasTx(t0 + 1).length > n0) out.push(s);
+      }
+      return out;
+    };
+    const X = armarMundo();
+    await X.M.etradeSincronizar(); await X.correr();   // la completa en t0
+    const t0 = X.W.T;
+    X.W.T = t0 + 90000; X.latir();
+    igual(X.M.syncBrokersFondo(true), ['etrade'], '(v65 rev2) en sesión, a t0+90 s Andrés vuelve de la app de E*TRADE: «ya» lanza la sincronización…');
+    await X.correr();
+    igual(X.lecturasTx(t0 + 1).length, 0, '(v65 rev2) …que sale «guardada» (dentro del tope de 2 min): no lee nada');
+    igual((await lecturas(X, t0, 105, 300))[0], 120, '(v65 rev2) la siguiente lectura real llega a t0+120 s, cuando tocaba (no a t0+210 s: el «ya» no reinicia la cadencia)');
+    const Z = armarMundo({ ses: 'cerrado' });
+    await Z.M.etradeSincronizar(); await Z.correr();
+    const z0 = Z.W.T;
+    Z.W.T = z0 + 9 * MIN; Z.latir(); Z.M.syncBrokersFondo(true); await Z.correr();
+    igual(Z.lecturasTx(z0 + 1).length, 0, '(v65 rev2) fuera de sesión, el «ya» de los 9 min sale «guardada» (tope de 10)');
+    igual((await lecturas(Z, z0, 9 * 60 + 15, 40 * 60))[0], 15 * 60, '(v65 rev2) y la siguiente lectura llega a los 15 min, no a los 24');
+  }
 
   // ════════════════ 7. [2] con la app OCULTA no se lee al bróker por NINGÚN camino ════════════════
   {

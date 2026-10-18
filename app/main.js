@@ -10619,8 +10619,14 @@ function syncBrokersFondo(ya) {
     // min que aplica pasadaSyncAhora a todos los caminos (SYNC_EXPIRADO_MS)
     // v65 rev: con el ritmo de sesión también justo tras el cierre (ritmoSyncLibro): lo de los últimos minutos no espera 15
     const cad = u.estado === 'expirado' ? SYNC_EXPIRADO_MS : cadenciaSyncLibro(ritmoSyncLibro(ses, _ultimaRegular, ahora, u.enSesion));
-    if (!ya && ahora - Math.max(u.ts, _syncFondo.lanzado[b] || 0) < cad) return;
-    _syncFondo.lanzado[b] = ahora;
+    // v65 rev2: `lanzado` solo se sella cuando la cadencia ya había vencido. Un «ya» dentro de la cadencia (volver de la app
+    // del bróker, arrancar, cada TOKEN_REFRESHED de supabase ~1 h) suele acabar en «guardada» (dentro del tope, sin leer
+    // nada); sellarlo reiniciaba la cadencia desde ese instante y la siguiente lectura real llegaba una cadencia entera
+    // después (210 s en vez de 120 en sesión; 24 min en vez de 15 fuera). Si el «ya» sí lee, la pasada guarda su hora
+    // (u.ts) y la cadencia cuenta desde ella. Con el almacenamiento roto (u.ts = 0) los tics siguen frenados por lanzado.
+    const vencida = ahora - Math.max(u.ts, _syncFondo.lanzado[b] || 0) >= cad;
+    if (!ya && !vencida) return;
+    if (vencida) _syncFondo.lanzado[b] = ahora;
     lanzados.push(b);
     Promise.resolve().then(() => sincronizar()).then(syncFondoResultado).catch(() => {});
   };
