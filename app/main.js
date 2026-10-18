@@ -3172,30 +3172,57 @@ const ET_DIAS_LIGERA = 4;   // un fin de semana largo cabe; en 4 días caben de 
 // el camino de siempre —ruta() cada 60 s → Diario/Cuentas → sincronizar— volvía a probar cada 2 min: medido, 16 intentos
 // (32 lecturas 401 y 16 renews) en 30 min, justo cuando E*TRADE está fallando.
 const SYNC_EXPIRADO_MS = 15 * 60000;
-// PURA: el tope de la pasada LIGERA según la sesión de NY (sesionNY: regular · extendida · cerrado). Fuera de la sesión
+// v65 rev: tras el cierre (16:00, o 13:00 en media sesión) el latido pasa a «post» y el ritmo saltaba a 15 min / 10 min:
+// un 0DTE cerrado a las 15:59:30 no entraba al libro hasta ~16:14, justo cuando más se mira el Diario. Dos arreglos que
+// no necesitan saber a qué hora cierra hoy (lo sabe el latido del worker): (1) el ritmo de sesión sigue
+// LIBRO_TRAS_CIERRE_MS después de la última vez que ESTE equipo vio la sesión regular: con la cadencia de 2 min son una o
+// dos pasadas más, nunca tres (E*TRADE puede publicar la transacción con algún retraso); (2) si la última pasada guardada
+// se hizo EN sesión, la del cierre todavía falta y toca con el ritmo de sesión (el iPhone que volvió de la app del bróker
+// a las 16:05 no vio el cierre). Hecha esa pasada (ya fuera de sesión), vuelve el ritmo de fuera.
+const LIBRO_TRAS_CIERRE_MS = 4 * 60000;
+let _ultimaRegular = 0;   // la última vez (ms) que este equipo vio la sesión regular (sesionNYLibro)
+// PURA: el tope de la pasada LIGERA según el ritmo (ritmoSyncLibro: regular · extendida · cerrado). Fuera de la sesión
 // regular es el de la completa: no hay ligera.
 function ttlSyncLibro(ses) { return ses === 'regular' ? ET_SYNC_TTL_SESION : ET_SYNC_TTL; }
-// El tope de AHORA para la ligera, con el último latido que leyó ruta() (sin latido fresco, el reloj de NY). Si algo
-// falla al decidir, el prudente: 10 min.
-function syncTtlAhora() {
-  try { return ttlSyncLibro(sesionNY(typeof _hbUltimo === 'undefined' ? null : _hbUltimo)); } catch (_) { return ET_SYNC_TTL; }
+// La sesión de NY con el último latido que leyó ruta() (sin latido fresco, el reloj de NY), anotando cuándo se vio la
+// regular por última vez. null si no se pudo decidir.
+function sesionNYLibro() {
+  let ses = null;
+  try { ses = sesionNY(typeof _hbUltimo === 'undefined' ? null : _hbUltimo); } catch (_) { return null; }
+  if (ses === 'regular') _ultimaRegular = Date.now();
+  return ses;
+}
+// PURA: el ritmo con el que va el libro: 'regular' en la sesión regular, en los LIBRO_TRAS_CIERRE_MS que siguen a la
+// última vez que se vio (`ultimaRegular`) y mientras la última pasada guardada sea de la sesión (`ultimaEnSesion`: falta
+// la del cierre); si no, la sesión tal cual.
+function ritmoSyncLibro(ses, ultimaRegular, ahora, ultimaEnSesion) {
+  if (ses === 'regular') return 'regular';
+  if (Number(ultimaRegular) > 0 && ahora - Number(ultimaRegular) < LIBRO_TRAS_CIERRE_MS) return 'regular';
+  if (ultimaEnSesion) return 'regular';
+  return ses;
+}
+// El tope de AHORA para la ligera: 2 min con el ritmo de sesión, 10 fuera. `ultimaEnSesion`: la última pasada guardada
+// se hizo en la sesión regular (ultimaPasadaSync). Si algo falla al decidir, el prudente: 10 min.
+function syncTtlAhora(ultimaEnSesion) {
+  try { return ttlSyncLibro(ritmoSyncLibro(sesionNYLibro(), _ultimaRegular, Date.now(), !!ultimaEnSesion)); } catch (_) { return ET_SYNC_TTL; }
 }
 // PURA (v65 rev): la última pasada de un bróker según sus dos registros guardados — `prev` el de la COMPLETA ({ ts,
-// resumen }) y `lig` el de la LIGERA ({ ts, estado, … }) — → { tc: hora de la completa, ts: la más reciente de las dos,
-// estado: el de esa }. Una ligera anterior a la última completa ya no cuenta (la completa la incluye). Sin completa
-// guardada: null — la próxima es completa y toca ya (reconectar, «sincronizar» y olvidar borran esa clave).
+// resumen, ses }) y `lig` el de la LIGERA ({ ts, estado, ses, … }) — → { tc: hora de la completa, ts: la más reciente de
+// las dos, estado: el de esa, enSesion: si esa se hizo en la sesión regular }. Una ligera anterior a la última completa
+// ya no cuenta (la completa la incluye). Sin completa guardada: null — la próxima es completa y toca ya (reconectar,
+// «sincronizar» y olvidar borran esa clave).
 function ultimaPasadaSync(prev, lig) {
   if (!prev || typeof prev !== 'object') return null;
   const tc = Number(prev.ts) || 0, tl = Number(lig && lig.ts) || 0;
-  if (tl > tc) return { tc, ts: tl, estado: lig.estado || null };
-  return { tc, ts: tc, estado: (prev.resumen && prev.resumen.estado) || null };
+  if (tl > tc) return { tc, ts: tl, estado: lig.estado || null, enSesion: lig.ses === 'regular' };
+  return { tc, ts: tc, estado: (prev.resumen && prev.resumen.estado) || null, enSesion: prev.ses === 'regular' };
 }
 // PURA (v65 rev): qué pasada toca → 'completa' | 'ligera' | 'guardada' (devolver el resumen guardado sin preguntar).
 //   · forzar («sincronizar», reconectar) o sin completa guardada → completa.
 //   · la última (completa o ligera) dio «expirado» → guardada hasta SYNC_EXPIRADO_MS (15 min); luego, completa.
 //   · la completa vencida (ET_SYNC_TTL, 10 min) → completa, aunque haya una ligera reciente.
-//   · dentro del tope de ahora (`ttl`: 2 min en sesión, 10 fuera) → guardada. Fuera de sesión el tope es el de la
-//     completa: la ligera solo existe en sesión.
+//   · dentro del tope de ahora (`ttl`: 2 min con el ritmo de sesión —también justo tras el cierre—, 10 fuera) →
+//     guardada. Fuera de sesión el tope es el de la completa: la ligera solo existe con el ritmo de sesión.
 //   · si no → ligera.
 function tipoPasadaSync(u, ahora, ttl, forzar) {
   if (forzar || !u) return 'completa';
@@ -3216,13 +3243,15 @@ function appOcultaSync() {
 // abiertos llamaba a la sincronización: medido, la Mac leía el historial de E*TRADE cada 2 min toda la sesión con la app
 // oculta. Este es el sitio por el que pasan todos los caminos. «Sincronizar» (forzar) es un toque de Andrés: pasa. Al
 // volver a la vista, syncBrokersFondo(true) a los 800 ms pone el libro al día.
+// v65 rev: `ses` (la sesión de ahora) se guarda con la pasada: una hecha en sesión deja pendiente la del cierre.
 function pasadaSyncAhora(clave, claveLig, forzar) {
   let prev = null, lig = null;
   try { prev = JSON.parse(localStorage.getItem(clave) || 'null'); } catch (_) {}
   try { lig = JSON.parse(localStorage.getItem(claveLig) || 'null'); } catch (_) {}
   const u = ultimaPasadaSync(prev, lig);
-  if (!forzar && appOcultaSync()) return { prev, lig, u, tipo: 'guardada' };
-  return { prev, lig, u, tipo: tipoPasadaSync(u, Date.now(), syncTtlAhora(), forzar) };
+  const ses = sesionNYLibro();
+  if (!forzar && appOcultaSync()) return { prev, lig, u, ses, tipo: 'guardada' };
+  return { prev, lig, u, ses, tipo: tipoPasadaSync(u, Date.now(), syncTtlAhora(u && u.enSesion), forzar) };
 }
 // PURA: el resultado de una sincronización que no pregunta al bróker: el resumen de la última completa, sin cambio.
 function resumenSyncGuardado(prev) { return { ...((prev && prev.resumen) || {}), cambio: false }; }
@@ -3365,11 +3394,11 @@ function etradeSincronizar(forzar) {
 // en sesión se lee cada 20 s); si no está, etCuentaKey la pide UNA vez y la deja cacheada. A la bitácora del proxy solo
 // va cuando hay algo que contar (fills nuevos o un fallo): el proxy ya anota cada lectura. Sin usuario de la Mesa no hay
 // libro en el que escribir: no se pregunta nada.
-async function etradeSincronizarLigera(cr, prev, uid) {
+async function etradeSincronizarLigera(cr, prev, uid, ses) {
   const guardado = resumenSyncGuardado(prev);
   if (!uid) return guardado;
   const marcar = (reg) => {
-    reg.ts = Date.now();
+    reg.ts = Date.now(); reg.ses = ses;   // con la sesión en que se hizo (pasadaSyncAhora: falta la del cierre)
     try { localStorage.setItem(ET_K.lig, JSON.stringify(reg)); } catch (_) {}
     // solo contadores/estado (jamás tokens ni trades)
     if (reg.estado !== 'ok' || reg.fills > 0 || reg.fills_err) { try { etProxy('/diag', { que: 'etrade_sync_ligera', uid: true, ...reg }).catch(() => {}); } catch (_) {} }
@@ -3404,12 +3433,12 @@ async function etradeSincronizarImpl(forzar) {
   const P = pasadaSyncAhora(ET_K.sync, ET_K.lig, forzar);
   if (P.tipo === 'guardada') return resumenSyncGuardado(P.prev);
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
-  if (P.tipo === 'ligera') return etradeSincronizarLigera(cr, P.prev, uid);
+  if (P.tipo === 'ligera') return etradeSincronizarLigera(cr, P.prev, uid, P.ses);
   // Todo resultado (también expirado/error) se cachea con su hora: el tope (10 min
   // la completa) evita martillar el proxy; reconectar E*TRADE borra el caché.
   const fin = (resumen) => {
     resumen.ts = Date.now();
-    try { localStorage.setItem(ET_K.sync, JSON.stringify({ ts: resumen.ts, resumen })); } catch (_) {}
+    try { localStorage.setItem(ET_K.sync, JSON.stringify({ ts: resumen.ts, resumen, ses: P.ses })); } catch (_) {}   // v65 rev: y su sesión
     // Diagnóstico a la bitácora del proxy: SOLO contadores/estado (jamás tokens ni trades).
     try { etProxy('/diag', { que: 'etrade_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}
     return resumen;
@@ -3931,13 +3960,13 @@ function schwabSincronizar(forzar) {
 // ni el select de vencidas, ni su limpieza, ni el upsert de round-trips (eso lo rehace la completa a los 10 min). Solo con
 // la cuenta YA guardada en este equipo: pedirla aquí podría abrir el cuadro de elegir cuenta desde un timer de fondo (si
 // no está, es que la completa no pudo: que lo intente ella a los 10 min).
-async function schwabSincronizarLigera(prev, uid) {
+async function schwabSincronizarLigera(prev, uid, ses) {
   const guardado = resumenSyncGuardado(prev);
   let hash = null;
   try { hash = localStorage.getItem(SW_K.acct); } catch (_) {}
   if (!uid || !hash) return guardado;
   const marcar = (reg) => {
-    reg.ts = Date.now();
+    reg.ts = Date.now(); reg.ses = ses;
     try { localStorage.setItem(SW_K_SYNC_LIG, JSON.stringify(reg)); } catch (_) {}
     if (reg.estado !== 'ok' || reg.fills > 0 || reg.fills_err) { try { etProxy('/diag', { que: 'schwab_sync_ligera', uid: true, ...reg }).catch(() => {}); } catch (_) {} }   // solo contadores, jamás tokens
     return reg;
@@ -3963,10 +3992,10 @@ async function schwabSincronizarImpl(forzar) {
   const P = pasadaSyncAhora(SW_K_SYNC, SW_K_SYNC_LIG, forzar);   // v65 rev: el mismo criterio que E*TRADE
   if (P.tipo === 'guardada') return resumenSyncGuardado(P.prev);
   const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
-  if (P.tipo === 'ligera') return schwabSincronizarLigera(P.prev, uid);
+  if (P.tipo === 'ligera') return schwabSincronizarLigera(P.prev, uid, P.ses);
   const fin = (resumen) => {
     resumen.ts = Date.now();
-    try { localStorage.setItem(SW_K_SYNC, JSON.stringify({ ts: resumen.ts, resumen })); } catch (_) {}
+    try { localStorage.setItem(SW_K_SYNC, JSON.stringify({ ts: resumen.ts, resumen, ses: P.ses })); } catch (_) {}
     try { etProxy('/diag', { que: 'schwab_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}   // solo contadores, jamás tokens
     return resumen;
   };
@@ -10476,21 +10505,22 @@ function sincronizarLibroFondo() {
 // siempre: nada de esto arma ni manda órdenes. Un fallo no rompe nada ni martillea: cada sincronización guarda su
 // resultado (también el error) con su hora y el tope de pasadaSyncAhora frena la siguiente; este timer, además, no relanza
 // un bróker antes de su cadencia aunque el almacenamiento local falle (lanzado[b]).
-// v65 rev: en sesión, la pasada de cada 2 min es la LIGERA (4 días, solo al libro) y la COMPLETA va cada 10 min.
+// v65 rev: en sesión, la pasada de cada 2 min es la LIGERA (4 días, solo al libro) y la COMPLETA va cada 10 min; el
+// ritmo de sesión sigue un poco tras el cierre (ritmoSyncLibro) para que lo operado en los últimos minutos no espere 15.
 const LIBRO_SYNC_SESION_MS = 120000;       // sesión regular: un fill tarda ~2 min en verse en el Diario
 const LIBRO_SYNC_FUERA_MS = 15 * 60000;    // fuera de la sesión regular (pre/post, noche, fin de semana)
 const LIBRO_SYNC_TIC_MS = 15000;           // el tic solo MIRA si toca: así el paso a la sesión regular (9:30) se nota enseguida
 const _syncFondo = { lanzado: { etrade: 0, schwab: 0 } };
-// PURA: cada cuánto se sincroniza en segundo plano según la sesión de NY (sesionNY).
+// PURA: cada cuánto se sincroniza en segundo plano según el ritmo (ritmoSyncLibro: la sesión de NY y el rato tras el cierre).
 function cadenciaSyncLibro(ses) { return ses === 'regular' ? LIBRO_SYNC_SESION_MS : LIBRO_SYNC_FUERA_MS; }
 // La última sincronización REAL de un bróker (la que hizo cualquiera: el timer, el Diario, Cuentas o «sincronizar»),
-// completa o ligera (v65 rev: la cadencia de 2 min cuenta desde la más reciente de las dos): { ts, estado }.
+// completa o ligera (v65 rev: la cadencia de 2 min cuenta desde la más reciente de las dos): { ts, estado, enSesion }.
 function ultimaSyncBroker(clave, claveLig) {
   let prev = null, lig = null;
   try { prev = JSON.parse(localStorage.getItem(clave) || 'null'); } catch (_) {}
   try { lig = claveLig ? JSON.parse(localStorage.getItem(claveLig) || 'null') : null; } catch (_) {}
   const u = ultimaPasadaSync(prev, lig);
-  return u ? { ts: u.ts, estado: u.estado } : { ts: 0, estado: null };
+  return u ? { ts: u.ts, estado: u.estado, enSesion: u.enSesion } : { ts: 0, estado: null, enSesion: false };
 }
 // Lo que hace el timer con el resultado: si entraron fills o round-trips, la caché del libro se invalida y se repinta
 // SOLO la vista abierta que lo usa (Diario o Cuentas), con sus guardas y el debounce de libroRepintarPronto.
@@ -10504,15 +10534,19 @@ function syncFondoResultado(s) {
 // Devuelve los brókeres que lanzó (para las pruebas).
 function syncBrokersFondo(ya) {
   if (!sesionActiva) return [];
+  // v65 rev: la sesión se mira ANTES del corte por app oculta: así «la última vez que se vio la regular» (_ultimaRegular)
+  // sigue al día aunque la pestaña esté en el fondo (mirar no lee al bróker).
+  const ses = sesionNYLibro();
   try { if (document.visibilityState && document.visibilityState !== 'visible') return []; } catch (_) {}   // oculta: no corre
-  const ses = sesionNY(_hbUltimo), ahora = Date.now(), lanzados = [];
+  const ahora = Date.now(), lanzados = [];
   const uno = (b, valida, clave, claveLig, sincronizar) => {
     let ok = false; try { ok = !!valida(); } catch (_) {}
     if (!ok) return;                                        // sin sesión del bróker en este equipo (o caducada): nada
     const u = ultimaSyncBroker(clave, claveLig);
     // con la sesión del bróker muerta a media jornada (401: «expirado») no se insiste cada 2 min: el mismo freno de 15
     // min que aplica pasadaSyncAhora a todos los caminos (SYNC_EXPIRADO_MS)
-    const cad = u.estado === 'expirado' ? SYNC_EXPIRADO_MS : cadenciaSyncLibro(ses);
+    // v65 rev: con el ritmo de sesión también justo tras el cierre (ritmoSyncLibro): lo de los últimos minutos no espera 15
+    const cad = u.estado === 'expirado' ? SYNC_EXPIRADO_MS : cadenciaSyncLibro(ritmoSyncLibro(ses, _ultimaRegular, ahora, u.enSesion));
     if (!ya && ahora - Math.max(u.ts, _syncFondo.lanzado[b] || 0) < cad) return;
     _syncFondo.lanzado[b] = ahora;
     lanzados.push(b);

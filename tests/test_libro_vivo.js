@@ -95,16 +95,19 @@ function armarLibro(canon, op) {
 (async () => {
   // ════════════════ 1. C1 · las funciones PURAS del ritmo: tope (TTL) y cadencia ════════════════
   {
-    const T = construir(['ttlSyncLibro', 'cadenciaSyncLibro', 'syncTtlAhora', 'sesionNY'], { haceCuanto },
-      { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_SYNC_TIC_MS'],
-        prefijo: 'let _hbUltimo = null;', sufijo: 'function __hb(h) { _hbUltimo = h; }', extras: ['__hb'] });
+    const T = construir(['ttlSyncLibro', 'cadenciaSyncLibro', 'syncTtlAhora', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro'], { haceCuanto },
+      { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_SYNC_TIC_MS', 'LIBRO_TRAS_CIERRE_MS', '_ultimaRegular'],
+        prefijo: 'let _hbUltimo = null;', sufijo: 'function __hb(h) { _hbUltimo = h; } function __ur(v) { _ultimaRegular = v; }', extras: ['__hb', '__ur'] });
     igual([T.ET_SYNC_TTL, T.ET_SYNC_TTL_SESION, T.LIBRO_SYNC_SESION_MS, T.LIBRO_SYNC_FUERA_MS], [600000, 120000, 120000, 900000], 'constantes: ET_SYNC_TTL sigue en 10 min (la completa siempre; cualquier pasada fuera de sesión), 2 min la ligera en sesión; el timer cada 2 min en sesión y cada 15 fuera');
     assert(T.LIBRO_SYNC_TIC_MS > 0 && T.LIBRO_SYNC_TIC_MS <= 15000, 'el tic que mira si toca es corto (≤ 15 s): el paso a la sesión regular se nota enseguida (' + T.LIBRO_SYNC_TIC_MS + ' ms)');
     igual([T.ttlSyncLibro('regular'), T.ttlSyncLibro('extendida'), T.ttlSyncLibro('cerrado'), T.ttlSyncLibro(undefined), T.ttlSyncLibro(null)], [120000, 600000, 600000, 600000, 600000], 'ttlSyncLibro: 2 min en la sesión regular; pre/post, cerrado o sin dato → 10 min');
     igual([T.cadenciaSyncLibro('regular'), T.cadenciaSyncLibro('extendida'), T.cadenciaSyncLibro('cerrado'), T.cadenciaSyncLibro(undefined)], [120000, 900000, 900000, 900000], 'cadenciaSyncLibro: 2 min en la sesión regular, 15 fuera (pre/post incluidos)');
     T.__hb(hbDe('regular')); igual(T.syncTtlAhora(), 120000, 'syncTtlAhora con el latido fresco en «regular» → 2 min');
-    T.__hb(hbDe('post')); igual(T.syncTtlAhora(), 600000, 'con el latido en «post» (extendida) → 10 min');
+    T.__hb(hbDe('post')); igual(T.syncTtlAhora(), 120000, 'con el latido recién pasado a «post» (este equipo vio la regular hace un momento): todavía 2 min (v65 rev: el rato tras el cierre)');
+    T.__ur(0);
+    T.__hb(hbDe('post')); igual(T.syncTtlAhora(), 600000, 'con el latido en «post» (extendida) y sin haber visto la regular → 10 min');
     T.__hb(hbDe('cerrado')); igual(T.syncTtlAhora(), 600000, 'con el mercado cerrado → 10 min');
+    igual(T.syncTtlAhora(true), 120000, '…salvo que la última pasada guardada sea de la sesión (falta la del cierre): 2 min');
     T.__hb(null); igual(T.syncTtlAhora(), T.sesionNY(null) === 'regular' ? 120000 : 600000, 'sin latido decide el reloj de NY (el mismo criterio que sesionNY)');
     const T2 = construir(['syncTtlAhora'], {}, { consts: ['ET_SYNC_TTL'] });
     igual(T2.syncTtlAhora(), 600000, 'si algo falla al decidir (sin sesionNY ni latido) el tope es el prudente: 10 min');
@@ -117,7 +120,7 @@ function armarLibro(canon, op) {
       const alm = { mz_sw_acct: 'h1' };
       if (E.cacheMs != null) { const c = JSON.stringify({ ts: Date.now() - E.cacheMs, resumen: { estado: 'ok', txs: 4, ops: 2, rts: 1, fills: 0, ts: Date.now() - E.cacheMs } }); alm.mz_et_sync2 = c; alm.mz_sw_sync = c; }
       const M = construir(['etradeSincronizarImpl', 'schwabSincronizarImpl', 'etradeSincronizarLigera', 'schwabSincronizarLigera', 'pasadaSyncAhora', 'appOcultaSync',
-        'ultimaPasadaSync', 'tipoPasadaSync', 'resumenSyncGuardado', 'syncTtlAhora', 'ttlSyncLibro', 'sesionNY'], {
+        'ultimaPasadaSync', 'tipoPasadaSync', 'resumenSyncGuardado', 'syncTtlAhora', 'ttlSyncLibro', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro'], {
         haceCuanto, localStorage: localStorageFalso(alm), ET_K: { sync: 'mz_et_sync2', lig: 'mz_et_sync_lig' }, SW_K_SYNC: 'mz_sw_sync', SW_K_SYNC_LIG: 'mz_sw_sync_lig', SW_K: { acct: 'mz_sw_acct' },
         etCreds: () => ({ token: 't', token_secret: 's' }), etDiaVencido: () => false, swCreds: () => ({ token: 't' }), swVencido: () => false,
         sesionActiva: { user: { id: 'u' } }, etProxy: () => Promise.resolve({}),
@@ -126,7 +129,7 @@ function armarLibro(canon, op) {
         swCuenta: async () => { reg.completa++; throw new Error('Schwab: sesión caducó'); },
         etCuentaKey: async () => { reg.ligera++; throw new Error('La sesión de E*TRADE expiró.'); },
         schwabOrdenesHistoricas: async () => { reg.ligera++; return { expirado: true, ordenes: [] }; },
-      }, { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_LIGERA', 'SW_DIAS_LIGERA', 'SYNC_EXPIRADO_MS'], prefijo: 'let _hbUltimo = ' + JSON.stringify(E.hb) + ';' });
+      }, { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_LIGERA', 'SW_DIAS_LIGERA', 'SYNC_EXPIRADO_MS', 'LIBRO_TRAS_CIERRE_MS', '_ultimaRegular'], prefijo: 'let _hbUltimo = ' + JSON.stringify(E.hb) + ';' });
       return { M, reg };
     }
     for (const b of ['etrade', 'schwab']) {
@@ -157,7 +160,7 @@ function armarLibro(canon, op) {
     E = Object.assign({ ses: 'regular', visible: 'visible', sesion: { user: { id: 'u' } }, et: true, etVenc: false, sw: false, swVenc: false, alm: {}, hash: '#/tickers' }, E || {});
     const reg = { et: 0, sw: 0, inval: [], repintar: 0, resEt: E.resEt || { estado: 'ok', cambio: false }, resSw: E.resSw || { estado: 'ok', cambio: false } };
     const ls = E.lsRoto ? { getItem() { throw new Error('almacenamiento bloqueado'); }, setItem() { throw new Error('x'); }, removeItem() {} } : localStorageFalso(E.alm);
-    const M = construir(['syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'ultimaPasadaSync', 'syncFondoResultado'], {
+    const M = construir(['syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'ultimaPasadaSync', 'syncFondoResultado', 'sesionNYLibro', 'ritmoSyncLibro'], {
       sesionActiva: E.sesion, document: { visibilityState: E.visible }, location: { hash: E.hash }, sesionNY: () => E.ses, _hbUltimo: null,
       etCreds: () => (E.et ? { token: 't', token_secret: 's' } : null), etDiaVencido: () => E.etVenc,
       swCreds: () => (E.sw ? { token: 't' } : null), swVencido: () => E.swVenc,
@@ -165,7 +168,7 @@ function armarLibro(canon, op) {
       etradeSincronizar: () => { reg.et++; return E.etLanza ? Promise.reject(new Error('sin red')) : Promise.resolve(reg.resEt); },
       schwabSincronizar: () => { reg.sw++; return Promise.resolve(reg.resSw); },
       libroInvalidar: (c) => { reg.inval.push(c); }, libroRepintarPronto: () => { reg.repintar++; },
-    }, { consts: ['_syncFondo', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'SYNC_EXPIRADO_MS'] });
+    }, { consts: ['_syncFondo', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'SYNC_EXPIRADO_MS', 'LIBRO_TRAS_CIERRE_MS', '_ultimaRegular'] });
     return { M, reg, E };
   }
   const guardada = (msAtras, estado) => JSON.stringify({ ts: Date.now() - msAtras, resumen: { estado: estado || 'ok' } });

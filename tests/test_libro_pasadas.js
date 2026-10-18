@@ -13,6 +13,8 @@
      [2] con la app OCULTA no se leía al bróker solo desde el timer: ruta() cada 60 s → Diario/Cuentas → sincronizar lo
          hacía cada 2 min toda la sesión; y el freno de 15 min tras un «expirado» tampoco valía en ese camino (16
          intentos en 30 min). Los dos frenos viven ahora en pasadaSyncAhora, por donde pasan todos.
+     [4] a las 16:00 (13:00 en media sesión) el latido pasa a «post» y el ritmo saltaba a 15 min / 10 min: un 0DTE cerrado
+         a las 15:59:30 entraba al libro hacia las 16:14 → una o dos pasadas con el ritmo de sesión justo tras el cierre.
    Uso: node test_libro_pasadas.js mesa-2-app/app/main.js */
 'use strict';
 const path = require('path');
@@ -117,6 +119,7 @@ function armarMundo(op) {
   };
   // base de juguete con la clave única (user_id, broker, clave_ext): ignoreDuplicates devuelve solo las nuevas
   const unicas = { fills: new Set(), broker_trades: new Set() };
+  W.unicas = unicas;
   const sb = sbFalso((tabla, cadena) => {
     const opn = cadena.map(c => c[0]).find(m => ['upsert', 'delete', 'insert', 'update'].includes(m)) || 'select';
     const up = cadena.find(c => c[0] === 'upsert');
@@ -159,9 +162,10 @@ function armarMundo(op) {
     const P = construir(['ultimaPasadaSync', 'tipoPasadaSync', 'resumenHistorialSync', 'resumenSyncGuardado'], {}, { consts: ['ET_SYNC_TTL'].concat(existeConst('SYNC_EXPIRADO_MS') ? ['SYNC_EXPIRADO_MS'] : []) });
     const prev = { ts: 1000, resumen: { estado: 'ok', txs: 9 } };
     igual(P.ultimaPasadaSync(null, { ts: 5000, estado: 'ok' }), null, 'ultimaPasadaSync: sin completa guardada → null (la próxima es completa, aunque haya una ligera)');
-    igual(P.ultimaPasadaSync(prev, null), { tc: 1000, ts: 1000, estado: 'ok' }, 'solo la completa: su hora y su estado');
-    igual(P.ultimaPasadaSync(prev, { ts: 3000, estado: 'error' }), { tc: 1000, ts: 3000, estado: 'error' }, 'una ligera POSTERIOR manda en la hora y el estado (la completa sigue en tc)');
-    igual(P.ultimaPasadaSync(prev, { ts: 500, estado: 'expirado' }), { tc: 1000, ts: 1000, estado: 'ok' }, 'una ligera ANTERIOR a la completa no cuenta');
+    const tse = (x) => x && { tc: x.tc, ts: x.ts, estado: x.estado };
+    igual(tse(P.ultimaPasadaSync(prev, null)), { tc: 1000, ts: 1000, estado: 'ok' }, 'solo la completa: su hora y su estado');
+    igual(tse(P.ultimaPasadaSync(prev, { ts: 3000, estado: 'error' })), { tc: 1000, ts: 3000, estado: 'error' }, 'una ligera POSTERIOR manda en la hora y el estado (la completa sigue en tc)');
+    igual(tse(P.ultimaPasadaSync(prev, { ts: 500, estado: 'expirado' })), { tc: 1000, ts: 1000, estado: 'ok' }, 'una ligera ANTERIOR a la completa no cuenta');
     const u = (tc, ts, estado) => ({ tc, ts, estado: estado || 'ok' });
     const T0 = 100 * MIN;
     igual([P.tipoPasadaSync(null, T0, 2 * MIN, false), P.tipoPasadaSync(u(T0, T0), T0 + 1, 2 * MIN, true)], ['completa', 'completa'], 'tipoPasadaSync: sin completa guardada o con forzar → completa');
@@ -175,6 +179,13 @@ function armarMundo(op) {
     igual([P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 6 * MIN, 2 * MIN, false), P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 17 * MIN, 2 * MIN, false), P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 18 * MIN + 1, 2 * MIN, false)],
       ['guardada', 'guardada', 'completa'], '[2] tras un «expirado» (de la completa o de la ligera) no se insiste hasta 15 min después; luego, la completa (aunque la completa venciera antes)');
     igual(P.tipoPasadaSync(u(T0, T0 + 3 * MIN, 'expirado'), T0 + 4 * MIN, 2 * MIN, true), 'completa', '[2] «sincronizar» (forzar) pasa igual');
+    if (existe('ritmoSyncLibro')) {
+      const R = construir(['ritmoSyncLibro'], {}, { consts: ['LIBRO_TRAS_CIERRE_MS'] });
+      const A = 1000 * MIN;
+      igual([R.ritmoSyncLibro('regular', 0, A, false), R.ritmoSyncLibro('extendida', A - 3 * MIN, A, false), R.ritmoSyncLibro('extendida', A - 4 * MIN, A, false),
+        R.ritmoSyncLibro('extendida', 0, A, true), R.ritmoSyncLibro('cerrado', 0, A, false), R.ritmoSyncLibro(null, 0, A, false)],
+        ['regular', 'regular', 'extendida', 'regular', 'cerrado', null], '[4] ritmoSyncLibro: regular en sesión, en los 4 min tras la última vez que se vio, y mientras la última pasada guardada sea de la sesión; si no, la sesión tal cual');
+    } else C.falla('[4] no existe ritmoSyncLibro: tras el cierre el ritmo salta a 15 min');
     igual([P.resumenSyncGuardado(prev), P.resumenSyncGuardado(null)], [{ estado: 'ok', txs: 9, cambio: false }, { cambio: false }], 'resumenSyncGuardado: lo guardado sin cambio (y sin inventar un estado si no hay nada)');
   } else C.falla('[1] no existe tipoPasadaSync: no hay pasada ligera');
 
@@ -388,6 +399,70 @@ function armarMundo(op) {
       await Z.correr(); Z.W.T += 15000;
     }
     igual(Z.W.reg.sw.length, 2, 'Schwab «sin sesión» (401) con el Diario abierto 30 min: 2 intentos, no 15');
+  }
+
+  // ════════════════ 9. [4] el cierre: lo operado en el último minuto entra al libro en un par de minutos ════════════════
+  // El reloj del mundo avanza en tics de 15 s (el del timer); ruta() no hace falta: basta el timer en otra pestaña.
+  // La completa a las −7:10 y las ligeras a −5:10, −3:10 y −1:10: la venta de −0:30 llega DESPUÉS de la última pasada en
+  // sesión (y la completa siguiente no vence hasta +2:50): solo la entra una pasada tras el cierre.
+  async function cierre(cierreUtc, aparece) {
+    aparece = aparece == null ? -25000 : aparece;   // cuándo publica E*TRADE la venta (respecto al cierre)
+    const t0 = cierreUtc - 7 * MIN - 10000;
+    const X = armarMundo({ T: t0, hash: '#/tickers' });
+    const pasadas = [];
+    const idNuevo = 26300000000001;
+    for (let t = t0; t < cierreUtc + 20 * MIN; t += 15000) {
+      X.W.T = t;
+      X.W.ses = t >= cierreUtc ? 'extendida' : 'regular';   // el latido del worker pasa a «post» a la hora del cierre
+      if (t === cierreUtc + aparece) X.W.txs.push(txEt(idNuevo, cierreUtc - 12 * 3600000, false, 650));   // vende el 0DTE a falta de 25 s
+      X.latir();
+      const antes = X.lecturasTx().length;
+      X.M.syncBrokersFondo(t === t0);
+      await X.correr();
+      if (X.lecturasTx().length > antes) pasadas.push(t - cierreUtc);
+    }
+    const escrito = X.W.unicas.fills.has('u|etrade|' + idNuevo);
+    const primeraTras = pasadas.find(d => d >= aparece);
+    return { pasadas, escrito, primeraTras, tras: pasadas.filter(d => d >= 0 && d < 6 * MIN), luego: pasadas.filter(d => d >= 6 * MIN && d < 17 * MIN) };
+  }
+  for (const [nombre, cierreUtc] of [['16:00', Date.UTC(2026, 9, 16, 20, 0, 0)], ['13:00 (media sesión)', Date.UTC(2026, 10, 27, 18, 0, 0)]]) {
+    const R = await cierre(cierreUtc);
+    assert(R.escrito && R.primeraTras != null && R.primeraTras <= 2 * MIN, nombre + ': la venta de las ' + (nombre.startsWith('16') ? '15:59:35' : '12:59:35') + ' entra al libro en la primera pasada tras ella, a ≤ 2 min del cierre (' + (R.primeraTras / 1000) + ' s), no hacia el cuarto de hora');
+    assert(R.tras.length >= 1 && R.tras.length <= 2, nombre + ': tras el cierre, una o dos pasadas con el ritmo de sesión (' + R.tras.map(d => Math.round(d / 1000) + ' s').join(', ') + ')');
+    igual(R.luego, [], nombre + ': y después vuelve el ritmo de fuera (nada entre +6 y +17 min)');
+  }
+  {
+    // E*TRADE publica la transacción con retraso: la venta de las 15:59:35 aparece en su API a las 16:01:35, después de la
+    // primera pasada tras el cierre (16:00:50): la SEGUNDA (16:02:50, el rato tras el cierre) la recoge
+    const R = await cierre(Date.UTC(2026, 9, 16, 20, 0, 0), 95000);
+    assert(R.escrito && R.primeraTras != null && R.primeraTras <= 3 * MIN, '16:00 con E*TRADE publicando tarde (16:01:35): la segunda pasada tras el cierre la entra (' + (R.primeraTras / 1000) + ' s), no a las 16:14');
+  }
+  // el iPhone que estaba en la app del bróker: congelado de 15:57:15 a 16:02 (ni un tic: iOS congela los timers), vuelve
+  // con la última pasada hecha EN sesión (la ligera de las 15:57) y la completa de las 15:53 aún sin vencer
+  {
+    const cierreUtc = Date.UTC(2026, 9, 16, 20, 0, 0);
+    const X = armarMundo({ T: cierreUtc - 7 * MIN, hash: '#/copiloto' });
+    for (let t = X.W.T; t <= cierreUtc - 2 * MIN - 45000; t += 15000) { X.W.T = t; X.latir(); X.M.syncBrokersFondo(t === cierreUtc - 7 * MIN); await X.correr(); }
+    const idNuevo = 26300000000002;
+    X.W.txs.push(txEt(idNuevo, cierreUtc - 12 * 3600000, false, 651));   // 15:59:30, con el iPhone congelado
+    X.W.T = cierreUtc + 2 * MIN; X.W.ses = 'extendida'; X.latir();
+    const tV = X.W.T;
+    X.M.syncBrokersFondo(true);   // visibilitychange → syncBrokersFondo(true) a los 800 ms
+    await X.correr();
+    assert(X.lecturasTx(tV).length >= 1 && X.W.unicas.fills.has('u|etrade|' + idNuevo), 'iPhone congelado en el cierre: al volver a las 16:02 la pasada del cierre aún falta (la última se hizo en sesión) y lee: la venta de las 15:59:30 entra ya');
+    const n = X.lecturasTx().length;
+    for (let t = tV + 15000; t < tV + 14 * MIN; t += 15000) { X.W.T = t; X.latir(); X.M.syncBrokersFondo(); await X.correr(); }
+    igual(X.lecturasTx().length - n, 0, 'hecha esa (ya fuera de sesión), el ritmo de fuera: nada en los 14 min siguientes');
+  }
+  // a la mañana siguiente (pre-mercado), la última pasada guardada de ayer «en sesión» no deja el ritmo de sesión puesto
+  {
+    const X = armarMundo({ T: Date.UTC(2026, 9, 16, 19, 50, 0) });
+    await X.M.etradeSincronizar();   // 15:50 ET, en sesión
+    X.W.T = Date.UTC(2026, 9, 19, 13, 0, 0); X.W.ses = 'cerrado'; X.latir();   // lunes 9:00 ET (el token de E*TRADE ya sería otro: aquí da igual)
+    X.ls.setItem('mz_et_dia', new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(X.W.T)));
+    const t0 = X.W.T;
+    for (let t = t0; t < t0 + 14 * MIN; t += 15000) { X.W.T = t; X.latir(); X.M.syncBrokersFondo(); await X.correr(); }
+    igual(X.lecturasTx(t0).length, 10, 'pre-mercado del día siguiente: UNA pasada (la completa vencida) y luego el ritmo de fuera, no una cada 2 min');
   }
 
   C.resumen();
