@@ -542,5 +542,71 @@ function armarMundo(op) {
     assert(r3.filas === r.filas, '(v65 rev2) dentro de los 60 s, el MISMO arreglo (la vista vigente se recuerda: nadie redibuja por nada)');
   }
 
+  // ════════════════ 11. (v65 rev2) Schwab sin cuenta elegida: el timer no abre el cuadro y ninguna llamada queda colgada ════════════════
+  // swCodigoEnviar BORRA la cuenta (SW_K.acct) y mz_sw_sync en cada login semanal. Con dos cuentas, la completa de Schwab
+  // que lanzaba el timer llamaba a swCuenta → «¿Qué cuenta de Schwab usa la Mesa?» desde el fondo, encima de la hoja de
+  // orden; y si otra llamada a swCuenta abría su cuadro, elegirCuentaSchwab quitaba el anterior SIN resolverlo: la
+  // sincronización quedaba colgada, _swSyncEnVuelo no se liberaba y Schwab no volvía a leer órdenes hasta recargar.
+  // Funciones REALES: syncBrokersFondo, schwabSincronizar/Impl, swCuenta, elegirCuentaSchwab (DOM de juguete).
+  {
+    const W = { T: NY_11, sw: [] };
+    class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(W.T); } static now() { return W.T; } }
+    const cuerpo = [];
+    const nodoModal = (id) => { const n = { id, className: 'modal', innerHTML: '', style: {}, handlers: [], addEventListener(_t, h) { n.handlers.push(h); }, remove() { const i = cuerpo.indexOf(n); if (i >= 0) cuerpo.splice(i, 1); } }; return n; };
+    const elegir = (n, i) => n.handlers.forEach(h => h({ target: { closest: () => ({ getAttribute: () => String(i) }) } }));
+    const cuadros = () => cuerpo.filter(n => n.id === 'modalSwCta');
+    cuerpo.push(nodoModal('modalOrden'));   // Andrés está en la hoja de orden de Schwab
+    const document = { visibilityState: 'visible', createElement: () => nodoModal(''), body: { appendChild: (n) => cuerpo.push(n) },
+      querySelector: (q) => (q === '.modal' ? cuerpo.find(n => n.className === 'modal') || null : null) };
+    const $ = (sel) => cuerpo.find(n => '#' + n.id === sel) || null;
+    const ls = localStorageFalso({});   // tras el login semanal: sin SW_K.acct ni mz_sw_sync
+    const swRead = async (p) => { W.sw.push(p); return { status: 200, data: [{ accountNumber: '11111111', hashValue: 'HASH-A' }, { accountNumber: '22222222', hashValue: 'HASH-B' }] }; };
+    const swLlamar = async (ruta, body) => { W.sw.push(ruta + (body && body.hash ? '@' + body.hash : '')); return { status: 200, data: [] }; };
+    const ymdNY = (iso) => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(iso || W.T)); } catch (_) { return ''; } };
+    const FN = ['syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'ultimaPasadaSync', 'syncFondoResultado', 'ritmoSyncLibro', 'sesionNYLibro', 'sesionNY',
+      'schwabSincronizar', 'schwabSincronizarImpl', 'schwabSincronizarLigera', 'pasadaSyncAhora', 'appOcultaSync', 'tipoPasadaSync', 'syncTtlAhora', 'ttlSyncLibro',
+      'resumenSyncGuardado', 'schwabOrdenesHistoricas', 'swMensajeError', 'fillsDeOrdenesSchwab', 'emparejarFillsSchwab', 'vencidasASobrar', 'fillsDeOrdenesSchwabLibro',
+      'desOsi', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'swCuenta', 'elegirCuentaSchwab'].filter(existe);
+    const M = construir(FN, { Date: FakeDate, document, $, esc: C.esc, localStorage: ls, sb: sbFalso(() => ({ data: [], error: null })), swRead, swLlamar, ymdNY,
+      hoyNY: () => ymdNY(new Date(W.T).toISOString()),
+      haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), sesionActiva: { user: { id: 'u' } },
+      etCreds: () => null, etDiaVencido: () => false, swCreds: () => ({ token: 't', refresh: 'r' }), swVencido: () => false,
+      etradeSincronizar: async () => ({}), etProxy: async () => ({ status: 200, data: {} }), libroInvalidar: () => {}, libroRepintarPronto: () => {},
+      mascaraCuenta: (n) => String(n).slice(0, 2) + '***' + String(n).slice(-3) },
+      { consts: ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'SW_DIAS_HIST', 'SW_TRAMO_DIAS', 'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_DIAS_LIGERA', 'SW_K', 'ET_TOPE_MS',
+        'SYNC_EXPIRADO_MS', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_TRAS_CIERRE_MS', '_syncFondo', '_swSyncEnVuelo', '_ultimaRegular'].filter(existeConst),
+        prefijo: 'let _hbUltimo = { sesion: "regular", latido_at: new Date(Date.now() - 20000).toISOString() };' });
+    const correr = async (n) => { for (let i = 0; i < (n || 30); i++) await respirar(); };
+    // el tic de 15 s con la hoja de orden abierta, y luego sin ella: sin cuenta elegida, el timer no toca Schwab
+    let l1 = M.syncBrokersFondo(true); await correr();
+    cuerpo.splice(0, cuerpo.length);   // cierra la hoja de orden
+    const l2 = M.syncBrokersFondo(true); await correr();
+    W.T += 3 * MIN; const l3 = M.syncBrokersFondo(); await correr();
+    igual([l1, l2, l3, cuadros().length, W.sw.length], [[], [], [], 0, 0], '(v65 rev2) sin la cuenta de Schwab elegida, el timer (con la hoja de orden abierta o sin ella) no lanza Schwab: ni cuadro «¿Qué cuenta…?» ni una llamada a Schwab');
+    // el Diario (sincronizarLibroFondo) SÍ la pide, como en la v64: abre el cuadro…
+    let termino = null;
+    M.schwabSincronizar().then(r => { termino = r; });
+    await correr();
+    igual(cuadros().length, 1, '(v65 rev2) el Diario sí pide la cuenta (como en la v64): abre el cuadro');
+    // …y mientras tanto Cuentas (schwabSaldo → swCuenta) abre el suyo; Andrés elige la cuenta B en el que ve
+    const otra = M.swCuenta();
+    await correr();
+    igual(cuadros().length, 1, '(v65 rev2) la segunda llamada a swCuenta deja UN solo cuadro (quita el anterior)');
+    elegir(cuadros()[0], 1);
+    igual(await otra, 'HASH-B', '(v65 rev2) la llamada de Cuentas recibe la cuenta elegida (B)');
+    await correr();
+    assert(termino && termino.estado === 'error' && /No elegiste cuenta/.test(termino.detalle || ''), '(v65 rev2) la sincronización cuyo cuadro se quitó TERMINA («no elegiste cuenta»): no se queda colgada', JSON.stringify(termino));
+    // «sincronizar» (un toque) ya no se une a una promesa colgada: lee las órdenes de la cuenta B
+    let fin2 = null;
+    M.schwabSincronizar(true).then(r => { fin2 = r; });
+    await correr(60);
+    igual([fin2 && fin2.estado, W.sw.filter(x => x === '/schwab/ordenes@HASH-B').length > 0, ls.getItem('mz_sw_acct')], ['ok', true, 'HASH-B'], '(v65 rev2) «sincronizar» de Schwab termina y lee /schwab/ordenes de la cuenta B');
+    // y con la cuenta ya elegida, el timer sigue solo
+    W.T += 11 * MIN;
+    igual(M.syncBrokersFondo(), ['schwab'], '(v65 rev2) con la cuenta elegida, el timer vuelve a lanzar Schwab');
+    await correr(60);
+    igual(cuadros().length, 0, '(v65 rev2) y sin abrir ningún cuadro');
+  }
+
   C.resumen();
 })().catch(e => { console.log('FALLA: excepción inesperada → ' + (e && e.stack || e)); C.resumen(); });

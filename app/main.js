@@ -3592,8 +3592,14 @@ async function swCuenta() {
 const mascaraCuenta = (num) => { num = String(num || ''); return num ? num.slice(0, 2) + '***' + num.slice(-3) : ''; };
 function elegirCuentaSchwab(cuentas) {
   return new Promise((resolve) => {
-    const prev = $('#modalSwCta'); if (prev) prev.remove();
+    // v65 rev2: el cuadro de OTRA llamada a swCuenta (Cuentas, la orden de Schwab, el Diario) se quita RESOLVIENDO su
+    // promesa con null («no elegiste»). Quitarlo sin más dejaba esa llamada esperando para siempre y, si era una
+    // sincronización, _swSyncEnVuelo no se liberaba: Schwab no volvía a sincronizar (timer, Diario, Cuentas ni
+    // «sincronizar») hasta recargar la app. La cuenta que se elija en el cuadro nuevo queda guardada para todos.
+    const prev = $('#modalSwCta');
+    if (prev) { const r = prev._resolver; prev.remove(); if (typeof r === 'function') r(null); }
     const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalSwCta'; m.style.zIndex = 60;
+    m._resolver = resolve;
     m.innerHTML = `<div class="hoja">
       <h3 style="margin:0 0 4px">¿Qué cuenta de Schwab usa la Mesa?</h3>
       <div class="mut" style="margin-bottom:8px">Saldos, presupuesto y órdenes irán a la cuenta que elijas (puedes cambiarla en Cuentas).</div>
@@ -10600,6 +10606,10 @@ function syncBrokersFondo(ya) {
   // sigue al día aunque la pestaña esté en el fondo (mirar no lee al bróker).
   const ses = sesionNYLibro();
   try { if (document.visibilityState && document.visibilityState !== 'visible') return []; } catch (_) {}   // oculta: no corre
+  // v65 rev2: con un cuadro abierto (la hoja de orden, el PIN, el Copiloto, elegir cuenta) el tic se salta, como tickVivo:
+  // nada de lo que lance el timer debe aparecer ni escribir debajo de lo que Andrés está haciendo. Al cerrarlo, el tic
+  // siguiente (≤ 15 s) lanza lo que ya tocaba.
+  try { if (document.querySelector('.modal')) return []; } catch (_) {}
   const ahora = Date.now(), lanzados = [];
   const uno = (b, valida, clave, claveLig, sincronizar) => {
     let ok = false; try { ok = !!valida(); } catch (_) {}
@@ -10615,7 +10625,11 @@ function syncBrokersFondo(ya) {
     Promise.resolve().then(() => sincronizar()).then(syncFondoResultado).catch(() => {});
   };
   uno('etrade', () => etCreds() && !etDiaVencido(), ET_K.sync, ET_K.lig, etradeSincronizar);
-  uno('schwab', () => swCreds() && !swVencido(), SW_K_SYNC, SW_K_SYNC_LIG, schwabSincronizar);
+  // v65 rev2: Schwab, solo con la cuenta YA elegida en este equipo. Sin ella la completa llama a swCuenta y, con más de una
+  // cuenta, abría «¿Qué cuenta de Schwab usa la Mesa?» desde el timer, en cualquier pestaña y encima de lo que hubiera
+  // (swCodigoEnviar borra la cuenta en cada login semanal). La piden Cuentas y el Diario, como en la v64; elegida, el
+  // timer sigue solo.
+  uno('schwab', () => swCreds() && !swVencido() && !!localStorage.getItem(SW_K.acct), SW_K_SYNC, SW_K_SYNC_LIG, schwabSincronizar);
   return lanzados;
 }
 // `forzar` = lo pidió Andrés con un toque (período, filtro, sincronizar): se redibuja aunque tenga un

@@ -163,10 +163,10 @@ function armarLibro(canon, op) {
     const reg = { et: 0, sw: 0, inval: [], repintar: 0, resEt: E.resEt || { estado: 'ok', cambio: false }, resSw: E.resSw || { estado: 'ok', cambio: false } };
     const ls = E.lsRoto ? { getItem() { throw new Error('almacenamiento bloqueado'); }, setItem() { throw new Error('x'); }, removeItem() {} } : localStorageFalso(E.alm);
     const M = construir(['syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'ultimaPasadaSync', 'syncFondoResultado', 'sesionNYLibro', 'ritmoSyncLibro'], {
-      sesionActiva: E.sesion, document: { visibilityState: E.visible }, location: { hash: E.hash }, sesionNY: () => E.ses, _hbUltimo: null,
+      sesionActiva: E.sesion, document: { visibilityState: E.visible, querySelector: (q) => (q === '.modal' && E.modal ? { id: E.modal } : null) }, location: { hash: E.hash }, sesionNY: () => E.ses, _hbUltimo: null,
       etCreds: () => (E.et ? { token: 't', token_secret: 's' } : null), etDiaVencido: () => E.etVenc,
       swCreds: () => (E.sw ? { token: 't' } : null), swVencido: () => E.swVenc,
-      ET_K: { sync: 'mz_et_sync2', lig: 'mz_et_sync_lig' }, SW_K_SYNC: 'mz_sw_sync', SW_K_SYNC_LIG: 'mz_sw_sync_lig', localStorage: ls,
+      ET_K: { sync: 'mz_et_sync2', lig: 'mz_et_sync_lig' }, SW_K_SYNC: 'mz_sw_sync', SW_K_SYNC_LIG: 'mz_sw_sync_lig', SW_K: { acct: 'mz_sw_acct' }, localStorage: ls,
       etradeSincronizar: () => { reg.et++; return E.etLanza ? Promise.reject(new Error('sin red')) : Promise.resolve(reg.resEt); },
       schwabSincronizar: () => { reg.sw++; return Promise.resolve(reg.resSw); },
       libroInvalidar: (c) => { reg.inval.push(c); }, libroRepintarPronto: () => { reg.repintar++; },
@@ -202,13 +202,28 @@ function armarLibro(canon, op) {
     igual([F.M.syncBrokersFondo(true), F.reg.et, F.reg.sw], [[], 0, 0], 'sin login de E*TRADE ni de Schwab en este equipo: nada (el servidor no tiene los tokens: opción B)');
     F = armarFondo({ etVenc: true });
     igual([F.M.syncBrokersFondo(true), F.reg.et], [[], 0], 'E*TRADE con el día vencido (murió a medianoche ET): no se molesta al proxy');
-    F = armarFondo({ et: false, sw: true });
-    igual(F.M.syncBrokersFondo(true), ['schwab'], 'con Schwab válida: lanza Schwab');
+    F = armarFondo({ et: false, sw: true, alm: { mz_sw_acct: 'h1' } });
+    igual(F.M.syncBrokersFondo(true), ['schwab'], 'con Schwab válida (y su cuenta ya elegida en este equipo): lanza Schwab');
     await respirar();
     igual([F.reg.sw, F.reg.et], [1, 0], 'y llama a schwabSincronizar()');
-    F = armarFondo({ et: false, sw: true, swVenc: true });
+    // v65 rev2: sin la cuenta de Schwab guardada (swCodigoEnviar la borra en cada login semanal) el timer NO lanza Schwab:
+    // su completa llamaría a swCuenta y abriría «¿Qué cuenta de Schwab usa la Mesa?» desde el fondo, encima de lo que haya
+    F = armarFondo({ et: false, sw: true });
+    igual([F.M.syncBrokersFondo(true), F.M.syncBrokersFondo()], [[], []], '(v65 rev2) Schwab válida SIN cuenta elegida en este equipo: el timer no la lanza (ni con «ya»): la piden Cuentas y el Diario');
+    await respirar();
+    igual(F.reg.sw, 0, '(v65 rev2) …y no llama a schwabSincronizar()');
+    F = armarFondo({ sw: true });
+    igual(F.M.syncBrokersFondo(true), ['etrade'], '(v65 rev2) con E*TRADE y Schwab sin cuenta: solo E*TRADE');
+    // v65 rev2: con un cuadro abierto (la hoja de orden, el PIN, elegir cuenta…) el tic se salta, como tickVivo
+    F = armarFondo({ sw: true, modal: 'modalOrden', alm: { mz_sw_acct: 'h1' } });
+    igual([F.M.syncBrokersFondo(true), F.M.syncBrokersFondo()], [[], []], '(v65 rev2) con la hoja de orden abierta (.modal): el tic no lanza nada, ni con «ya»');
+    await respirar();
+    igual([F.reg.et, F.reg.sw], [0, 0], '(v65 rev2) …ni llama a ninguna sincronización');
+    F.E.modal = null;
+    igual(F.M.syncBrokersFondo(), ['etrade', 'schwab'], '(v65 rev2) cerrado el cuadro, el tic siguiente lanza lo que ya tocaba');
+    F = armarFondo({ et: false, sw: true, swVenc: true, alm: { mz_sw_acct: 'h1' } });
     igual(F.M.syncBrokersFondo(true), [], 'Schwab con el login semanal caducado: nada');
-    F = armarFondo({ sw: true, alm: { mz_et_sync2: guardada(130000), mz_sw_sync: guardada(60000) } });
+    F = armarFondo({ sw: true, alm: { mz_et_sync2: guardada(130000), mz_sw_sync: guardada(60000), mz_sw_acct: 'h1' } });
     igual(F.M.syncBrokersFondo(), ['etrade'], 'cada bróker con su reloj: E*TRADE toca (130 s), Schwab no (60 s)');
     // «ya» (al arrancar / al volver del fondo): sin esperar a la cadencia
     F = armarFondo({ alm: { mz_et_sync2: guardada(10000) } });
