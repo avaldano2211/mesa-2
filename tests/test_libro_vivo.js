@@ -17,7 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const C = require(path.join(__dirname, 'casa_pruebas.js'))(process.argv[2], 'test_libro_vivo.js');
-const { FUENTE, assert, igual, construir, extraer, nodo, respirar, diferido, haceCuanto, sbFalso, localStorageFalso } = C;
+const { FUENTE, assert, igual, construir, extraer, existeConst, nodo, respirar, diferido, haceCuanto, sbFalso, localStorageFalso } = C;
 
 const ahoraIso = () => new Date().toISOString();
 const hbDe = (sesion, minAtras) => ({ sesion, latido_at: new Date(Date.now() - (minAtras || 0) * 60000).toISOString() });
@@ -663,8 +663,11 @@ function armarLibro(canon, op) {
 
   // ════════════════ 10. C4 · el login reintenta SOLO si falla la red ════════════════
   {
+    // v65 rev2: el tope de cada intento (LOGIN_TOPE_MS) también es un setTimeout: el de juguete lo aparta (no lo dispara solo)
+    // para que `esperas` siga siendo SOLO las esperas entre reintentos; las pruebas del fetch colgado lo disparan a mano.
+    const TOPE_LOGIN = existeConst('LOGIN_TOPE_MS') ? construir([], {}, { consts: ['LOGIN_TOPE_MS'] }).LOGIN_TOPE_MS : undefined;
     function armarLogin(respuestas) {
-      const reg = { fetches: 0, esperas: [], textos: [], guardado: null, recargas: 0 };
+      const reg = { fetches: 0, esperas: [], textos: [], guardado: null, recargas: 0, topes: [] };
       const err = {}; let txt = '';
       Object.defineProperty(err, 'textContent', { set(v) { txt = v; reg.textos.push(v); }, get() { return txt; } });
       const nodos = { '#loginErr': err, '#email': { value: ' Andres@Ejemplo.com ' }, '#pass': { value: 'clave-de-prueba' } };
@@ -676,9 +679,10 @@ function armarLibro(canon, op) {
           if (r === 'red') throw new TypeError('Load failed');
           return { ok: r.status >= 200 && r.status < 300, status: r.status, json: async () => r.body };
         },
-        setTimeout: (fn, ms) => { reg.esperas.push(ms); Promise.resolve().then(fn); return 0; },
+        setTimeout: (fn, ms) => { if (TOPE_LOGIN != null && ms === TOPE_LOGIN) { reg.topes.push(fn); return reg.topes.length; } reg.esperas.push(ms); Promise.resolve().then(fn); return 0; },
+        clearTimeout: () => {},
         localStorage: { setItem: (k, v) => { reg.guardado = [k, v]; } }, claveSesion: () => 'sb-x-auth-token', location: { reload: () => { reg.recargas++; } },
-      }, { consts: ['LOGIN_REINTENTOS_MS', 'LOGIN_SIN_RED', '_loginEnCurso'] });
+      }, { consts: ['LOGIN_REINTENTOS_MS', 'LOGIN_SIN_RED', '_loginEnCurso', 'LOGIN_TOPE_MS'].filter(existeConst) });
       return { M, reg };
     }
     const ev = () => ({ prevenido: 0, preventDefault() { this.prevenido++; } });
@@ -716,6 +720,64 @@ function armarLibro(canon, op) {
     igual(L.reg.fetches, 3, 'dos toques seguidos = UNA tanda de intentos');
     await L.M.entrarLogin(ev());
     igual(L.reg.fetches, 6, 'al terminar, otro toque vuelve a intentarlo');
+    // v65 rev2: un fetch COLGADO (no rechaza: el túnel de Tailscale sin levantar, el cambio de wifi a 4G) ya no deja
+    // «Entrando…» hasta el tope del sistema: cada intento lleva su tope (AbortController) y, abortado, es un fallo de red
+    const abortar = (sig, rej) => { if (sig) sig.addEventListener('abort', () => { const e = new Error('The operation was aborted.'); e.name = 'AbortError'; rej(e); }); };
+    function armarColgado(modo) {
+      const X = armarLogin([{ status: 200, body: {} }]);
+      X.colgar = true; X.signals = [];
+      X.reg.fetches = 0;
+      X.M = construir(['entrarLogin', 'tokenLogin'], {
+        $: (s) => ({ '#loginErr': X.err, '#email': { value: 'a@b.c' }, '#pass': { value: 'x' } }[s] || null), SUPABASE_URL: 'https://x.supabase.co', SUPABASE_ANON_KEY: 'anon',
+        fetch: (url, op) => {
+          X.reg.fetches++; const sig = op && op.signal; X.signals.push(sig || null);
+          const bien = { ok: true, status: 200, json: async () => ({ access_token: 'tok', expires_in: 3600 }) };
+          if (!X.colgar) return Promise.resolve(bien);
+          if (modo === 'cuerpo') return Promise.resolve({ ok: true, status: 200, json: () => new Promise((_res, rej) => abortar(sig, rej)) });   // cabeceras sí, cuerpo colgado
+          return new Promise((_res, rej) => abortar(sig, rej));
+        },
+        setTimeout: (fn, ms) => { if (TOPE_LOGIN != null && ms === TOPE_LOGIN) { X.reg.topes.push(fn); return X.reg.topes.length; } X.reg.esperas.push(ms); Promise.resolve().then(fn); return 0; },
+        clearTimeout: () => {},
+        localStorage: { setItem: (k, v) => { X.reg.guardado = [k, v]; } }, claveSesion: () => 'sb-x-auth-token', location: { reload: () => { X.reg.recargas++; } },
+      }, { consts: ['LOGIN_REINTENTOS_MS', 'LOGIN_SIN_RED', '_loginEnCurso', 'LOGIN_TOPE_MS'].filter(existeConst) });
+      X.err = {}; let txt = '';
+      Object.defineProperty(X.err, 'textContent', { set(v) { txt = v; X.reg.textos.push(v); }, get() { return txt; } });
+      // pasan los 12 s del intento en curso (dispara el tope pendiente más reciente)
+      X.pasaTope = async () => { const f = X.reg.topes.pop(); if (f) f(); for (let i = 0; i < 10; i++) await respirar(); return !!f; };
+      return X;
+    }
+    {
+      const X = armarColgado();
+      let fin = false;
+      X.M.entrarLogin(ev()).then(() => { fin = true; });   // 1er toque: el fetch se cuelga
+      await respirar();
+      igual([TOPE_LOGIN, X.reg.fetches, !!X.signals[0], X.reg.topes.length], [12000, 1, true, 1], '(v65 rev2) cada intento lleva su tope: signal de un AbortController y 12 s');
+      X.colgar = false;                                     // la red ya volvió
+      await X.M.entrarLogin(ev());                          // 2º toque mientras el 1º sigue colgado: el candado lo ignora
+      igual([X.reg.fetches, fin], [1, false], '(v65 rev2) un segundo toque con el primero colgado no abre otro intento (el candado)…');
+      await X.pasaTope();                                   // a los 12 s
+      igual([fin, X.reg.fetches, X.reg.esperas, X.reg.textos, X.reg.recargas], [true, 2, [1000], ['Entrando…', 'Reintentando…'], 1], '(v65 rev2) …pero a los 12 s el intento colgado se aborta, cuenta como fallo de red y el reintento (a 1 s) entra: recarga sin otro toque');
+    }
+    {
+      const X = armarColgado();
+      let fin = false;
+      X.M.entrarLogin(ev()).then(() => { fin = true; });
+      await respirar();
+      for (let k = 0; k < 3; k++) await X.pasaTope();      // los tres intentos colgados
+      igual([fin, X.reg.fetches, X.reg.esperas, X.reg.textos[X.reg.textos.length - 1], X.reg.recargas], [true, 3, [1000, 3000], 'No pude contactar con el servidor de la Mesa. Revisa tu internet (o Tailscale) e inténtalo de nuevo.', 0], '(v65 rev2) los tres colgados: tres topes, los reintentos a 1 s y 3 s y el mensaje de sin red (no «Entrando…» para siempre)');
+      X.colgar = false;
+      await X.M.entrarLogin(ev());
+      igual([X.reg.fetches, X.reg.recargas], [4, 1], '(v65 rev2) y el candado se libera: otro toque (con la red de vuelta) vuelve a intentarlo y entra');
+    }
+    {
+      const X = armarColgado('cuerpo');
+      let fin = false;
+      X.M.entrarLogin(ev()).then(() => { fin = true; });
+      await respirar(); await respirar();
+      X.colgar = false;
+      await X.pasaTope();
+      igual([fin, X.reg.fetches, X.reg.textos, X.reg.recargas], [true, 2, ['Entrando…', 'Reintentando…'], 1], '(v65 rev2) cabeceras sí y el CUERPO colgado: al tope es un fallo de red y se reintenta (no «No pude entrar: 200»)');
+    }
   }
 
   // ════════════════ 11. el cableado en el fuente ════════════════

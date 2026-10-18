@@ -41,23 +41,31 @@ const TABS = [
 // «Reintentando…»; solo si las tres fallan se dice que no hubo contacto. Una RESPUESTA del servidor (400/401 de
 // credenciales, cualquier estado) no es un fallo de red y NO se reintenta: repetir una contraseña mala no la arregla.
 const LOGIN_REINTENTOS_MS = [1000, 3000];
+// v65 rev2: tope de CADA intento. Una petición colgada (el túnel o el DNS de Tailscale sin levantar, el cambio de wifi a 4G)
+// no rechaza: sin tope se quedaba en «Entrando…» hasta el del sistema (decenas de segundos) en cada intento y, con el
+// candado _loginEnCurso, un segundo toque a «Entrar» se ignoraba mientras tanto. Abortada, cae en el catch como un fallo
+// de red: se reintenta a 1 s y a 3 s y, si todo falla, LOGIN_SIN_RED.
+const LOGIN_TOPE_MS = 12000;
 const LOGIN_SIN_RED = 'No pude contactar con el servidor de la Mesa. Revisa tu internet (o Tailscale) e inténtalo de nuevo.';
 let _loginEnCurso = false;   // un segundo toque a «Entrar» mientras se reintenta no abre otro intento en paralelo
 // Pide el token. → { r, ses } con la respuesta del servidor (sea cual sea su estado) o { red: true } si las tres
 // peticiones fallaron por red. `alReintentar(n)` avisa antes de cada reintento (n = 1, 2).
 async function tokenLogin(email, password, alReintentar) {
   for (let i = 0; ; i++) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;   // sin AbortController, como antes
+    const tope = ctl ? setTimeout(() => { try { ctl.abort(); } catch (_) {} }, LOGIN_TOPE_MS) : null;
     try {
       const r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
         method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }) });
-      const ses = await r.json().catch(() => ({}));
+        body: JSON.stringify({ email, password }), signal: ctl ? ctl.signal : undefined });
+      // un cuerpo que se queda a medias hasta el tope también es un fallo de red (no «No pude entrar: 200»)
+      const ses = await r.json().catch((e) => { if (ctl && ctl.signal.aborted) throw e; return {}; });
       return { r, ses: ses || {} };
     } catch (_) {
       if (i >= LOGIN_REINTENTOS_MS.length) return { red: true };
       if (typeof alReintentar === 'function') alReintentar(i + 1);
       await new Promise(res => setTimeout(res, LOGIN_REINTENTOS_MS[i]));
-    }
+    } finally { if (tope != null) clearTimeout(tope); }
   }
 }
 async function entrarLogin(e) {
