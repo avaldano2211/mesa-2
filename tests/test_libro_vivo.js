@@ -4,7 +4,8 @@
    Diario bajaba el libro ENTERO (~650 KB) en cada refresco; `fills` no estaba en Realtime; y el login decía «Sin conexión»
    al primer fallo de red.
      C1 · sincronización de E*TRADE/Schwab en segundo plano desde CUALQUIER pestaña (2 min en sesión regular, 15 fuera;
-          con la app visible y la sesión del bróker válida en este equipo) y el tope de syncTtlAhora (2 / 10 min).
+          con la app visible y la sesión del bróker válida en este equipo) y el tope de pasadaSyncAhora (v65 rev: la
+          COMPLETA cada 10 min y, en sesión, la LIGERA cada 2; el detalle, con un E*TRADE de juguete, en test_libro_pasadas.js).
      C2 · Realtime de `fills` en su PROPIO canal 'mesa2-fills' (INSERT y UPDATE, nunca '*'): fusión en la caché por id y
           repintado con debounce de 1,5 s de la vista abierta (Diario o Cuentas) con sus guardas.
      C3 · lectura INCREMENTAL del libro (id > el mayor de la caché), completa cada 15 min o con forzar, y el MISMO orden
@@ -97,7 +98,7 @@ function armarLibro(canon, op) {
     const T = construir(['ttlSyncLibro', 'cadenciaSyncLibro', 'syncTtlAhora', 'sesionNY'], { haceCuanto },
       { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_SYNC_TIC_MS'],
         prefijo: 'let _hbUltimo = null;', sufijo: 'function __hb(h) { _hbUltimo = h; }', extras: ['__hb'] });
-    igual([T.ET_SYNC_TTL, T.ET_SYNC_TTL_SESION, T.LIBRO_SYNC_SESION_MS, T.LIBRO_SYNC_FUERA_MS], [600000, 120000, 120000, 900000], 'constantes: ET_SYNC_TTL sigue en 10 min (el tope FUERA), 2 min en sesión; el timer cada 2 min en sesión y cada 15 fuera');
+    igual([T.ET_SYNC_TTL, T.ET_SYNC_TTL_SESION, T.LIBRO_SYNC_SESION_MS, T.LIBRO_SYNC_FUERA_MS], [600000, 120000, 120000, 900000], 'constantes: ET_SYNC_TTL sigue en 10 min (la completa siempre; cualquier pasada fuera de sesión), 2 min la ligera en sesión; el timer cada 2 min en sesión y cada 15 fuera');
     assert(T.LIBRO_SYNC_TIC_MS > 0 && T.LIBRO_SYNC_TIC_MS <= 15000, 'el tic que mira si toca es corto (≤ 15 s): el paso a la sesión regular se nota enseguida (' + T.LIBRO_SYNC_TIC_MS + ' ms)');
     igual([T.ttlSyncLibro('regular'), T.ttlSyncLibro('extendida'), T.ttlSyncLibro('cerrado'), T.ttlSyncLibro(undefined), T.ttlSyncLibro(null)], [120000, 600000, 600000, 600000, 600000], 'ttlSyncLibro: 2 min en la sesión regular; pre/post, cerrado o sin dato → 10 min');
     igual([T.cadenciaSyncLibro('regular'), T.cadenciaSyncLibro('extendida'), T.cadenciaSyncLibro('cerrado'), T.cadenciaSyncLibro(undefined)], [120000, 900000, 900000, 900000], 'cadenciaSyncLibro: 2 min en la sesión regular, 15 fuera (pre/post incluidos)');
@@ -109,38 +110,45 @@ function armarLibro(canon, op) {
     igual(T2.syncTtlAhora(), 600000, 'si algo falla al decidir (sin sesionNY ni latido) el tope es el prudente: 10 min');
   }
 
-  // ════════════════ 2. C1 · las sincronizaciones REALES aplican el tope de AHORA ════════════════
+  // ════════════════ 2. C1 · las sincronizaciones REALES aplican el tope de AHORA (v65 rev: completa o ligera) ════════════════
   {
     function armarSync(E) {
-      const reg = { lecturas: 0 };
-      const alm = {};
+      const reg = { completa: 0, ligera: 0 };
+      const alm = { mz_sw_acct: 'h1' };
       if (E.cacheMs != null) { const c = JSON.stringify({ ts: Date.now() - E.cacheMs, resumen: { estado: 'ok', txs: 4, ops: 2, rts: 1, fills: 0, ts: Date.now() - E.cacheMs } }); alm.mz_et_sync2 = c; alm.mz_sw_sync = c; }
-      const M = construir(['etradeSincronizarImpl', 'schwabSincronizarImpl', 'syncTtlAhora', 'ttlSyncLibro', 'sesionNY'], {
-        haceCuanto, localStorage: localStorageFalso(alm), ET_K: { sync: 'mz_et_sync2' }, SW_K_SYNC: 'mz_sw_sync',
+      const M = construir(['etradeSincronizarImpl', 'schwabSincronizarImpl', 'etradeSincronizarLigera', 'schwabSincronizarLigera', 'pasadaSyncAhora',
+        'ultimaPasadaSync', 'tipoPasadaSync', 'resumenSyncGuardado', 'syncTtlAhora', 'ttlSyncLibro', 'sesionNY'], {
+        haceCuanto, localStorage: localStorageFalso(alm), ET_K: { sync: 'mz_et_sync2', lig: 'mz_et_sync_lig' }, SW_K_SYNC: 'mz_sw_sync', SW_K_SYNC_LIG: 'mz_sw_sync_lig', SW_K: { acct: 'mz_sw_acct' },
         etCreds: () => ({ token: 't', token_secret: 's' }), etDiaVencido: () => false, swCreds: () => ({ token: 't' }), swVencido: () => false,
         sesionActiva: { user: { id: 'u' } }, etProxy: () => Promise.resolve({}),
-        etRead: async () => { reg.lecturas++; return { status: 401, data: null }; }, etError: () => null,
-        swCuenta: async () => { reg.lecturas++; throw new Error('Schwab: sesión caducó'); },
-      }, { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION'], prefijo: 'let _hbUltimo = ' + JSON.stringify(E.hb) + ';' });
+        // la COMPLETA empieza por list.json (E*TRADE) o por la cuenta (Schwab); la LIGERA, por la cuenta guardada y sus días
+        etRead: async () => { reg.completa++; return { status: 401, data: null }; }, etError: () => null,
+        swCuenta: async () => { reg.completa++; throw new Error('Schwab: sesión caducó'); },
+        etCuentaKey: async () => { reg.ligera++; throw new Error('La sesión de E*TRADE expiró.'); },
+        schwabOrdenesHistoricas: async () => { reg.ligera++; return { expirado: true, ordenes: [] }; },
+      }, { consts: ['ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_LIGERA', 'SW_DIAS_LIGERA', 'LIBRO_SYNC_FUERA_MS'], prefijo: 'let _hbUltimo = ' + JSON.stringify(E.hb) + ';' });
       return { M, reg };
     }
     for (const b of ['etrade', 'schwab']) {
       const fn = b === 'etrade' ? 'etradeSincronizarImpl' : 'schwabSincronizarImpl';
       let A = armarSync({ hb: hbDe('regular'), cacheMs: 3 * 60000 });
       let r = await A.M[fn]();
-      igual([A.reg.lecturas, r.estado], [1, 'expirado'], b + ': en sesión regular, con la última sincronización de hace 3 min, SÍ se pregunta al bróker (tope 2 min)');
+      igual([A.reg.ligera, A.reg.completa, r.estado], [1, 0, 'expirado'], b + ': en sesión regular, con la completa de hace 3 min, SÍ se pregunta al bróker (tope 2 min): con la pasada LIGERA');
       A = armarSync({ hb: hbDe('regular'), cacheMs: 90000 });
       r = await A.M[fn]();
-      igual([A.reg.lecturas, r.estado, r.cambio], [0, 'ok', false], b + ': en sesión, con la de hace 90 s, se devuelve la guardada (cambio: false)');
+      igual([A.reg.ligera + A.reg.completa, r.estado, r.cambio], [0, 'ok', false], b + ': en sesión, con la de hace 90 s, se devuelve la guardada (cambio: false)');
+      A = armarSync({ hb: hbDe('regular'), cacheMs: 11 * 60000 });
+      await A.M[fn]();
+      igual([A.reg.ligera, A.reg.completa], [0, 1], b + ': en sesión, con la completa de hace 11 min, toca la COMPLETA (su tope sigue en 10 min)');
       A = armarSync({ hb: hbDe('cerrado'), cacheMs: 3 * 60000 });
       r = await A.M[fn]();
-      igual([A.reg.lecturas, r.estado, r.cambio], [0, 'ok', false], b + ': fuera de sesión, la de hace 3 min vale (tope 10 min, como antes)');
+      igual([A.reg.ligera + A.reg.completa, r.estado, r.cambio], [0, 'ok', false], b + ': fuera de sesión, la de hace 3 min vale (tope 10 min, como antes)');
       A = armarSync({ hb: hbDe('post'), cacheMs: 11 * 60000 });
       await A.M[fn]();
-      igual(A.reg.lecturas, 1, b + ': fuera de sesión, pasados 10 min, se vuelve a preguntar');
+      igual([A.reg.ligera, A.reg.completa], [0, 1], b + ': fuera de sesión, pasados 10 min, se vuelve a preguntar (la completa)');
       A = armarSync({ hb: hbDe('regular'), cacheMs: 30000 });
       await A.M[fn](true);
-      igual(A.reg.lecturas, 1, b + ': forzar («sincronizar») salta el tope como siempre');
+      igual([A.reg.ligera, A.reg.completa], [0, 1], b + ': forzar («sincronizar») salta el tope como siempre, con la COMPLETA');
     }
   }
 
@@ -149,11 +157,11 @@ function armarLibro(canon, op) {
     E = Object.assign({ ses: 'regular', visible: 'visible', sesion: { user: { id: 'u' } }, et: true, etVenc: false, sw: false, swVenc: false, alm: {}, hash: '#/tickers' }, E || {});
     const reg = { et: 0, sw: 0, inval: [], repintar: 0, resEt: E.resEt || { estado: 'ok', cambio: false }, resSw: E.resSw || { estado: 'ok', cambio: false } };
     const ls = E.lsRoto ? { getItem() { throw new Error('almacenamiento bloqueado'); }, setItem() { throw new Error('x'); }, removeItem() {} } : localStorageFalso(E.alm);
-    const M = construir(['syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'syncFondoResultado'], {
+    const M = construir(['syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'ultimaPasadaSync', 'syncFondoResultado'], {
       sesionActiva: E.sesion, document: { visibilityState: E.visible }, location: { hash: E.hash }, sesionNY: () => E.ses, _hbUltimo: null,
       etCreds: () => (E.et ? { token: 't', token_secret: 's' } : null), etDiaVencido: () => E.etVenc,
       swCreds: () => (E.sw ? { token: 't' } : null), swVencido: () => E.swVenc,
-      ET_K: { sync: 'mz_et_sync2' }, SW_K_SYNC: 'mz_sw_sync', localStorage: ls,
+      ET_K: { sync: 'mz_et_sync2', lig: 'mz_et_sync_lig' }, SW_K_SYNC: 'mz_sw_sync', SW_K_SYNC_LIG: 'mz_sw_sync_lig', localStorage: ls,
       etradeSincronizar: () => { reg.et++; return E.etLanza ? Promise.reject(new Error('sin red')) : Promise.resolve(reg.resEt); },
       schwabSincronizar: () => { reg.sw++; return Promise.resolve(reg.resSw); },
       libroInvalidar: (c) => { reg.inval.push(c); }, libroRepintarPronto: () => { reg.repintar++; },
@@ -543,9 +551,12 @@ function armarLibro(canon, op) {
     }
   }
 
-  // ════════════════ 9. C1 · Cuentas dice la verdad sobre «sincronizando…» con el tope nuevo ════════════════
+  // ════════════════ 9. C1 · Cuentas dice la verdad: «sincronizando…» y la última lectura (v65 rev: completa y ligera) ════════════════
   {
-    async function correrCuentas(hb, msAtras) {
+    // E.lig: el registro de la ligera (mz_et_sync_lig). E.real: la sincronización REAL del módulo con un proxy de juguete
+    // (si «en curso» no dijera lo mismo que decide la sincronización, Cuentas se repintaría sin fin: se cuentan los pintados).
+    async function correrCuentas(hb, msAtras, E) {
+      E = E || {};
       const { sb } = baseFalsa([]);
       const canal = () => { const c = { on() { return c; }, subscribe() { return c; } }; return c; };
       const mod = C.cargarModuloEntero({ src: './app/main.js?v=65', hash: '#/cuentas', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
@@ -554,26 +565,56 @@ function armarLibro(canon, op) {
       const htmls = [];   // cada pintado (el primero es el que se juzga: con «en curso» Cuentas se repinta al terminar la sincronización)
       mod.win.document.querySelector = (s) => { const n = nodo(); if (s === '#vista') Object.defineProperty(n, 'innerHTML', { set(v) { htmls.push(v); }, get() { return htmls[htmls.length - 1] || ''; } }); return n; };
       mod.win.localStorage.setItem('mz_et_tok', 't'); mod.win.localStorage.setItem('mz_et_sec', 's'); mod.win.localStorage.setItem('mz_et_dia', mod.ev('hoyNY()'));
-      mod.win.localStorage.setItem('mz_et_sync2', JSON.stringify({ ts: Date.now() - msAtras, resumen: { estado: 'ok', txs: 7, ops: 5, rts: 2, dias: 180, ts: Date.now() - msAtras } }));
+      const sync0 = JSON.stringify({ ts: Date.now() - msAtras, resumen: { estado: 'ok', txs: 7, ops: 5, rts: 2, dias: 180, ts: Date.now() - msAtras } });
+      mod.win.localStorage.setItem('mz_et_sync2', sync0);
+      if (E.lig) mod.win.localStorage.setItem('mz_et_sync_lig', JSON.stringify(E.lig));
       mod.win.__hb = hb;
-      mod.ev("sesionActiva = { user: { id: 'u' } }; _hbUltimo = window.__hb; _cuentasVista = 'cuentas'; window.__et = 0;");
+      mod.ev("sesionActiva = { user: { id: 'u' } }; _hbUltimo = window.__hb; _cuentasVista = 'cuentas'; window.__et = 0; window.__px = [];");
       mod.ev("etradeSaldo = async () => ({ broker: 'etrade', saldo_neto: 1000, capturado_at: new Date().toISOString(), _vivo: true }); schwabSaldo = async () => null;");
-      // como la de verdad: una lectura real deja su hora guardada (sin eso, «en curso» repintaría Cuentas sin fin)
-      mod.ev("etradeSincronizar = () => { window.__et++; localStorage.setItem('mz_et_sync2', JSON.stringify({ ts: Date.now(), resumen: { estado: 'ok', txs: 7, ops: 5, rts: 2, dias: 180, ts: Date.now() } })); return Promise.resolve({ estado: 'ok', cambio: false }); };");
+      if (E.real) {
+        mod.ev("etProxy = async (ruta, body) => { window.__px.push(ruta + ' ' + ((body && body.path) || '').replace(/accounts\\/[^/]+\\//, 'accounts/k/')); if (ruta === '/diag') return { status: 200, data: {} };"
+          + " if (/list\\.json/.test(body.path)) return { status: 200, data: { AccountListResponse: { Accounts: { Account: [{ accountIdKey: 'k1', accountStatus: 'ACTIVE' }] } } } }; return { status: 204, data: null }; };");
+      } else {
+        // como la de verdad cuando hace la COMPLETA: deja su hora guardada (sin eso, «en curso» repintaría Cuentas sin fin)
+        mod.ev("etradeSincronizar = () => { window.__et++; localStorage.setItem('mz_et_sync2', JSON.stringify({ ts: Date.now(), resumen: { estado: 'ok', txs: 7, ops: 5, rts: 2, dias: 180, ts: Date.now() } })); return Promise.resolve({ estado: 'ok', cambio: false }); };");
+      }
       let revento = null;
       try { await mod.ev('vistaCuentasSaldos()'); } catch (e) { revento = String((e && e.stack) || e); }
-      for (let i = 0; i < 20; i++) await respirar();
-      return { html: htmls[0] || '', pintados: htmls.length, revento, et: mod.ev('window.__et') };
+      for (let i = 0; i < 30; i++) await respirar();
+      const syncIgual = mod.win.localStorage.getItem('mz_et_sync2') === sync0;
+      return { html: htmls[0] || '', pintados: htmls.length, revento, et: mod.ev('window.__et'), px: mod.ev('window.__px'), syncIgual, lig: mod.win.localStorage.getItem('mz_et_sync_lig') };
     }
     const S = await correrCuentas(hbDe('regular'), 3 * 60000);
     assert(!S.error && !S.revento, 'vistaCuentasSaldos corre entera', S.error || S.revento);
-    assert(/historial: sincronizando…/.test(S.html), 'en sesión regular con la última sincronización de hace 3 min: «historial: sincronizando…» (de verdad toca leer: tope 2 min)');
+    assert(!/historial: sincronizando…/.test(S.html) && /historial 180 d: 7 transacciones · 5 de opciones · 2 round-trips · hace 3 min/.test(S.html), 'en sesión, con la completa de hace 3 min: el resumen guardado, «hace 3 min» (lo que toca es la LIGERA, que no rehace esta línea: decir «sincronizando…» sería mentir)');
+    const S11 = await correrCuentas(hbDe('regular'), 11 * 60000);
+    assert(/historial: sincronizando…/.test(S11.html), 'en sesión, con la completa de hace 11 min: «historial: sincronizando…» (de verdad toca la COMPLETA)');
     const F = await correrCuentas(hbDe('cerrado'), 3 * 60000);
     assert(!/historial: sincronizando…/.test(F.html) && /historial 180 d: 7 transacciones · 5 de opciones · 2 round-trips/.test(F.html), 'fuera de sesión, con la de hace 3 min: el resumen guardado (tope 10 min: no hay lectura en curso)');
     const S2 = await correrCuentas(hbDe('regular'), 60000);
     assert(!/historial: sincronizando…/.test(S2.html) && /historial 180 d:/.test(S2.html), 'en sesión, con la de hace 1 min: el resumen guardado');
-    assert(S.et >= 1 && F.et >= 1 && S2.et >= 1, 'en los tres casos se llama a etradeSincronizar (su tope decide; Cuentas solo dice la verdad sobre lo que va a pasar)');
-    igual([S.pintados, F.pintados, S2.pintados], [2, 1, 1], 'solo con la lectura «en curso» se repinta al terminar (una vez: la hora nueva corta el bucle)');
+    assert(S.et >= 1 && S11.et >= 1 && F.et >= 1 && S2.et >= 1, 'en todos los casos se llama a etradeSincronizar (su tope decide; Cuentas solo dice la verdad sobre lo que va a pasar)');
+    igual([S.pintados, S11.pintados, F.pintados, S2.pintados], [1, 2, 1, 1], 'solo con la COMPLETA «en curso» se repinta al terminar (una vez: la hora nueva corta el bucle)');
+    // la ligera posterior a la completa se dice aparte, con su hora y su resultado
+    const L = await correrCuentas(hbDe('regular'), 6 * 60000, { lig: { ts: Date.now() - 60000, estado: 'ok', txs: 20, fills: 2 } });
+    assert(/2 round-trips · hace 6 min · libro al día hace 1 min \(últimos 4 d · 2 ejecuciones nuevas\)/.test(L.html), 'completa de hace 6 min y ligera de hace 1 min: «… · hace 6 min · libro al día hace 1 min (últimos 4 d · 2 ejecuciones nuevas)»');
+    const L0 = await correrCuentas(hbDe('regular'), 6 * 60000, { lig: { ts: Date.now() - 60000, estado: 'ok', txs: 20, fills: 0 } });
+    assert(/hace 6 min · libro al día hace 1 min \(últimos 4 d\)/.test(L0.html), 'sin ejecuciones nuevas: «libro al día hace 1 min (últimos 4 d)»');
+    const LE = await correrCuentas(hbDe('regular'), 6 * 60000, { lig: { ts: Date.now() - 60000, estado: 'error', detalle: 'HTTP 500' } });
+    assert(/la lectura rápida de hace 1 min falló \(HTTP 500\)/.test(LE.html) && !/libro al día/.test(LE.html), 'una ligera que falló lo dice («la lectura rápida de hace 1 min falló (HTTP 500)»), sin decir «al día»');
+    const LF = await correrCuentas(hbDe('regular'), 6 * 60000, { lig: { ts: Date.now() - 60000, estado: 'ok', fills: 0, fills_err: 'la tabla fills aún no está en la base' } });
+    assert(/no pudo escribir en el libro: la tabla fills/.test(LF.html) && !/libro al día/.test(LF.html), 'una ligera que leyó pero no pudo escribir en el libro tampoco dice «al día»');
+    const LX = await correrCuentas(hbDe('regular'), 6 * 60000, { lig: { ts: Date.now() - 60000, estado: 'expirado' } });
+    assert(/historial: sesión de E\*TRADE expirada — reconecta/.test(LX.html), 'si la lectura más reciente (la ligera) dio la sesión por expirada, la línea lo dice');
+    const LV = await correrCuentas(hbDe('regular'), 6 * 60000, { lig: { ts: Date.now() - 8 * 60000, estado: 'expirado' } });
+    assert(/historial 180 d:/.test(LV.html) && !/libro al día|expirada/.test(LV.html), 'una ligera ANTERIOR a la completa ya no cuenta (la completa la incluye)');
+    // con la sincronización REAL del módulo: la ligera no rehace la línea ni repinta en bucle; la completa sí la rehace, una vez
+    const RL = await correrCuentas(hbDe('regular'), 3 * 60000, { real: true });
+    assert(!RL.revento && RL.px.some(x => /transactions\.json/.test(x)) && RL.syncIgual && /"estado":"ok"/.test(String(RL.lig)), 'REAL, en sesión con la completa de hace 3 min: corre la LIGERA (lee transacciones, deja su registro) y no toca el resumen de la completa (' + RL.px.join(' | ') + ')');
+    igual(RL.pintados, 1, 'y Cuentas se pinta UNA vez (sin «en curso» que la repinte)');
+    const RC = await correrCuentas(hbDe('regular'), 11 * 60000, { real: true });
+    assert(/historial: sincronizando…/.test(RC.html) && !RC.syncIgual, 'REAL, con la completa de hace 11 min: «sincronizando…» y la COMPLETA deja su hora nueva');
+    igual(RC.pintados, 2, 'y se repinta una sola vez al terminar (sin bucle)');
   }
 
   // ════════════════ 10. C4 · el login reintenta SOLO si falla la red ════════════════
@@ -641,13 +682,16 @@ function armarLibro(canon, op) {
     const vis = FUENTE.slice(FUENTE.indexOf("document.addEventListener('visibilitychange'"), FUENTE.indexOf("document.addEventListener('visibilitychange'") + 1500);
     assert(/setTimeout\(\(\) => \{ try \{ syncBrokersFondo\(true\); \} catch \(_\) \{\} \}, 800\);/.test(vis) && vis.indexOf('syncBrokersFondo(true)') < vis.indexOf('if (!sesionActiva || !_ocultaDesde'), 'al volver del fondo (visible): una pasada enseguida, antes del corte de los 30 s');
     assert(/sb\.channel\('mesa2-fills'\)\s*\.on\('postgres_changes', \{ event: 'INSERT', schema: 'public', table: 'fills' \}, libroFillNuevo\)\s*\.on\('postgres_changes', \{ event: 'UPDATE', schema: 'public', table: 'fills' \}, libroFillCambiado\)\s*\.subscribe\(\);/.test(extraer('suscribir')), 'suscribir: el canal mesa2-fills con INSERT y UPDATE');
-    ['etradeSincronizarImpl', 'schwabSincronizarImpl'].forEach(fn => assert(/Date\.now\(\) - prev\.ts < syncTtlAhora\(\)/.test(extraer(fn)) && !/ET_SYNC_TTL/.test(extraer(fn)), fn + ': el tope es syncTtlAhora() (ya no el de 10 min fijo)'));
+    assert(/const P = pasadaSyncAhora\(ET_K\.sync, ET_K\.lig, forzar\);/.test(extraer('etradeSincronizarImpl')) && /const P = pasadaSyncAhora\(SW_K_SYNC, SW_K_SYNC_LIG, forzar\);/.test(extraer('schwabSincronizarImpl')), 'las dos sincronizaciones deciden con pasadaSyncAhora (completa · ligera · guardada)');
+    ['etradeSincronizarImpl', 'schwabSincronizarImpl'].forEach(fn => assert(!/ET_SYNC_TTL|syncTtlAhora\(\)/.test(extraer(fn)), fn + ': sin un tope propio aparte (el único criterio es el de pasadaSyncAhora, el mismo que usa Cuentas)'));
     const vc = extraer('vistaCuentasSaldos');
-    assert(/const ttlSync = syncTtlAhora\(\);/.test(vc) && /Date\.now\(\) - \(etHist\.ts \|\| 0\) >= ttlSync/.test(vc) && /Date\.now\(\) - \(swHist\.ts \|\| 0\) >= ttlSync/.test(vc) && !/ET_SYNC_TTL/.test(vc), 'Cuentas: «sincronizando…» con el MISMO tope que aplicará la sincronización');
+    assert(/pasadaSyncAhora\(ET_K\.sync, ET_K\.lig\)/.test(vc) && /pasadaSyncAhora\(SW_K_SYNC, SW_K_SYNC_LIG\)/.test(vc) && /const enCurso = [^;]*etP\.tipo === 'completa'/.test(vc) && /const enCursoSw = [^;]*swP\.tipo === 'completa'/.test(vc) && !/ET_SYNC_TTL|syncTtlAhora/.test(vc), 'Cuentas: «sincronizando…» solo si la MISMA decisión dice COMPLETA');
+    ['etradeSincronizarLigera', 'schwabSincronizarLigera'].forEach(fn => assert(!/broker_trades|emparejar/.test(extraer(fn)), fn + ': la ligera no empareja ni toca broker_trades'));
     assert(/libroInvalidar\(true\);/.test(FUENTE.slice(FUENTE.indexOf('diarioSincronizar: async'), FUENTE.indexOf('diarioSincronizar: async') + 900)), '«Sincronizar ahora» del Diario: relectura COMPLETA del libro');
     assert(/^\$\('#loginForm'\)\.addEventListener\('submit', entrarLogin\);/m.test(FUENTE) && !/Sin conexión/.test(extraer('entrarLogin') + extraer('tokenLogin')), 'el formulario de login usa entrarLogin (y su «Sin conexión» a la primera ya no existe; el de cambiar contraseña es otra pantalla)');
     // doctrina: nada de esto manda órdenes, nadie borra del libro
-    const v65 = ['syncBrokersFondo', 'syncFondoResultado', 'ultimaSyncBroker', 'cadenciaSyncLibro', 'leerFillsTodos', 'libroFillRT', 'fusionarLibro', 'repintarVistaLibro', 'libroRepintarPronto', 'entrarLogin', 'tokenLogin'].map(extraer).join('\n');
+    const v65 = ['syncBrokersFondo', 'syncFondoResultado', 'ultimaSyncBroker', 'cadenciaSyncLibro', 'leerFillsTodos', 'libroFillRT', 'fusionarLibro', 'repintarVistaLibro', 'libroRepintarPronto', 'entrarLogin', 'tokenLogin',
+      'etradeSincronizarLigera', 'schwabSincronizarLigera', 'pasadaSyncAhora', 'tipoPasadaSync', 'ultimaPasadaSync', 'resumenHistorialSync', 'lineaPasadaLigera', 'resumenSyncGuardado'].map(extraer).join('\n');
     ['ordenPlace(', 'ordenPreview(', 'etPost(', 'swPost(', '/etrade/place', '/etrade/preview', 'construirOrden(', 'abrirOrden(', 'unlock', 'place_order'].forEach(t => assert(!v65.includes(t), 'el código de la v65 no arma ni envía órdenes: no toca «' + t + '»'));
     igual((v65.match(/\.(insert|update|upsert|delete)\(/g) || []), [], 'el código nuevo solo LEE de la base (las escrituras en fills/broker_trades siguen siendo las de etradeSincronizar/schwabSincronizar)');
     assert(!/sb\.from\('fills'\)[\s\S]{0,200}\.delete\(/.test(FUENTE), 'nadie borra del libro de fills');
