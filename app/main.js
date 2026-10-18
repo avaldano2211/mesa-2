@@ -9236,20 +9236,26 @@ async function guardarFills(filas, uid) {
 // por minuto en el teléfono) aunque nada hubiera cambiado. Quien mete fills nuevos (las
 // sincronizaciones) lo invalida con libroInvalidar(); «Sincronizar ahora» fuerza la relectura COMPLETA.
 // v65 (diagnóstico 2026-10-14: el Diario bajaba el libro ENTERO —~650 KB, ~990 fills— en cada refresco): la caché se
-// conserva y, vencida, se piden SOLO las filas nuevas (id > el mayor id de la caché: el libro es append-only y el id es
+// conserva y, vencida, se piden SOLO las filas nuevas (id > el mayor id ya LEÍDO: el libro es append-only y el id es
 // una identidad que solo crece). Lo que una lectura incremental no ve —un UPDATE (el spot que escribe spot_fills) o una
 // fila de id menor que confirmó tarde una transacción concurrente— llega por Realtime (libroFillNuevo/libroFillCambiado,
 // sql 0021) y, si Realtime no está, por la lectura COMPLETA que se hace igualmente cada 15 min (y con forzar).
 //   rt / rtSeq: diario corto de lo que trajo Realtime. Una lectura que estaba en vuelo cuando llegó un evento puede
 //   traer la fila de ANTES (su consulta se resolvió antes del UPDATE): al terminar se vuelven a aplicar encima los
 //   eventos que llegaron mientras leía. repTimer: el debounce del repintado (libroRepintarPronto).
-const _libro = { filas: null, ts: 0, tsCompleta: 0, rt: [], rtSeq: 0, repTimer: null };
+//   maxLeido (v65 rev): el cursor de la incremental es el mayor id que trajo una LECTURA, no el mayor de la caché. La
+//   caché también la llena Realtime, y Realtime no reenvía lo que se perdió con el socket caído (el iPhone en la app
+//   del bróker, el cambio de wifi a 4G): si en ese hueco el worker escribía el fill 11 y al volver llegaba por Realtime
+//   el 12 de E*TRADE, la incremental pedía id > 12 y el 11 —ya en la base— faltaba en el Diario hasta la completa (15
+//   min), con el FIFO y el P&L mal y presentados como frescos. Con el cursor de lecturas pide id > 10: el 12 se baja
+//   una vez más y la fusión lo deduplica por id. Realtime NO lo toca.
+const _libro = { filas: null, ts: 0, tsCompleta: 0, rt: [], rtSeq: 0, repTimer: null, maxLeido: 0 };
 const LIBRO_TTL_MS = 60000;
 const LIBRO_COMPLETA_MS = 15 * 60000;   // v65: una lectura completa cada 15 min recoge lo que no llegó por Realtime
 const LIBRO_RT_MAX = 500;               // tope del diario de eventos (una lectura dura segundos: sobra)
 const LIBRO_REPINTAR_MS = 1500;         // debounce del repintado tras eventos de Realtime o una sincronización con cambios
 // `completa` (v65): la siguiente lectura será COMPLETA y no incremental (un toque de Andrés: «Sincronizar ahora»).
-function libroInvalidar(completa) { _libro.ts = 0; if (completa) _libro.tsCompleta = 0; }
+function libroInvalidar(completa) { _libro.ts = 0; if (completa) { _libro.tsCompleta = 0; _libro.maxLeido = 0; } }
 // v62 rev4: el libro de fills para unirOperaciones (quita las filas de E*TRADE sustituidas: filasEtradeVigentes) en
 // TODAS las pantallas que suman operaciones, para que Cuentas, Disciplina, el cupo del Copiloto y el de la hoja de
 // orden cuenten lo mismo (la lección de v50: «las dos pantallas volvían a contradecirse»). null si no se pudo leer:
@@ -9286,7 +9292,8 @@ function ordenarLibro(filas) {
       return a.id - b.id;
     }).map(x => x.f);
 }
-// v65 · PURA: el mayor id del libro (0 si está vacío): la lectura incremental pide id > este.
+// v65 · PURA: el mayor id de unas filas (0 si no hay): el cursor de la lectura incremental (_libro.maxLeido) se saca de
+// las filas LEÍDAS de la base, nunca de la caché entera (v65 rev: Realtime también la llena).
 function maxIdLibro(filas) {
   let max = 0;
   for (const f of (filas || [])) { const n = Number(f && f.id); if (Number.isFinite(n) && n > max) max = n; }
@@ -9325,9 +9332,9 @@ function filaLibroRT(f) {
 async function leerFillsTodos(forzar) {
   const ahora = Date.now();
   if (!forzar && _libro.filas && ahora - _libro.ts < LIBRO_TTL_MS) return { filas: _libro.filas, error: null };
-  // v65: completa sin caché, con forzar o cada 15 min; si no, incremental (solo id > el mayor que ya hay)
+  // v65: completa sin caché, con forzar o cada 15 min; si no, incremental (solo id > el mayor que ya se LEYÓ: maxLeido)
   const completa = !!forzar || !_libro.filas || ahora - _libro.tsCompleta >= LIBRO_COMPLETA_MS;
-  const desdeId = completa ? 0 : maxIdLibro(_libro.filas);
+  const desdeId = completa ? 0 : (Number(_libro.maxLeido) || 0);
   const seq0 = _libro.rtSeq;
   const leidas = []; const PAG = 1000; let error = null;
   for (let v = 0; v < 30; v++) {
@@ -9348,6 +9355,8 @@ async function leerFillsTodos(forzar) {
   else if (leidas.length || tarde.length) filas = fusionarLibro(_libro.filas, leidas.map(f => ({ fila: f, modo: 'lectura' })).concat(tarde));
   else filas = _libro.filas;   // nada nuevo: el mismo arreglo (nadie redibuja por nada)
   _libro.filas = filas; _libro.ts = Date.now();
+  // el cursor solo avanza con lo que trajo la base (lo de Realtime —`tarde` incluido— no cuenta: ver maxLeido)
+  _libro.maxLeido = completa ? maxIdLibro(leidas) : Math.max(Number(_libro.maxLeido) || 0, maxIdLibro(leidas));
   if (completa) _libro.tsCompleta = _libro.ts;
   return { filas, error: null };
 }

@@ -433,6 +433,59 @@ function armarLibro(canon, op) {
     igual(T.M._libro.rt.length, T.M.LIBRO_RT_MAX, 'el diario de eventos no crece sin fin (tope ' + T.M.LIBRO_RT_MAX + ')');
   }
 
+  // ════════════════ 7b. C3 (v65 rev) · el cursor de la incremental es lo LEÍDO, no lo que trajo Realtime ════════════════
+  // Revisión 2026-10-17: Realtime no reenvía lo que se perdió con el socket caído (el iPhone en la app del bróker, wifi→4G).
+  // Si tras el hueco llega por Realtime un id MAYOR que los perdidos, la incremental pedía id > ese y los perdidos —ya en
+  // la base— faltaban en el Diario hasta la completa (≤ 15 min): FIFO y P&L mal, presentados como frescos.
+  {
+    const filaH = (id, extra) => Object.assign({ id, user_id: 'u', broker: 'moomoo', clave_ext: 'h' + id, symbol: 'SPY', direccion: 'CALL', strike: 600,
+      expiracion: '2026-10-16', lado: 'compra', contratos: 1, precio: 1, ejecutado_at: new Date(Date.UTC(2026, 9, 16, 14, id)).toISOString(), fecha_ny: '2026-10-16', spot: null }, extra || {});
+    const diez = []; for (let i = 1; i <= 10; i++) diez.push(filaH(i));
+    // A · el INSERT del 14 llega por Realtime; los de 11, 12 y 13 se perdieron en el hueco
+    const H = armarLibro(diez);
+    await H.M.leerFillsTodos();
+    igual(H.M._libro.maxLeido, 10, 'tras la completa, el cursor de lecturas (maxLeido) es el mayor id LEÍDO: 10');
+    H.st.filas = diez.concat([filaH(11), filaH(12), filaH(13), filaH(14)]);
+    H.M.libroFillNuevo({ new: filaH(14) });
+    igual([ids(H.M._libro.filas).join(), H.M._libro.maxLeido], ['1,2,3,4,5,6,7,8,9,10,14', 10], 'el INSERT del 14 por Realtime entra en la caché, pero NO mueve el cursor');
+    H.M._libro.ts = Date.now() - 61000;
+    let r = await H.M.leerFillsTodos();
+    igual(H.st.pedidas[1].gt, ['id', 10], 'la incremental pide id=gt.10 (lo leído), no id=gt.14 (lo que trajo Realtime)');
+    igual(ids(r.filas), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], 'y el Diario tiene los fills del hueco (11, 12, 13) ya en la primera incremental, sin esperar a la completa; el 14 no se duplica');
+    igual(H.M._libro.maxLeido, 14, 'el cursor avanza con lo leído: 14');
+    H.M._libro.ts = 0; await H.M.leerFillsTodos();
+    igual([H.st.pedidas[2].gt, H.st.pedidas[2].n], [['id', 14], 0], 'y la siguiente ya pide id=gt.14 (nada se baja dos veces salvo lo que llegó por Realtime, una vez)');
+    // B · un UPDATE de spot (spot_fills) sobre el 13, cuyo INSERT se perdió
+    const U = armarLibro(diez);
+    await U.M.leerFillsTodos();
+    U.st.filas = diez.concat([filaH(11), filaH(12), filaH(13, { spot: 661.2, spot_fuente: 'm1' })]);
+    U.M.libroFillCambiado({ new: filaH(13, { spot: 661.2, spot_fuente: 'm1' }) });
+    U.M._libro.ts = 0;
+    r = await U.M.leerFillsTodos();
+    igual([U.st.pedidas[1].gt, ids(r.filas).slice(-3), r.filas.find(f => f.id === 13).spot], [['id', 10], [11, 12, 13], 661.2], 'un UPDATE por Realtime de una fila que no estaba tampoco salta el hueco: pide gt.10 y trae 11 y 12');
+    // C · una incremental que falla no mueve el cursor; libroInvalidar(true) lo pone a 0 con la completa
+    const E = armarLibro(diez);
+    await E.M.leerFillsTodos();
+    E.M.libroFillNuevo({ new: filaH(20) });
+    E.st.error = { message: 'timeout' }; E.M._libro.ts = 0;
+    await E.M.leerFillsTodos();
+    igual(E.M._libro.maxLeido, 10, 'una incremental que falla deja el cursor donde estaba');
+    E.st.error = null; E.M.libroInvalidar(true);
+    igual(E.M._libro.maxLeido, 0, 'libroInvalidar(true) («Sincronizar ahora») pone el cursor a 0…');
+    await E.M.leerFillsTodos();
+    igual([E.st.pedidas[E.st.pedidas.length - 1].gt, E.M._libro.maxLeido], [null, 10], '…y la completa lo vuelve a fijar en lo leído (el 20 de Realtime no estaba en la base: no cuenta)');
+    // D · lo que trae Realtime MIENTRAS una incremental lee (`tarde`) tampoco mueve el cursor
+    const T = armarLibro(diez);
+    await T.M.leerFillsTodos();
+    T.st.filas = diez.concat([filaH(11)]);
+    const d = diferido(); T.st.espera = d; T.M._libro.ts = 0;
+    const lect = T.M.leerFillsTodos();
+    await respirar();
+    T.M.libroFillNuevo({ new: filaH(15) });   // llegó mientras leía (en la base aún no está en lo que se lee)
+    d.resolver(); r = await lect;
+    igual([ids(r.filas).slice(-2), T.M._libro.maxLeido], [[11, 15], 11], 'un INSERT que llega mientras la incremental lee entra en la caché, pero el cursor queda en lo leído (11): si hubo hueco entre 11 y 15, la siguiente lo trae');
+  }
+
   // ════════════════ 8. el módulo ENTERO: canal propio, fusión, debounce y repintado ════════════════
   {
     const canales = [];
