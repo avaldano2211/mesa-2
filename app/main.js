@@ -9037,6 +9037,9 @@ function fillsEtradeVigentes(filas) {
 // subconjunto que la llena (exacta si se puede; a igualdad, las filas más viejas: creado_at y luego id); (2) una pareja que
 // el FIFO no forma (E*TRADE emparejó distinto) solo se queda si a sus dos fills les quedan contratos sin contar. Ninguna
 // fila cuenta un contrato que el libro no tiene; la que ya no cabe, sobra. Sin libro, nada se tira (como siempre).
+// v65 rev5 · la fila que no cabe en (1) pasa a (2) en vez de salir: el FIFO del libro pone el vencimiento a las 20:00Z y
+// puede formar la pareja con MENOS contratos que E*TRADE (venta en la última hora del día del vencimiento), y entonces la
+// fila es real aunque no quepa en su pareja. (2) la deja solo si a sus dos fills les quedan contratos.
 function filasEtradeVigentes(trades, fills) {
   if (!Array.isArray(trades)) return trades;
   const expEtrade = (t) => {
@@ -9099,9 +9102,17 @@ function filasEtradeVigentes(trades, fills) {
       for (const [s, sel] of [...alc]) { const s2 = r4(s + num(t.contratos)); if (s2 <= tope + 1e-9 && !alc.has(s2)) alc.set(s2, sel.concat(i)); }
     });
     const quedan = new Set(alc.get(Math.max(...alc.keys())));
-    filas.forEach((t, i) => { if (quedan.has(i)) gastar(t); else fuera.add(t); });
+    // v65 rev5: la fila que no cabe en su pareja NO se tira aquí: pasa a la regla (2), que solo la deja si a sus dos fills
+    // les quedan contratos. Por qué: la capacidad de la pareja sale del FIFO del libro, y ese FIFO no siempre empareja como
+    // E*TRADE. emparejarFillsFIFO pone el vencimiento a las 20:00Z (15:00 ET en invierno, 16:00 ET en verano, y SPY/QQQ
+    // cotizan hasta las 16:15), antes de una venta de la última hora del día del vencimiento; E*TRADE empareja primero
+    // la venta y después el vencimiento que anota el sábado o el lunes. Con el «fuera.add» de la rev4, una fila REAL salía
+    // de Cuentas con sus dos fills llenos de contratos libres (0DTE SPY 700C del 4-dic: compra 5+5, venta 4 a las 15:30 ET,
+    // vencen 6 → Cuentas ×5 −$21.08 contra ×10 −$422.00 del Diario). La regla (2) sigue sin dejar contar un contrato que
+    // el libro no tiene: las copias repetidas de otra sincronización (×18/×10/×17) siguen fuera, sus fills ya están gastados.
+    filas.forEach((t, i) => { if (quedan.has(i)) gastar(t); else sinPar.push(t); });
   });
-  // (2) la pareja que el FIFO no forma: solo con contratos libres en sus dos fills
+  // (2) la pareja que el FIFO no forma, y la fila que no cupo en la suya: solo con contratos libres en sus dos fills
   for (const t of sinPar.sort(porAlta)) {
     const n = num(t.contratos);
     if ((capFill.get(String(raw(t).abre)) || 0) + 1e-9 >= n && (capFill.get(String(raw(t).cierra)) || 0) + 1e-9 >= n) gastar(t);

@@ -875,6 +875,47 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const fueraC = TC('26282501224674', '99999999999999', 17, '2026-10-17T15:58:58+00:00', 31);
     igual(K.filasEtradeVigentes([c18, fueraC], libC), [c18, fueraC], '(v65 rev4) una fila con un ID que el libro no tiene no se topa');
 
+    // ── v65 rev5 · la fila que NO CABE en su pareja pasa a la regla de los contratos libres (antes salía entera). El FIFO del
+    // libro pone el vencimiento a las 20:00Z (15:00 ET en invierno) y empareja ANTES que una venta de la última hora del día
+    // del vencimiento; E*TRADE empareja primero la venta y después el vencimiento anotado el sábado o el lunes. La pareja
+    // del FIFO queda con MENOS contratos que la fila real, que es real: sus dos fills tienen contratos libres.
+    const ymdS = (at) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(at));
+    const FS = (b, id, lado, n, at, precio, tipo) => ({ ...b, clave_ext: id, lado, contratos: n, precio, comision: 0, ejecutado_at: at, fecha_ny: ymdS(at), crudo: { tipo } });
+    const TS = (b, a, c, n, pf, ps, abierta, cerrada, tipo, id) => ({ ...b, contratos: n, prima_fill: pf, prima_salida: ps, abierta_at: abierta, cerrada_at: cerrada,
+      resultado_usd: Math.round((ps - pf) * 100 * n * 100) / 100, fees: 0, clave_ext: `${b.symbol}|${b.expiracion}|${b.direccion}|${b.strike}#${a}>${c}#${n}`, raw: { abre: a, cierra: c, tipo }, creado_at: '2026-12-07T09:00:00+00:00', id });
+    const sumaU = (ops) => [ops.reduce((s, o) => s + o.contratos, 0), Math.round(ops.reduce((s, o) => s + o.resultado_usd, 0) * 100) / 100];
+    const sumaD = (r) => [r.cerradas.reduce((s, c) => s + c.contratos, 0), Math.round(r.cerradas.reduce((s, c) => s + c.pnl, 0) * 100) / 100];
+    // (a) SPY CALL 600 del vie 4-dic: A ×3 (jue), B ×2 (vie), venta S ×3 a las 15:30 ET (20:30Z), vencen 2 (anotado el lunes 7)
+    const bs6 = { broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 600, expiracion: '2026-12-04' };
+    const libS = [FS(bs6, '1001', 'compra', 3, '2026-12-03T15:00:00+00:00', 1.00, 'Bought To Open'), FS(bs6, '1002', 'compra', 2, '2026-12-04T15:00:00+00:00', 1.20, 'Bought To Open'),
+      FS(bs6, '1003', 'venta', 3, '2026-12-04T20:30:00+00:00', 0.50, 'Sold To Close'), FS(bs6, '1004', 'vencimiento', 2, '2026-12-07T08:00:00+00:00', 0, 'Option Expired')];
+    const sAS = TS(bs6, '1001', '1003', 3, 1.00, 0.50, '2026-12-03T15:00:00+00:00', '2026-12-04T20:30:00+00:00', 'Sold To Close', 41);
+    const sBX = TS(bs6, '1002', '1004', 2, 1.20, 0, '2026-12-04T15:00:00+00:00', '2026-12-07T08:00:00+00:00', 'Option Expired', 42);
+    const dS = K.emparejarFillsFIFO(K.fillsEtradeVigentes(libS), '2026-12-08');
+    igual(dS.cerradas.filter(c => c.ids.abre === '1001' && c.ids.cierra === '1003').map(c => c.contratos), [1], '(v65 rev5) el FIFO del libro forma 1001>1003 con 1 contrato (el vencimiento de las 20:00Z va antes que la venta de las 20:30Z)');
+    igual(sumaD(dS), [5, -390], '(v65 rev5) el Diario: ×5 −$390');
+    igual(K.filasEtradeVigentes([sAS, sBX], libS).map(t => t.clave_ext), [sAS.clave_ext, sBX.clave_ext], '(v65 rev5) la fila 1001>1003 ×3 no cabe en su pareja (1) pero sus fills tienen 3 libres: se queda (antes solo quedaba 1002>1004)');
+    igual(sumaU(K.unirOperaciones([], [sAS, sBX], libS).ops), [5, -390], '(v65 rev5) Cuentas con el libro: ×5 −$390 como el Diario (antes ×2 −$240)');
+    // (b) SPY CALL 700 0DTE del vie 4-dic (EST): A ×5 @1.00 13:00 ET, B ×5 @0.80 14:00 ET, venta C ×4 @1.20 15:30 ET, vencen 6.
+    // E*TRADE escribe A>C ×4, A>V ×1 y B>V ×5; el FIFO del libro da A>V 5, B>V 1 y B>C 4
+    const bs7 = { ...bs6, strike: 700 };
+    const libW = [FS(bs7, '900001', 'compra', 5, '2026-12-04T18:00:00+00:00', 1.00, 'Bought To Open'), FS(bs7, '900002', 'compra', 5, '2026-12-04T19:00:00+00:00', 0.80, 'Bought To Open'),
+      FS(bs7, '900003', 'venta', 4, '2026-12-04T20:30:00+00:00', 1.20, 'Sold To Close'), FS(bs7, '900004', 'vencimiento', 6, '2026-12-05T13:39:30+00:00', 0, 'Option Expired')];
+    const wAC = TS(bs7, '900001', '900003', 4, 1.00, 1.20, '2026-12-04T18:00:00+00:00', '2026-12-04T20:30:00+00:00', 'Sold To Close', 51);
+    const wAV = TS(bs7, '900001', '900004', 1, 1.00, 0, '2026-12-04T18:00:00+00:00', '2026-12-05T13:39:30+00:00', 'Option Expired', 52);
+    const wBV = TS(bs7, '900002', '900004', 5, 0.80, 0, '2026-12-04T19:00:00+00:00', '2026-12-05T13:39:30+00:00', 'Option Expired', 53);
+    igual(sumaD(K.emparejarFillsFIFO(K.fillsEtradeVigentes(libW), '2026-12-10')), [10, -420], '(v65 rev5) el Diario: ×10 −$420');
+    igual(K.filasEtradeVigentes([wAC, wAV, wBV], libW).map(t => t.raw.abre + '>' + t.raw.cierra + ' x' + t.contratos), ['900001>900003 x4', '900001>900004 x1', '900002>900004 x5'],
+      '(v65 rev5) B>V ×5 supera la capacidad 1 que le da el FIFO, pero a B y a V les quedan 5: se queda (antes salía: −$400 escondidos)');
+    igual(sumaU(K.unirOperaciones([], [wAC, wAV, wBV], libW).ops), [10, -420], '(v65 rev5) Cuentas con el libro: ×10 −$420 como el Diario (antes ×5 −$20)');
+    // y una copia de otra sincronización de esa misma pareja, que entró DESPUÉS, sigue sin caber: sus fills ya están gastados
+    const wBV3 = { ...TS(bs7, '900002', '900004', 3, 0.80, 0, '2026-12-04T19:00:00+00:00', '2026-12-05T13:39:30+00:00', 'Option Expired', 54), creado_at: '2026-12-08T09:00:00+00:00' };
+    igual(sumaU(K.unirOperaciones([], [wAC, wAV, wBV, wBV3], libW).ops), [10, -420], '(v65 rev5) una B>V ×3 repetida de otra sincronización no suma: ningún contrato que el libro no tiene');
+    // las repetidas de la rev4 siguen fuera (pasan a la regla (2) con sus fills ya gastados)
+    igual(K.filasEtradeVigentes([c10, c17, c18], libC), [c18], '(v65 rev5) ×18, ×10 y ×17 con 18 contratos: sigue quedando solo la ×18');
+    igual(K.filasEtradeVigentes([d1, d3], libD), [d3], '(v65 rev5) ×1 y ×3 con 3 contratos: sigue quedando solo la ×3');
+    igual(K.filasEtradeVigentes([sAS, sBX], null).length, 2, '(v65 rev5) sin libro nada se descarta');
+
     // ── v65 rev4 (3) · el vencimiento de E*TRADE cuenta el DÍA DE SU EXPIRACIÓN (16:00 ET), no el de la anotación
     const vLun = { ...ba, contratos: 20, prima_fill: 0.58, prima_salida: 0, abierta_at: '2026-10-16T14:00:00+00:00', cerrada_at: '2026-10-19T07:00:00+00:00', resultado_usd: -1160, fees: 0,
       clave_ext: 'AAPL|2026-10-16|CALL|350#1>2#20', raw: { abre: '1', cierra: '2', tipo: 'Option Expired' } };
