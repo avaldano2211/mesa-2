@@ -3333,8 +3333,10 @@ function emparejarEtrade(txs) {
       const feeAp = ap.fee * (ap.qty ? usa / ap.qty : 1), feeCi = fee * (usa / qty);
       salidas.push({
         broker: 'etrade', symbol: p.symbol, osi: contrato, direccion: right, strike, expiracion: exp,
+        // v65 rev4: el vencimiento cierra el DÍA DE SU EXPIRACIÓN (16:00 ET), no el de la anotación de E*TRADE (sábado o
+        // lunes): así lo pone el Diario, y un vencimiento del viernes 30 ya no cae en el mes siguiente en Cuentas
         contratos: usa, prima_fill: ap.precio, prima_salida: precio,
-        abierta_at: ap.ts, cerrada_at: ts,
+        abierta_at: ap.ts, cerrada_at: (esExpira && exp) ? exp + 'T20:00:00.000Z' : ts,
         resultado_usd: Math.round(((precio - ap.precio) * usa * 100 - feeAp - feeCi) * 100) / 100,
         fees: Math.round((feeAp + feeCi) * 100) / 100,
         // Clave por IDs de transacción (las fechas de E*TRADE no traen hora:
@@ -8983,9 +8985,14 @@ function fillsEtradeVigentes(filas) {
   const instante = (f) => Date.parse((f && f.ejecutado_at) || '');
   // la gemela es la MISMA ejecución: contrato, lado, contratos y precio (a 4 decimales: 0.14 es 0.14 venga como venga)
   const clave = (f) => { const p = num(f.precio); return [claveFill(f), f.lado, num(f.contratos), p == null ? '?' : Math.round(p * 10000)].join('#'); };
-  const prov = [], cont = new Map();
+  const prov = [], cont = new Map(), venc = new Map();
   for (const f of filas) {
     if (!f || f.broker !== 'etrade') continue;
+    if (f.lado === 'vencimiento') {
+      const kv = claveFill(f) + '#' + num(f.contratos);
+      if (!venc.has(kv)) venc.set(kv, []);
+      venc.get(kv).push(f);
+    }
     const tipo = tipoFillEtrade(f);
     if (!tipo || !Number.isFinite(instante(f))) continue;
     if (ET_TIPO_PROVISIONAL.test(tipo)) { prov.push(f); continue; }
@@ -8993,26 +9000,59 @@ function fillsEtradeVigentes(filas) {
     if (!cont.has(k)) cont.set(k, []);
     cont.get(k).push(f);
   }
-  if (!prov.length || !cont.size) return filas;
-  const porHora = (a, b) => instante(a) - instante(b);
-  cont.forEach(l => l.sort(porHora));
-  const usadas = new Set(), sobra = new Set();
-  // por orden de hora, cada provisional se lleva la contabilizada libre MÁS TEMPRANA dentro de la ventana: E*TRADE corre
-  // todas ~2 min, así que dos operaciones iguales a un minuto casan cada una con la suya (la más cercana se cruzaría)
-  for (const p of prov.slice().sort(porHora)) {
-    const tp = instante(p);
-    const g = (cont.get(clave(p)) || []).find(c => { const d = tp - instante(c); return !usadas.has(c) && d >= -ET_PROV_ANTES_MS && d <= ET_PROV_DESPUES_MS; });
-    if (g) { usadas.add(g); sobra.add(p); }
+  const sobra = new Set();
+  // v65 rev4 · El VENCIMIENTO también cambia de ID, y con el MISMO crudo.tipo («Option Expired») en las dos versiones, así
+  // que ET_TIPO_PROVISIONAL no lo ve: E*TRADE lo anota provisional (AAPL CALL 350 del 16-oct: 26290200123229, el sábado
+  // 17) y luego contabilizado (26292501136151, el lunes 19), los dos ×80. El libro (no-delete) guardaba los dos: el Diario
+  // avisaba de «2 ventas sin su compra» que no existían y Cuentas contaba el vencimiento dos veces (AAPL ×180 −$8,958.59 en
+  // vez de ×100 −$4,269.57; MSFT 547.5 del 12-oct ×4 en vez de ×2). Un contrato vence UNA vez: de los vencimientos de
+  // E*TRADE con el mismo contrato y los mismos contratos se queda UNO, el que entró al libro el ÚLTIMO (creado_at; empate:
+  // el id más alto), que es la versión contabilizada. Con eso el ID descartado sale del libro vigente y filasEtradeVigentes
+  // retira las filas de broker_trades que lo cierran (la regla del mismo lote, raw.abre).
+  const masNueva = (a, b) => String(b.creado_at || '').localeCompare(String(a.creado_at || '')) || (Number(b.id) || 0) - (Number(a.id) || 0);
+  venc.forEach(l => { if (l.length > 1) l.slice().sort(masNueva).slice(1).forEach(f => sobra.add(f)); });
+  if (prov.length && cont.size) {
+    const porHora = (a, b) => instante(a) - instante(b);
+    cont.forEach(l => l.sort(porHora));
+    const usadas = new Set();
+    // por orden de hora, cada provisional se lleva la contabilizada libre MÁS TEMPRANA dentro de la ventana: E*TRADE corre
+    // todas ~2 min, así que dos operaciones iguales a un minuto casan cada una con la suya (la más cercana se cruzaría)
+    for (const p of prov.slice().sort(porHora)) {
+      const tp = instante(p);
+      const g = (cont.get(clave(p)) || []).find(c => { const d = tp - instante(c); return !usadas.has(c) && d >= -ET_PROV_ANTES_MS && d <= ET_PROV_DESPUES_MS; });
+      if (g) { usadas.add(g); sobra.add(p); }
+    }
   }
   return sobra.size ? filas.filter(f => !sobra.has(f)) : filas;
 }
+// v65 rev4 · y cada VENCIMIENTO de E*TRADE en el DÍA DE SU EXPIRACIÓN (expiracion + T20:00Z, la regla de emparejarFillsFIFO
+// y del vencimiento de Schwab), no en el de la anotación: E*TRADE anota el «Option Expired» el sábado o el lunes, y Cuentas
+// lo ponía ahí (AAPL CALL 350 del viernes 16-oct, el lunes 19: otra semana; uno del viernes 30 caía en el mes siguiente)
+// mientras el Diario lo pone en la expiración. Se aplica SIEMPRE, con libro o sin él (no depende del libro).
+// v65 rev4 · y un TOPE por pareja: emparejarEtrade mete los contratos en la clave_ext, así que una sincronización que empareja
+// los mismos fills de otra manera crea filas nuevas y el upsert (ignoreDuplicates) nunca retira las viejas: 26282501224674>
+// …677 está ×18, ×10 y ×17 con un cierre de 18 contratos, y con todos sus IDs en el libro ninguna se descartaba (AAPL CALL
+// 335 del 9-oct: ×67 −$995.84 en Cuentas, ×30 −$272.83 en el Diario). Ahora, entre las filas con los dos IDs en el libro
+// vigente: (1) por pareja abre>cierra, las filas se quedan hasta la capacidad que el FIFO del libro da a ESA pareja, con el
+// subconjunto que la llena (exacta si se puede; a igualdad, las filas más viejas: creado_at y luego id); (2) una pareja que
+// el FIFO no forma (E*TRADE emparejó distinto) solo se queda si a sus dos fills les quedan contratos sin contar. Ninguna
+// fila cuenta un contrato que el libro no tiene; la que ya no cabe, sobra. Sin libro, nada se tira (como siempre).
 function filasEtradeVigentes(trades, fills) {
   if (!Array.isArray(trades)) return trades;
+  const expEtrade = (t) => {
+    if (!t || t.broker !== 'etrade' || !t.raw || typeof t.raw !== 'object' || !/expir/i.test(String(t.raw.tipo || ''))) return null;
+    const exp = String(t.expiracion || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(exp) ? exp + 'T20:00:00.000Z' : null;
+  };
+  if (trades.some(t => { const e = expEtrade(t); return e != null && t.cerrada_at !== e; })) {
+    trades = trades.map(t => { const e = expEtrade(t); return (e != null && t.cerrada_at !== e) ? { ...t, cerrada_at: e } : t; });
+  }
   const ids = new Set();
   // v65 rev2: los IDs del libro VIGENTE. Con la provisional y la contabilizada de una operación en el libro, los IDs de las
   // dos filas de broker_trades estaban «en el libro» y las dos se quedaban (Cuentas, Disciplina y los cupos, ×2)
-  for (const f of (fillsEtradeVigentes(Array.isArray(fills) ? fills : []) || [])) {
-    if (f && f.broker === 'etrade' && f.clave_ext != null && f.clave_ext !== '') ids.add(String(f.clave_ext));
+  const vig = (fillsEtradeVigentes(Array.isArray(fills) ? fills : []) || []).filter(f => f && f.broker === 'etrade');
+  for (const f of vig) {
+    if (f.clave_ext != null && f.clave_ext !== '') ids.add(String(f.clave_ext));
   }
   if (!ids.size) return trades;
   const raw = (t) => (t && t.raw && typeof t.raw === 'object') ? t.raw : {};
@@ -9027,7 +9067,47 @@ function filasEtradeVigentes(trades, fills) {
     && num(o.prima_fill) === num(t.prima_fill) && num(o.prima_salida) === num(t.prima_salida)
     && ((cerca(o.abierta_at, t.abierta_at) && cerca(o.cerrada_at, t.cerrada_at)) || (raw(t).abre != null && String(raw(o).abre) === String(raw(t).abre)));
   const sobra = (t) => !!t && t.broker === 'etrade' && !enLibro(t) && !!claveContrato(t) && buenas.some(o => o !== t && gemela(t, o));
-  return trades.some(sobra) ? trades.filter(t => !sobra(t)) : trades;
+  const fuera = new Set(trades.filter(sobra));
+  // el tope por pareja (v65 rev4, arriba). «0000-00-00» como hoy: ningún lote se da por vencido sin la fila del bróker (un
+  // vencimiento deducido no tiene ID de E*TRADE con el que casar); solo cuentan las parejas REALES del libro.
+  const r4 = (n) => Math.round(n * 10000) / 10000;
+  const pareja = (t) => String(raw(t).abre) + '>' + String(raw(t).cierra);
+  const capPar = new Map(), capFill = new Map();
+  for (const c of emparejarFillsFIFO(vig, '0000-00-00').cerradas) {
+    if (c.derivado || !c.ids) continue;
+    const k = String(c.ids.abre) + '>' + String(c.ids.cierra);
+    capPar.set(k, r4((capPar.get(k) || 0) + (num(c.contratos) || 0)));
+  }
+  for (const f of vig) { const k = String(f.clave_ext); capFill.set(k, r4((capFill.get(k) || 0) + (num(f.contratos) || 0))); }
+  const porAlta = (a, b) => String(a.creado_at || '').localeCompare(String(b.creado_at || '')) || (Number(a.id) || 0) - (Number(b.id) || 0);
+  const grupos = new Map(), sinPar = [];
+  for (const t of trades) {
+    if (!t || t.broker !== 'etrade' || fuera.has(t) || !enLibro(t) || !(num(t.contratos) > 0)) continue;
+    const k = pareja(t);
+    if (!capPar.has(k)) { sinPar.push(t); continue; }
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(t);
+  }
+  const gastar = (t) => { const n = num(t.contratos); [String(raw(t).abre), String(raw(t).cierra)].forEach(id => capFill.set(id, r4(capFill.get(id) - n))); };
+  // (1) por pareja: el subconjunto que más se acerca a la capacidad sin pasarse (alcanzables: suma → filas, la primera
+  // forma de llegar a cada suma recorriendo de la más vieja a la más nueva)
+  grupos.forEach((filas, k) => {
+    const tope = capPar.get(k);
+    filas.sort(porAlta);
+    const alc = new Map([[0, []]]);
+    filas.forEach((t, i) => {
+      for (const [s, sel] of [...alc]) { const s2 = r4(s + num(t.contratos)); if (s2 <= tope + 1e-9 && !alc.has(s2)) alc.set(s2, sel.concat(i)); }
+    });
+    const quedan = new Set(alc.get(Math.max(...alc.keys())));
+    filas.forEach((t, i) => { if (quedan.has(i)) gastar(t); else fuera.add(t); });
+  });
+  // (2) la pareja que el FIFO no forma: solo con contratos libres en sus dos fills
+  for (const t of sinPar.sort(porAlta)) {
+    const n = num(t.contratos);
+    if ((capFill.get(String(raw(t).abre)) || 0) + 1e-9 >= n && (capFill.get(String(raw(t).cierra)) || 0) + 1e-9 >= n) gastar(t);
+    else fuera.add(t);
+  }
+  return fuera.size ? trades.filter(t => !fuera.has(t)) : trades;
 }
 // Une las operaciones manuales (posiciones) con los round-trips reales de los
 // brókeres (broker_trades) en UN conjunto sin duplicados, para la Disciplina.
@@ -9043,8 +9123,10 @@ function filasEtradeVigentes(trades, fills) {
 //    (contratos y resultado sumados), así un tramo no cuenta como otra operación.
 //  · v62 rev3: con el libro de fills (`fills`, opcional: Cuentas y el Diario lo tienen) las filas de E*TRADE
 //    SUSTITUIDAS no se suman (filasEtradeVigentes). Sin él, todo como siempre.
+//  · v65 rev4: SIEMPRE pasa por filasEtradeVigentes (también sin libro): el vencimiento de E*TRADE va al día de su
+//    expiración aunque la lectura del libro haya fallado (sin libro no se descarta ninguna fila).
 function unirOperaciones(posic, trades, fills) {
-  if (fills) trades = filasEtradeVigentes(trades, fills);
+  trades = filasEtradeVigentes(trades, fills || null);
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const r2 = (n) => Math.round(n * 100) / 100;
   const tramos = {}, manualesAgrupadas = [];

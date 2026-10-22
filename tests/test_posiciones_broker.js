@@ -407,7 +407,8 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   assert(/sb\.from\('posiciones'\)[\s\S]{0,400}\.insert\(/.test(BLOQUE), 'el insert va a posiciones (la tabla PERSONAL con RLS), a ninguna otra');
 
   // ════════════════ 11. A1 · Cuentas y Disciplina cuentan LO MISMO ════════════════
-  const U = construir(['unirOperaciones', 'resumenPeriodo', 'cerradasDesde'], { ymdNY });
+  // v65 rev4: unirOperaciones pasa SIEMPRE por filasEtradeVigentes (sin libro solo pone el vencimiento de E*TRADE en su día)
+  const U = construir(['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes', 'resumenPeriodo', 'cerradasDesde'], { ymdNY });
   const POS_A1 = [
     // la MISMA operación registrada a mano y traída del bróker
     { id: 1, user_id: 'u', symbol: 'SPY', direccion: 'CALL', strike: 769, expiracion: '2026-09-19', contratos: 2,
@@ -504,6 +505,11 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   igual([mitad.length, mitad.huerfanas.length, mitad.huerfanas[0].contratos], [1, 1, 2], 'A3: si solo hay compra para parte de la venta, el resto queda anotado');
   const expET = E3.emparejarEtrade([tx(1, 'Bought To Open', 2, 1.50, '2026-09-17'), tx(2, 'Option Expired', 2, 0, '2026-09-19')]);
   cerca(expET[0].resultado_usd, -300, 'A3/A2: en E*TRADE el vencimiento ya entraba como venta a 0 (−$300) y sigue igual');
+  // v65 rev4: E*TRADE anota el «Option Expired» el sábado o el lunes; la fila nueva cierra el DÍA DE LA EXPIRACIÓN
+  // (16:00 ET, como el Diario), así un vencimiento del viernes no cae en la semana (o el mes) siguiente
+  const expLun = E3.emparejarEtrade([tx(1, 'Bought To Open', 2, 1.50, '2026-09-17'), tx(2, 'Option Expired', 2, 0, '2026-09-21')]);
+  igual([expLun[0].cerrada_at, expLun[0].clave_ext], ['2026-09-19T20:00:00.000Z', 'SPY|2026-09-19|CALL|650#1>2#2'], 'v65 rev4: el vencimiento anotado el lunes 21 cierra el viernes 19 a las 16:00 ET (la clave_ext no cambia)');
+  igual(completo[0].cerrada_at, new Date(Date.parse('2026-09-18')).toISOString(), 'v65 rev4: una venta normal conserva la fecha de E*TRADE');
 
   // ════════════════ 14. mercado abierto/cerrado (el ritmo de B8) ════════════════
   const MA = construir(['mercadoAbiertoNY'], { haceCuanto: (iso) => ({ txt: '', min: (Date.now() - Date.parse(iso)) / 60000 }) });
