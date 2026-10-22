@@ -34,7 +34,7 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   // v65 rev2: el libro VIGENTE de E*TRADE (la provisional con gemela contabilizada no cuenta)
   'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill'];
 const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'BROKERS_CON_COMISION', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
-  'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_GEMELA_MS', 'ET_TIPO_PROVISIONAL'];
+  'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL'];
 function cuentas(op) {
   op = op || {};
   return construir(NOMBRES, { ymdNY, $: op.$ || (() => null), anchoVista: op.anchoVista || (() => 1400) },
@@ -773,7 +773,9 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     igual([K.filasEtradeVigentes(arr, []) === arr, K.filasEtradeVigentes(arr, null) === arr, K.filasEtradeVigentes(arr, [{ ...libro[0], broker: 'tasty' }]) === arr], [true, true, true], 'sin libro de E*TRADE (vacío, caído o de otro bróker): las filas tal cual');
     igual(K.filasEtradeVigentes([vieja, buena], libro.slice(0, 1)).length, 2, 'si la gemela tampoco está ENTERA en el libro, nada se tira (el libro no puede desmentirla)');
     igual(K.filasEtradeVigentes([vieja, { ...buena, prima_salida: 0.12 }], libro).length, 2, 'con otra prima no es gemela: se queda');
-    igual(K.filasEtradeVigentes([{ ...vieja, abierta_at: '2026-09-17T18:20:20+00:00' }, buena], libro).length, 2, 'con la apertura a más de 3 min (3:06) no es gemela: se queda');
+    // v65 rev3: la ventana es ±15 min (ET_PROV_DESPUES_MS; la provisional llega hasta 248 s después, medido en el libro real)
+    igual(K.filasEtradeVigentes([{ ...vieja, abierta_at: '2026-09-17T18:21:22+00:00' }, buena], libro), [buena], '(v65 rev3) con la apertura a +4:08 (lo más lejos medido en el libro real) sigue siendo gemela: se descarta');
+    igual(K.filasEtradeVigentes([{ ...vieja, abierta_at: '2026-09-17T18:32:20+00:00' }, buena], libro).length, 2, '(v65 rev3) con la apertura a más de 15 min (15:06) no es gemela: se queda');
     igual(K.filasEtradeVigentes([{ ...vieja, raw: { abre: '26260501293386', cierra: '26260501293387' }, clave_ext: 'otra' }, buena], libro).length, 2, 'dos filas con los IDs en el libro (dos viajes de verdad iguales): las dos se quedan');
     igual(K.filasEtradeVigentes([vieja, buena, { ...vieja, broker: 'tasty' }], libro).map(t => t.broker), ['etrade', 'tasty'], 'solo E*TRADE: las filas de otros brókeres no se tocan');
     // un vencimiento anotado DOS veces (META CALL 690 del 16 sep: el mismo lote, otro ID de cierre a 1 h 31 min): cuenta una
@@ -784,7 +786,8 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     igual(K.unirOperaciones([], [vb, vv], libM).ops.map(o => [o.contratos, o.resultado_usd]), [[5, -857.56]], '(rev3) el vencimiento anotado dos veces (mismo lote de apertura, cierre fuera del libro): ×5 −$857.56, no ×10');
     // v65 rev2 · el MISMO cambio de ID, ahora DENTRO del libro: la pasada de cada 2 min escribe la provisional («Bought»/
     // «Sold», los IDs reales del 17-sep) y días después entra la contabilizada con otros IDs; el libro (no-delete) tiene
-    // las cuatro. Se descarta AL LEER la provisional con gemela contabilizada (mismo contrato, lado, contratos y precio, ±3 min).
+    // las cuatro. Se descarta AL LEER la provisional con gemela contabilizada (mismo contrato, lado, contratos y precio, de 1 min
+    // antes a 15 min después: v65 rev3).
     const FX = (id, lado, at, precio, fee, tipo) => ({ ...FL(id, lado, at), precio, comision: fee, crudo: { tipo, quantity: lado === 'compra' ? 1 : -1, price: precio, fee } });
     const pC = FX('26260201484550', 'compra', '2026-09-17T18:19:16+00:00', 0.14, 1.0, 'Bought'), pV = FX('26260201541834', 'venta', '2026-09-17T18:24:50+00:00', 0.11, 1.0, 'Sold');
     const cC = FX('26260501293386', 'compra', '2026-09-17T18:17:14+00:00', 0.14, 1.03, 'Bought To Open'), cV = FX('26260501293387', 'venta', '2026-09-17T18:22:47+00:00', 0.11, 1.03, 'Sold To Close');
@@ -796,7 +799,13 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const sinEt = [{ ...pC, broker: 'tasty' }, { ...cC, broker: 'tasty' }];
     assert(K.fillsEtradeVigentes(sinEt) === sinEt, '(v65 rev2) otros brókeres no se tocan aunque se parezcan');
     igual(K.fillsEtradeVigentes([cC, { ...pC, precio: 0.15 }]).length, 2, '(v65 rev2) con otro precio no es gemela: las dos se quedan');
-    igual(K.fillsEtradeVigentes([cC, { ...pC, ejecutado_at: '2026-09-17T18:20:20+00:00' }]).length, 2, '(v65 rev2) a más de 3 min (3:06) no es gemela');
+    // v65 rev3 · la ventana MEDIDA en el libro real (80 provisionales, 80 gemelas): la provisional llega SIEMPRE después, de
+    // 122 a 248 s. Con ±3 min la compra de TSLA 367.5 P del 14-oct (+200 s) quedaba suelta y el Diario la daba por vencida
+    igual(K.fillsEtradeVigentes([cC, { ...pC, ejecutado_at: '2026-09-17T18:20:34+00:00' }]).map(f => f.clave_ext), ['26260501293386'], '(v65 rev3) la provisional a +3:20 (la TSLA del 14-oct) casa con su gemela');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, ejecutado_at: '2026-09-17T18:21:22+00:00' }]).map(f => f.clave_ext), ['26260501293386'], '(v65 rev3) a +4:08 (la AAPL del 16-oct, lo más lejos medido) también');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, ejecutado_at: '2026-09-17T18:16:30+00:00' }]).length, 1, '(v65 rev3) hasta 1 min ANTES de la contabilizada todavía casa (holgura)');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, ejecutado_at: '2026-09-17T18:15:30+00:00' }]).length, 2, '(v65 rev3) a más de 1 min ANTES no es gemela (la provisional nunca va antes)');
+    igual(K.fillsEtradeVigentes([cC, { ...pC, ejecutado_at: '2026-09-17T18:32:20+00:00' }]).length, 2, '(v65 rev3) a más de 15 min después (15:06) no es gemela');
     igual(K.fillsEtradeVigentes([cC, { ...pC, contratos: 2 }]).length, 2, '(v65 rev2) con otros contratos no es gemela');
     igual(K.fillsEtradeVigentes([cC, { ...pC, strike: 765 }]).length, 2, '(v65 rev2) otro contrato (strike): no es gemela');
     igual(K.fillsEtradeVigentes([pV, cV]).map(f => f.clave_ext), ['26260501293387'], '(v65 rev2) la venta provisional («Sold», +2:03) con su gemela «Sold To Close»: una');

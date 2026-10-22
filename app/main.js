@@ -8950,10 +8950,9 @@ function nombreMesNY() {
 // sincronización (upsert por clave_ext, que nunca borra) guardó las dos: Cuentas sumaba el viaje dos veces (SPY CALL 764
 // del 17 sep: ×2 y −$8.03 con 1 contrato y −$4.03 en el libro). Se descarta una fila de E*TRADE cuyos IDs (raw.abre y
 // raw.cierra) no están los dos en el libro de fills cuando otra fila de E*TRADE que SÍ está en el libro es su gemela: el
-// mismo contrato, los mismos contratos, la misma prima de entrada y de salida, y la apertura y el cierre a ±3 min (o el
+// mismo contrato, los mismos contratos, la misma prima de entrada y de salida, y la apertura y el cierre a ±15 min (o el
 // mismo lote de apertura, raw.abre: un vencimiento anotado dos veces con otro ID de cierre). Sin libro (lectura caída o
 // vacía) o sin gemela en él la fila se queda: nunca se tira un viaje que el libro no puede desmentir. PURA.
-const ET_GEMELA_MS = 3 * 60 * 1000;
 // v65 rev2 · Los fills de E*TRADE que SIGUEN vigentes en el LIBRO (el mismo cambio de ID, ahora en `fills`). Durante el
 // día E*TRADE enseña la operación con IDs PROVISIONALES (crudo.tipo «Bought»/«Sold»: 26260201484550/…541834, fee 1.00) y
 // días después la CONTABILIZA con otros («Bought To Open»/«Sold To Close»: 26260501293386/7, ~2 min antes, fee 1.03); la
@@ -8961,10 +8960,17 @@ const ET_GEMELA_MS = 3 * 60 * 1000;
 // siempre ya contabilizada; desde la v65 la pasada de cada 2 min escribe SIEMPRE la provisional, y la contabilizada llega
 // luego con otra clave_ext: el upsert la inserta y, como el libro no se borra nunca (no-delete), se quedaban las dos y el
 // Diario contaba la operación dos veces (×2 contratos y el P&L doble) para siempre. No se borra nada: se descarta AL LEER la
-// provisional que tiene su gemela contabilizada (el mismo contrato, lado, contratos y precio, a ±ET_GEMELA_MS). El
+// provisional que tiene su gemela contabilizada (el mismo contrato, lado, contratos y precio, en la ventana de abajo). El
 // emparejado es 1:1 y por orden de hora: dos operaciones iguales de verdad necesitan dos gemelas, y mientras E*TRADE no
 // contabiliza, la provisional es la única verdad que hay y se queda. Un fill sin crudo.tipo (anterior al crudo) no se toca.
 // Devuelve el MISMO arreglo si no sobra nada (nadie redibuja por nada). PURA.
+// v65 rev3 · La ventana de la gemela, MEDIDA en el libro real (2026-10-22: 80 provisionales, las 80 con gemela): la
+// provisional llega SIEMPRE después de la contabilizada, de 122 a 248 s (mediana 126). Con ±3 min dos se quedaban sin
+// gemela: la compra de TSLA 367.5 P del 14-oct (200 s) quedó suelta y el Diario la dio por vencida (−$1,725), y una de AAPL
+// del 16-oct (248 s). Ahora: de 1 min antes a 15 min después. Seguro con el 1:1 por orden de hora: dos operaciones
+// iguales de verdad se llevan cada una su contabilizada, y una provisional sin la suya (aún sin contabilizar) se queda.
+const ET_PROV_ANTES_MS = 60 * 1000;
+const ET_PROV_DESPUES_MS = 15 * 60 * 1000;
 const ET_TIPO_PROVISIONAL = /^(bought|sold)$/i;
 function tipoFillEtrade(f) {
   let c = f && f.crudo;
@@ -8995,7 +9001,7 @@ function fillsEtradeVigentes(filas) {
   // todas ~2 min, así que dos operaciones iguales a un minuto casan cada una con la suya (la más cercana se cruzaría)
   for (const p of prov.slice().sort(porHora)) {
     const tp = instante(p);
-    const g = (cont.get(clave(p)) || []).find(c => !usadas.has(c) && Math.abs(instante(c) - tp) <= ET_GEMELA_MS);
+    const g = (cont.get(clave(p)) || []).find(c => { const d = tp - instante(c); return !usadas.has(c) && d >= -ET_PROV_ANTES_MS && d <= ET_PROV_DESPUES_MS; });
     if (g) { usadas.add(g); sobra.add(p); }
   }
   return sobra.size ? filas.filter(f => !sobra.has(f)) : filas;
@@ -9012,7 +9018,9 @@ function filasEtradeVigentes(trades, fills) {
   const raw = (t) => (t && t.raw && typeof t.raw === 'object') ? t.raw : {};
   const enLibro = (t) => { const r = raw(t); return r.abre != null && r.cierra != null && ids.has(String(r.abre)) && ids.has(String(r.cierra)); };
   const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
-  const cerca = (a, b) => { const x = Date.parse(a || ''), y = Date.parse(b || ''); return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= ET_GEMELA_MS; };
+  // v65 rev3: la apertura y el cierre de la gemela a ±ET_PROV_DESPUES_MS (antes ±3 min): la provisional llega hasta 248 s
+  // después de la contabilizada (medido en el libro real), y con ±3 min la fila sustituida se quedaba en Cuentas
+  const cerca = (a, b) => { const x = Date.parse(a || ''), y = Date.parse(b || ''); return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= ET_PROV_DESPUES_MS; };
   const buenas = trades.filter(t => t && t.broker === 'etrade' && enLibro(t));
   if (!buenas.length) return trades;
   const gemela = (t, o) => claveContrato(o) === claveContrato(t) && num(o.contratos) === num(t.contratos)

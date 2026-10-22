@@ -90,7 +90,7 @@ function armarLibro(canon, op) {
   const { sb, st } = baseFalsa(canon);
   const reg = { repintar: 0 };
   const M = construir(LIBRO_FN, { sb, sesionActiva: op.sesion === undefined ? { user: { id: 'u' } } : op.sesion, libroRepintarPronto: () => { reg.repintar++; } },
-    { consts: ['_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_GEMELA_MS', 'ET_TIPO_PROVISIONAL'] });
+    { consts: ['_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL'] });
   return { M, st, reg };
 }
 
