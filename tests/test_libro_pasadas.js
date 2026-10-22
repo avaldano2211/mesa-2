@@ -67,7 +67,7 @@ const FN_MUNDO = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincroniz
   'etMarcarMuerto', 'etError', 'etCuentaKey', 'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills',
   'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
   'schwabSincronizar', 'schwabSincronizarImpl', 'schwabSincronizarLigera', 'schwabOrdenesHistoricas', 'swMensajeError', 'fillsDeOrdenesSchwab',
-  'emparejarFillsSchwab', 'vencidasASobrar', 'fillsDeOrdenesSchwabLibro', 'desOsi',
+  'emparejarFillsSchwab', 'vencidasASobrar', 'fillsDeOrdenesSchwabLibro', 'desOsi', 'instanteVencimiento',
   'syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'syncFondoResultado', 'sincronizarLibroFondo'];
 const CONST_MUNDO = ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SW_DIAS_HIST', 'SW_TRAMO_DIAS',
   'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_DIAS_LIGERA', 'SW_K', 'SYNC_EXPIRADO_MS', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_TRAS_CIERRE_MS', '_syncFondo',
@@ -538,7 +538,7 @@ function armarMundo(op) {
       'ttlSyncLibro', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro', 'resumenSyncGuardado', 'etradeTransacciones', 'etRead', 'etRenovar', 'etMarcarMuerto', 'etError', 'etCuentaKey',
       'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
       'leerFillsTodos', 'libroInvalidar', 'libroParaUnir', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro', 'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade',
-      'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'].filter(existe);
+      'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento'].filter(existe);
     const M = construir(FN, { Date: FakeDate, ymdNY, hoyNY, localStorage: ls, URL, sb, etProxy, sesionActiva: { user: { id: 'u' } },
       haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), etCreds: () => ({ token: 't', token_secret: 's' }),
       document: { visibilityState: 'visible' }, libroRepintarPronto: () => {} },
@@ -595,7 +595,7 @@ function armarMundo(op) {
     const FN = ['syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'ultimaPasadaSync', 'syncFondoResultado', 'ritmoSyncLibro', 'sesionNYLibro', 'sesionNY',
       'schwabSincronizar', 'schwabSincronizarImpl', 'schwabSincronizarLigera', 'pasadaSyncAhora', 'appOcultaSync', 'tipoPasadaSync', 'syncTtlAhora', 'ttlSyncLibro',
       'resumenSyncGuardado', 'schwabOrdenesHistoricas', 'swMensajeError', 'fillsDeOrdenesSchwab', 'emparejarFillsSchwab', 'vencidasASobrar', 'fillsDeOrdenesSchwabLibro',
-      'desOsi', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'swCuenta', 'elegirCuentaSchwab'].filter(existe);
+      'desOsi', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'swCuenta', 'elegirCuentaSchwab', 'instanteVencimiento'].filter(existe);
     const M = construir(FN, { Date: FakeDate, document, $, esc: C.esc, localStorage: ls, sb: sbFalso(() => ({ data: [], error: null })), swRead, swLlamar, ymdNY,
       hoyNY: () => ymdNY(new Date(W.T).toISOString()),
       haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), sesionActiva: { user: { id: 'u' } },

@@ -186,7 +186,7 @@ function sbGrabador(respuestas) {
   // ════════════════ 2. EL CONTABLE: emparejarFillsFIFO ════════════════
   const claveContrato = construir(['claveContrato']).claveContrato;
   // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
-  const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
+  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
     'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
     { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
@@ -250,7 +250,60 @@ function sbGrabador(respuestas) {
   igual(D.metricasDiario(RA.cerradas, dA, RA.viajes).aciertos, 1, 'CASO A métricas: 1 acierto de 3');
   // v53: un vencimiento REPORTADO el sábado (E*TRADE lo anota al día siguiente) cae el día de la EXPIRACIÓN, como el deducido
   const RS = D.emparejarFillsFIFO([F('etrade', 's1', 'AAPL', 'CALL', 200, '2026-09-18', 'compra', 2, 1.00, '2026-09-15T04:00:00.000Z'), F('etrade', 's2', 'AAPL', 'CALL', 200, '2026-09-18', 'vencimiento', 2, 0, '2026-09-19T04:00:00.000Z')], HOY);
-  igual([RS.cerradas[0].fecha_ny, RS.cerradas[0].salida_at, RS.viajes[0].fecha_ny, RS.cerradas[0].derivado], ['2026-09-18', '2026-09-18T20:00:00.000Z', '2026-09-18', false], 'vencimiento reportado un sábado → el día es el viernes de la expiración (un vencimiento del 30 no se va al mes siguiente)');
+  igual([RS.cerradas[0].fecha_ny, RS.cerradas[0].salida_at, RS.viajes[0].fecha_ny, RS.cerradas[0].derivado], ['2026-09-18', '2026-09-18T20:30:00.000Z', '2026-09-18', false], 'vencimiento reportado un sábado → el día es el viernes de la expiración (un vencimiento del 30 no se va al mes siguiente), a las 16:30 ET (v65 rev6: 20:30Z en verano)');
+  // ── v65 rev6 · el INSTANTE de un vencimiento: instanteVencimiento(exp) = las 16:30 de Nueva York de ESE día con su horario
+  // (EDT → 20:30Z, EST → 21:30Z). Con la regla de antes (exp + T20:00Z = 15:00 ET en invierno, 16:00 ET en verano) el FIFO
+  // ponía el vencimiento ANTES de una venta 0DTE de la última hora (SPY/QQQ cotizan hasta las 16:15 ET).
+  {
+    const IV = construir(['instanteVencimiento']).instanteVencimiento;
+    const horaNYde = (iso) => new Intl.DateTimeFormat('en-GB', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(iso));
+    const BORDES = ['2026-10-30', '2026-11-06', '2027-03-12', '2027-03-19'];
+    igual(BORDES.map(IV), ['2026-10-30T20:30:00.000Z', '2026-11-06T21:30:00.000Z', '2027-03-12T21:30:00.000Z', '2027-03-19T20:30:00.000Z'],
+      '(v65 rev6) bordes del cambio de hora: vie 30-oct EDT 20:30Z, vie 6-nov EST 21:30Z, vie 12-mar-2027 EST 21:30Z, vie 19-mar-2027 EDT 20:30Z');
+    igual(['2026-11-01', '2027-03-14', '2026-12-31', '2028-02-29'].map(IV), ['2026-11-01T21:30:00.000Z', '2027-03-14T20:30:00.000Z', '2026-12-31T21:30:00.000Z', '2028-02-29T21:30:00.000Z'],
+      '(v65 rev6) el mismo día del cambio (dom 1-nov EST, dom 14-mar-2027 EDT: el cambio es a las 2:00, mucho antes de las 16:30), fin de año y 29-feb bisiesto');
+    igual(BORDES.concat(['2026-11-01', '2027-03-14']).map(e => [ymdNY(IV(e)), horaNYde(IV(e))]), BORDES.concat(['2026-11-01', '2027-03-14']).map(e => [e, '16:30']),
+      '(v65 rev6) la fecha NY del vencimiento sigue siendo exp y la hora NY es 16:30 en los dos horarios');
+    igual(['2026-02-30', '2026-13-01', '2026-00-10', '2026-1-05', '2026-10-30T00:00:00Z', '30/10/2026', '', null, undefined, 20261030, {}].map(IV), Array(11).fill(null),
+      '(v65 rev6) exp inválida (fecha imposible, sin ceros, con hora, otro formato, vacía, no texto) → null');
+    assert(IV('2026-11-06') === IV('2026-11-06') && IV('2026-10-30') !== IV('2026-11-06'), '(v65 rev6) el memo por fecha devuelve lo mismo y no confunde fechas');
+    assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/.test(IV('2026-11-06')), '(v65 rev6) el formato de siempre (…T..:..:00.000Z)');
+    // sin depender de la zona del equipo: el mismo resultado con el reloj del proceso en Tokio, Los Ángeles y UTC
+    const tz0 = process.env.TZ;
+    const enZona = (tz) => { process.env.TZ = tz; const iv = construir(['instanteVencimiento']).instanteVencimiento; return { off: new Date(Date.UTC(2026, 10, 6, 12)).getTimezoneOffset(), r: BORDES.map(iv) }; };
+    const zonas = ['Asia/Tokyo', 'America/Los_Angeles', 'UTC'].map(enZona);
+    if (tz0 === undefined) delete process.env.TZ; else process.env.TZ = tz0;
+    igual(zonas.map(z => z.off), [-540, 480, 0], '(v65 rev6) el proceso de verdad cambió de zona (Tokio −540, Los Ángeles +480, UTC 0)');
+    assert(zonas.every(z => JSON.stringify(z.r) === JSON.stringify(BORDES.map(IV))), '(v65 rev6) y el instante es el mismo en las tres zonas (Intl con America/New_York)', JSON.stringify(zonas));
+    // las cinco reglas de antes ya no existen: un solo sitio (instanteVencimiento) fija el instante de un vencimiento
+    assert(!/T20:00:00\.000Z/.test(extraer('emparejarFillsFIFO') + extraer('emparejarEtrade') + extraer('filasEtradeVigentes') + extraer('emparejarFillsSchwab'))
+      && ['emparejarFillsFIFO', 'emparejarEtrade', 'filasEtradeVigentes', 'emparejarFillsSchwab'].every(n => /instanteVencimiento\(/.test(extraer(n))),
+      '(v65 rev6) emparejarFillsFIFO, emparejarEtrade, filasEtradeVigentes y emparejarFillsSchwab usan instanteVencimiento (ninguno escribe T20:00Z)');
+    // 0DTE en INVIERNO (vie 6-nov, EST): compra 2 a las 14:00 ET, compra 3 a las 15:10, venta 2 a las 15:30, vencen 3 (anotado el sábado).
+    // Con las 20:00Z (15:00 ET) el vencimiento iba antes que la compra de las 15:10: 1 contrato «vencido» sin compra (huérfano) y la
+    // compra de las 15:10 deducida como pérdida total. Ahora la venta empareja la compra de las 14:00 y el vencimiento la de las 15:10.
+    const FW = [F('etrade', 'w1', 'SPY', 'CALL', 680, '2026-11-06', 'compra', 2, 1.00, '2026-11-06T19:00:00.000Z', 0.65), F('etrade', 'w2', 'SPY', 'CALL', 680, '2026-11-06', 'compra', 3, 1.50, '2026-11-06T20:10:00.000Z', 0.65),
+      F('etrade', 'w3', 'SPY', 'CALL', 680, '2026-11-06', 'venta', 2, 0.80, '2026-11-06T20:30:00.000Z', 0.65), F('etrade', 'w4', 'SPY', 'CALL', 680, '2026-11-06', 'vencimiento', 3, 0, '2026-11-07T13:39:30.000Z')];
+    const RW = D.emparejarFillsFIFO(FW, '2026-11-09');
+    igual([RW.huerfanas.length, RW.cerradas.map(c => `${c.ids.abre}>${c.ids.cierra} x${c.contratos} ${c.pnl}${c.derivado ? ' deducido' : ''}`), RW.cerradas[1].salida_at, RW.cerradas.map(c => c.fecha_ny)],
+      [0, ['w1>w3 x2 -41.3', 'w2>w4 x3 -450.65'], '2026-11-06T21:30:00.000Z', ['2026-11-06', '2026-11-06']],
+      '(v65 rev6) 0DTE en invierno: venta de las 15:30 ET con la compra de las 14:00 y el vencimiento (16:30 ET = 21:30Z) con la de las 15:10; sin huérfanas ni pérdida deducida');
+    igual([RW.viajes.length, RW.viajes[0].pnl, RW.viajes[0].vencido, RW.viajes[0].vencido_total, RW.viajes[0].derivado, RW.viajes[0].fecha_ny], [1, -491.95, true, false, false, '2026-11-06'], '(v65 rev6) un viaje que venció en parte, −$491.95, el viernes 6');
+    // 0DTE en VERANO (vie 30-oct, EDT): compra 2 a las 15:00 ET, compra 3 a las 16:05, venta 2 a las 16:10 (QQQ cotiza hasta las 16:15),
+    // vencen 3 (anotado el lunes 2-nov). Con las 20:00Z (16:00 ET) pasaba lo mismo que en invierno.
+    const FV = [F('etrade', 'q1', 'QQQ', 'PUT', 600, '2026-10-30', 'compra', 2, 1.00, '2026-10-30T19:00:00.000Z'), F('etrade', 'q2', 'QQQ', 'PUT', 600, '2026-10-30', 'compra', 3, 1.50, '2026-10-30T20:05:00.000Z'),
+      F('etrade', 'q3', 'QQQ', 'PUT', 600, '2026-10-30', 'venta', 2, 0.80, '2026-10-30T20:10:00.000Z'), F('etrade', 'q4', 'QQQ', 'PUT', 600, '2026-10-30', 'vencimiento', 3, 0, '2026-11-02T13:00:00.000Z')];
+    const RV = D.emparejarFillsFIFO(FV, '2026-11-03');
+    igual([RV.huerfanas.length, RV.cerradas.map(c => `${c.ids.abre}>${c.ids.cierra} x${c.contratos}${c.derivado ? ' deducido' : ''}`), RV.cerradas[1].salida_at, RV.viajes.map(v => [v.fecha_ny, v.pnl])],
+      [0, ['q1>q3 x2', 'q2>q4 x3'], '2026-10-30T20:30:00.000Z', [['2026-10-30', -490]]],
+      '(v65 rev6) 0DTE en verano: la venta de las 16:10 ET va antes que el vencimiento (16:30 ET = 20:30Z); sin huérfanas, todo el viernes 30 (no el lunes de noviembre)');
+    // un lote que vence sin venta y sin fila del bróker (deducido) también a las 16:30 ET de su día
+    const RDd = D.emparejarFillsFIFO([F('schwab', 'd1', 'SPY', 'PUT', 600, '2026-11-06', 'compra', 1, 2.00, '2026-11-06T15:00:00.000Z')], '2026-11-09');
+    igual([RDd.cerradas[0].salida_at, RDd.cerradas[0].fecha_ny, RDd.cerradas[0].derivado, RDd.cerradas[0].ids.cierra], ['2026-11-06T21:30:00.000Z', '2026-11-06', true, 'venc2026-11-06'], '(v65 rev6) el vencimiento DEDUCIDO: 16:30 ET (21:30Z en invierno), su día y su clave «venc» + fecha (sin hora)');
+    // exp que no es fecha: el vencimiento reportado se queda en su instante y no se deduce nada
+    const RX = D.emparejarFillsFIFO([F('etrade', 'x1', 'SPY', 'PUT', 600, '2026-02-30', 'compra', 1, 2.00, '2026-02-27T15:00:00.000Z'), F('etrade', 'x2', 'SPY', 'PUT', 600, '2026-02-30', 'vencimiento', 1, 0, '2026-03-02T13:00:00.000Z')], '2026-03-05');
+    igual([RX.cerradas.length, RX.cerradas[0].salida_at, RX.cerradas[0].fecha_ny], [1, '2026-03-02T13:00:00.000Z', '2026-03-02'], '(v65 rev6) con una expiración imposible (30-feb) el vencimiento del bróker conserva su instante (no se inventa uno)');
+  }
   // v53: venta parcial y el resto vencido = UN viaje que venció en parte, con las dos salidas
   const RP = D.emparejarFillsFIFO([F('schwab', 'p1', 'SPY', 'CALL', 650, '2026-09-18', 'compra', 2, 1.00, '2026-09-15T14:00:00.000Z'), F('schwab', 'p2', 'SPY', 'CALL', 650, '2026-09-18', 'venta', 1, 1.50, '2026-09-16T14:00:00.000Z')], HOY);
   igual([RP.viajes.length, RP.viajes[0].pnl, RP.viajes[0].vencido, RP.viajes[0].vencido_total, RP.viajes[0].derivado, RP.viajes[0].fecha_ny, RP.viajes[0].salidas], [1, -50, true, false, true, '2026-09-18', 2], 'venta parcial + resto vencido: un solo viaje (−50) que «venció en parte», cerrado el día del vencimiento');
@@ -377,6 +430,20 @@ function sbGrabador(respuestas) {
     'ejecuciones: las de E*TRADE con hora muestran su hora (09:48) y no «(sin hora)»; la de Schwab a 00:00Z sí, con SU día (6 oct, no el 5)', (hEjH.match(/margin-top:2px"><span>[^<]*/g) || []).join(' | '));
   igual([V.textoDuracionOp(RH.viajes[0]), V.textoDuracionOp(RH.viajes[1]), V.textoDuracionOp(RZ.viajes[0]), V.textoDuracionOp(R.viajes.find(v => v.symbol === 'SPY'))], ['3 min', '12 min', '1 d', '2 d'],
     'duración: E*TRADE con hora en minutos; con un instante sin hora (Schwab 00:00Z o E*TRADE de fechas) en días');
+  // v65 rev6 · un viaje que terminó VENCIDO no tiene hora de salida (las 16:30 ET del vencimiento son el orden del contable, no
+  // una ejecución): «duró» va en días hasta el vencimiento, con el texto de Cuentas (duracionOpCuentas), y la tarjeta no
+  // enseña la hora del vencimiento en ningún sitio
+  {
+    const FW6 = [F('etrade', 'w1', 'SPY', 'CALL', 680, '2026-11-06', 'compra', 2, 1.00, '2026-11-06T19:00:00.000Z', 0.65), F('etrade', 'w2', 'SPY', 'CALL', 680, '2026-11-06', 'compra', 3, 1.50, '2026-11-06T20:10:00.000Z', 0.65),
+      F('etrade', 'w3', 'SPY', 'CALL', 680, '2026-11-06', 'venta', 2, 0.80, '2026-11-06T20:30:00.000Z', 0.65), F('etrade', 'w4', 'SPY', 'CALL', 680, '2026-11-06', 'vencimiento', 3, 0, '2026-11-07T13:39:30.000Z')];
+    const vW6 = D.emparejarFillsFIFO(FW6, '2026-11-09').viajes[0];
+    const vVendido = D.emparejarFillsFIFO(FW6.slice(0, 2).concat([{ ...FW6[2], contratos: 5 }]), '2026-11-09').viajes[0];
+    igual([V.textoDuracionOp(vW6), V.textoDuracionOp(RS.viajes[0]), V.textoDuracionOp(RP.viajes[0]), V.textoDuracionOp(vVendido)], ['venció el mismo día', '3 d hasta vencer', '3 d hasta vencer', '1.5 h'],
+      '(v65 rev6) duración de un viaje vencido: «venció el mismo día» (0DTE de invierno vendido en parte), «3 d hasta vencer» (E*TRADE reportado y Schwab deducido); vendido entero, en horas como siempre');
+    const hW6 = V.seccionOperacionesDiario([vW6]);
+    assert(/<span>salida<\/span><b><span style="color:var\(--oro\)">venció en parte<\/span><\/b>/.test(hW6) && /<span>duró<\/span><b>venció el mismo día<\/b>/.test(hW6) && !/16:30|21:30|15:00|16:00/.test(hW6),
+      '(v65 rev6) la tarjeta: salida «venció en parte», duró «venció el mismo día» y ninguna hora del vencimiento (ni 16:30, ni las 15:00/16:00 de antes)');
+  }
   igual([V.fechaHoraD('2026-10-09T13:48:25.000Z'), V.fechaHoraD('2026-10-06T00:00:00.000Z'), V.fechaHoraD('2026-09-22T04:00:00.000Z')], [esc(fmtFechaNY('2026-10-09T13:48:25.000Z', true)), '6 oct', '22 sep'],
     'fechaHoraD por instante: con hora, fecha y hora; a 00:00 UTC o 00:00 NY, solo la fecha (y la del día que dice)');
   const hOH = V.seccionOperacionesDiario(RH.viajes);

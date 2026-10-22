@@ -34,7 +34,9 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   // v65 rev2: el libro VIGENTE de E*TRADE (la provisional con gemela contabilizada no cuenta)
   'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill',
   // v65 rev4: el tope por pareja de filasEtradeVigentes usa el FIFO del libro (el mismo contable que el Diario)
-  'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin'];
+  'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin',
+  // v65 rev6: el instante de un vencimiento (16:30 ET del día de la expiración, con el horario de NY de ese día)
+  'instanteVencimiento'];
 const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'BROKERS_CON_COMISION', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
   'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA'];
 function cuentas(op) {
@@ -892,9 +894,10 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const sAS = TS(bs6, '1001', '1003', 3, 1.00, 0.50, '2026-12-03T15:00:00+00:00', '2026-12-04T20:30:00+00:00', 'Sold To Close', 41);
     const sBX = TS(bs6, '1002', '1004', 2, 1.20, 0, '2026-12-04T15:00:00+00:00', '2026-12-07T08:00:00+00:00', 'Option Expired', 42);
     const dS = K.emparejarFillsFIFO(K.fillsEtradeVigentes(libS), '2026-12-08');
-    igual(dS.cerradas.filter(c => c.ids.abre === '1001' && c.ids.cierra === '1003').map(c => c.contratos), [1], '(v65 rev5) el FIFO del libro forma 1001>1003 con 1 contrato (el vencimiento de las 20:00Z va antes que la venta de las 20:30Z)');
+    igual(dS.cerradas.filter(c => c.ids.abre === '1001' && c.ids.cierra === '1003').map(c => c.contratos), [3], '(v65 rev6) el FIFO del libro forma 1001>1003 con 3 contratos, como E*TRADE: el vencimiento va a las 16:30 ET (21:30Z en invierno), después de la venta de las 15:30 ET (20:30Z); con las 20:00Z de la rev5 iba antes y la formaba con 1');
+    igual(dS.huerfanas.length, 0, '(v65 rev6) y sin huérfanas');
     igual(sumaD(dS), [5, -390], '(v65 rev5) el Diario: ×5 −$390');
-    igual(K.filasEtradeVigentes([sAS, sBX], libS).map(t => t.clave_ext), [sAS.clave_ext, sBX.clave_ext], '(v65 rev5) la fila 1001>1003 ×3 no cabe en su pareja (1) pero sus fills tienen 3 libres: se queda (antes solo quedaba 1002>1004)');
+    igual(K.filasEtradeVigentes([sAS, sBX], libS).map(t => t.clave_ext), [sAS.clave_ext, sBX.clave_ext], '(v65 rev5/rev6) las dos filas se quedan: 1001>1003 ×3 ya cabe en su pareja (rev6; en la rev5 no cabía y la salvaba la regla (2))');
     igual(sumaU(K.unirOperaciones([], [sAS, sBX], libS).ops), [5, -390], '(v65 rev5) Cuentas con el libro: ×5 −$390 como el Diario (antes ×2 −$240)');
     // (b) SPY CALL 700 0DTE del vie 4-dic (EST): A ×5 @1.00 13:00 ET, B ×5 @0.80 14:00 ET, venta C ×4 @1.20 15:30 ET, vencen 6.
     // E*TRADE escribe A>C ×4, A>V ×1 y B>V ×5; el FIFO del libro da A>V 5, B>V 1 y B>C 4
@@ -905,22 +908,37 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const wAV = TS(bs7, '900001', '900004', 1, 1.00, 0, '2026-12-04T18:00:00+00:00', '2026-12-05T13:39:30+00:00', 'Option Expired', 52);
     const wBV = TS(bs7, '900002', '900004', 5, 0.80, 0, '2026-12-04T19:00:00+00:00', '2026-12-05T13:39:30+00:00', 'Option Expired', 53);
     igual(sumaD(K.emparejarFillsFIFO(K.fillsEtradeVigentes(libW), '2026-12-10')), [10, -420], '(v65 rev5) el Diario: ×10 −$420');
+    igual(K.emparejarFillsFIFO(K.fillsEtradeVigentes(libW), '2026-12-10').cerradas.map(c => c.ids.abre + '>' + c.ids.cierra + ' x' + c.contratos), ['900001>900003 x4', '900001>900004 x1', '900002>900004 x5'],
+      '(v65 rev6) el FIFO del libro empareja como E*TRADE (A>C ×4, A>V ×1, B>V ×5): el vencimiento de las 16:30 ET va después de la venta de las 15:30 ET');
     igual(K.filasEtradeVigentes([wAC, wAV, wBV], libW).map(t => t.raw.abre + '>' + t.raw.cierra + ' x' + t.contratos), ['900001>900003 x4', '900001>900004 x1', '900002>900004 x5'],
-      '(v65 rev5) B>V ×5 supera la capacidad 1 que le da el FIFO, pero a B y a V les quedan 5: se queda (antes salía: −$400 escondidos)');
+      '(v65 rev5/rev6) las tres filas se quedan (rev6: cada una cabe en su pareja; en la rev5 B>V ×5 superaba la capacidad 1 y la salvaba la regla (2))');
     igual(sumaU(K.unirOperaciones([], [wAC, wAV, wBV], libW).ops), [10, -420], '(v65 rev5) Cuentas con el libro: ×10 −$420 como el Diario (antes ×5 −$20)');
     // y una copia de otra sincronización de esa misma pareja, que entró DESPUÉS, sigue sin caber: sus fills ya están gastados
     const wBV3 = { ...TS(bs7, '900002', '900004', 3, 0.80, 0, '2026-12-04T19:00:00+00:00', '2026-12-05T13:39:30+00:00', 'Option Expired', 54), creado_at: '2026-12-08T09:00:00+00:00' };
     igual(sumaU(K.unirOperaciones([], [wAC, wAV, wBV, wBV3], libW).ops), [10, -420], '(v65 rev5) una B>V ×3 repetida de otra sincronización no suma: ningún contrato que el libro no tiene');
+    // la red de la rev5 sigue: si el libro trajera la venta con un instante POSTERIOR a las 16:30 ET (anómalo), el FIFO volvería
+    // a poner el vencimiento antes (A>V 5, B>V 1, B>C 4) y la fila real B>V ×5 que no cabe la salva la regla (2)
+    const libW2 = libW.map(f => f.clave_ext === '900003' ? { ...f, ejecutado_at: '2026-12-04T21:45:00+00:00' } : f);
+    const wAC2 = { ...wAC, cerrada_at: '2026-12-04T21:45:00+00:00' };
+    igual(K.emparejarFillsFIFO(K.fillsEtradeVigentes(libW2), '2026-12-10').cerradas.map(c => c.ids.abre + '>' + c.ids.cierra + ' x' + c.contratos), ['900001>900004 x5', '900002>900004 x1', '900002>900003 x4'],
+      '(v65 rev6) con una venta anómala a las 16:45 ET el FIFO pone antes el vencimiento (16:30 ET)');
+    igual([sumaD(K.emparejarFillsFIFO(K.fillsEtradeVigentes(libW2), '2026-12-10')), sumaU(K.unirOperaciones([], [wAC2, wAV, wBV], libW2).ops)], [[10, -420], [10, -420]],
+      '(v65 rev5) y la regla (2) deja las filas reales: Diario y Cuentas ×10 −$420');
     // las repetidas de la rev4 siguen fuera (pasan a la regla (2) con sus fills ya gastados)
     igual(K.filasEtradeVigentes([c10, c17, c18], libC), [c18], '(v65 rev5) ×18, ×10 y ×17 con 18 contratos: sigue quedando solo la ×18');
     igual(K.filasEtradeVigentes([d1, d3], libD), [d3], '(v65 rev5) ×1 y ×3 con 3 contratos: sigue quedando solo la ×3');
     igual(K.filasEtradeVigentes([sAS, sBX], null).length, 2, '(v65 rev5) sin libro nada se descarta');
 
-    // ── v65 rev4 (3) · el vencimiento de E*TRADE cuenta el DÍA DE SU EXPIRACIÓN (16:00 ET), no el de la anotación
+    // ── v65 rev4 (3) · el vencimiento de E*TRADE cuenta el DÍA DE SU EXPIRACIÓN (v65 rev6: a las 16:30 ET), no el de la anotación
     const vLun = { ...ba, contratos: 20, prima_fill: 0.58, prima_salida: 0, abierta_at: '2026-10-16T14:00:00+00:00', cerrada_at: '2026-10-19T07:00:00+00:00', resultado_usd: -1160, fees: 0,
       clave_ext: 'AAPL|2026-10-16|CALL|350#1>2#20', raw: { abre: '1', cierra: '2', tipo: 'Option Expired' } };
     const uL = K.unirOperaciones([], [vLun]).ops;
-    igual(uL.map(o => [o.cerrada_at, o._partes_filas[0].cerrada_at]), [['2026-10-16T20:00:00.000Z', '2026-10-16T20:00:00.000Z']], '(v65 rev4) el «Option Expired» anotado el lunes 19 cierra el viernes 16 a las 16:00 ET (también sin libro)');
+    igual(uL.map(o => [o.cerrada_at, o._partes_filas[0].cerrada_at]), [['2026-10-16T20:30:00.000Z', '2026-10-16T20:30:00.000Z']], '(v65 rev4/rev6) el «Option Expired» anotado el lunes 19 cierra el viernes 16 a las 16:30 ET = 20:30Z en verano (también sin libro)');
+    // v65 rev6 · todo al leer: una fila ya escrita con las 20:00Z de la rev4/rev5 (el upsert no la reescribe) se lee a las 16:30 ET
+    igual(K.unirOperaciones([], [{ ...vLun, cerrada_at: '2026-10-16T20:00:00.000Z' }]).ops[0].cerrada_at, '2026-10-16T20:30:00.000Z', '(v65 rev6) una fila escrita con T20:00Z se lee a las 16:30 ET (la base no se toca)');
+    const vInv = { ...vLun, expiracion: '2026-11-20', abierta_at: '2026-11-19T15:00:00+00:00', cerrada_at: '2026-11-23T07:00:00+00:00', clave_ext: 'AAPL|2026-11-20|CALL|350#1>2#20' };
+    igual([K.unirOperaciones([], [vInv]).ops[0].cerrada_at, K.unirOperaciones([], [{ ...vInv, cerrada_at: '2026-11-20T20:00:00.000Z' }]).ops[0].cerrada_at], ['2026-11-20T21:30:00.000Z', '2026-11-20T21:30:00.000Z'],
+      '(v65 rev6) en invierno (vie 20-nov, EST): 16:30 ET = 21:30Z, venga anotada el lunes o con las 20:00Z (15:00 ET) de antes');
     igual([K.cerradasDesde(uL, '2026-10-19').length, K.cerradasDesde(uL, '2026-10-12').length], [0, 1], '(v65 rev4) cuenta en la semana del lunes 12, no en la del 19');
     const vFin = { ...vLun, expiracion: '2026-10-30', abierta_at: '2026-10-30T14:00:00+00:00', cerrada_at: '2026-11-02T08:00:00+00:00' };
     igual(K.cerradasDesde(K.unirOperaciones([], [vFin], []).ops, '2026-11-01').length, 0, '(v65 rev4) un vencimiento del viernes 30 anotado el lunes 2 ya no cae en el mes siguiente');
@@ -934,6 +952,63 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     assert(/unirOperaciones\(posR\.data \|\| \[\], btR\.data \|\| \[\], fillsR\.error \? null : fillsR\.filas\)/.test(extraer('vistaCuentasSaldos')), 'vistaCuentasSaldos: unirOperaciones con el libro de fills (null si la lectura falló)');
     assert(/unirOperaciones\(posic, btR\.data \|\| \[\], fillsR\.error \? null : fills\)/.test(extraer('vistaDiario')), 'vistaDiario: «¿coincide con Cuentas?» con el mismo libro');
   }
+// v65 rev6 · 0DTE con venta en la ÚLTIMA HORA del día del vencimiento y el resto vencido: Diario y Cuentas dan lo mismo, día por día,
+// y sin huérfanas. Del MISMO historial crudo de E*TRADE salen el libro (fillsDeTransaccionesEtrade) y las filas de broker_trades
+// (emparejarEtrade), como en la app. Con las 20:00Z de antes (15:00 ET en invierno, 16:00 ET en verano) el FIFO del Diario ponía el
+// vencimiento antes de la compra de las 15:10 / 16:05: un vencimiento huérfano y la compra «deducida» como pérdida total.
+{
+  const E = construir(['emparejarEtrade', 'instanteVencimiento', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion'], { ymdNY });
+  const txE = (id, tipo, qty, price, iso, prod) => ({ transactionId: id, transactionType: tipo, transactionDate: Date.parse(iso), description: 'x',
+    brokerage: { quantity: qty, price, fee: /expir/i.test(tipo) ? 0 : 0.65, product: { securityType: 'OPTN', ...prod } } });
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const porDia = (pares) => pares.reduce((m, [d, n, usd]) => { const x = m[d] || (m[d] = [0, 0]); x[0] += n; x[1] = r2(x[1] + usd); return m; }, {});
+  const caso = (nombre, txs, hoy, dia, venc) => {
+    const crudas = E.emparejarEtrade(txs), libro = E.fillsDeTransaccionesEtrade(txs);
+    const filas = crudas.map((t, i) => ({ ...t, id: i + 1, creado_at: hoy + 'T12:00:00+00:00' }));   // como las devuelve la base
+    const diario = K.emparejarFillsFIFO(K.fillsEtradeVigentes(libro), hoy);
+    const ops = K.unirOperaciones([], filas, libro).ops, opsSin = K.unirOperaciones([], filas, null).ops, vig = K.filasEtradeVigentes(filas, libro);
+    const dD = porDia(diario.cerradas.map(c => [c.fecha_ny, c.contratos, c.pnl]));
+    const dF = porDia(vig.map(t => [ymdNY(t.cerrada_at), t.contratos, t.resultado_usd]));
+    const dO = porDia(ops.map(o => [ymdNY(o.cerrada_at), o.contratos, o.resultado_usd])), dS = porDia(opsSin.map(o => [ymdNY(o.cerrada_at), o.contratos, o.resultado_usd]));
+    igual([Object.keys(dD), diario.huerfanas.length, crudas.huerfanas.length, diario.cerradas.filter(c => c.derivado).length], [[dia], 0, 0, 0], `(v65 rev6) ${nombre}: todo el día ${dia}, sin huérfanas (ni en el Diario ni en emparejarEtrade) y sin pérdidas deducidas`);
+    igual([dF, dO, dS], [dD, dD, dD], `(v65 rev6) ${nombre}: Cuentas (filas vigentes, operaciones con libro y sin libro) = Diario, día por día: ${JSON.stringify(dD)}`);
+    igual(diario.cerradas.map(c => `${c.ids.abre}>${c.ids.cierra} x${c.contratos}`), filas.map(t => `${t.raw.abre}>${t.raw.cierra} x${t.contratos}`), `(v65 rev6) ${nombre}: el FIFO del libro empareja como E*TRADE`);
+    igual([diario.cerradas.find(c => c.vencido).salida_at, filas.find(t => /expir/i.test(t.raw.tipo)).cerrada_at, ops[0].cerrada_at], [venc, venc, venc], `(v65 rev6) ${nombre}: el vencimiento a las 16:30 ET (${venc}) en el Diario, en la fila nueva y en la operación de Cuentas`);
+    return { diario, ops, filas, libro };
+  };
+  // INVIERNO · vie 6-nov-2026 (EST): compra 2 a las 14:00 ET, compra 3 a las 15:10, venta 2 a las 15:30, vencen 3 (anotado el sábado 7)
+  const pW = { symbol: 'SPY', callPut: 'CALL', strikePrice: 680, expiryYear: 26, expiryMonth: 11, expiryDay: 6 };
+  const W = caso('invierno 15:30 ET', [txE(7004, 'Option Expired', 3, 0, '2026-11-07T00:00:00Z', pW), txE(7003, 'Sold To Close', -2, 0.80, '2026-11-06T20:30:00Z', pW),
+    txE(7002, 'Bought To Open', 3, 1.50, '2026-11-06T20:10:00Z', pW), txE(7001, 'Bought To Open', 2, 1.00, '2026-11-06T19:00:00Z', pW)], '2026-11-09', '2026-11-06', '2026-11-06T21:30:00.000Z');
+  igual([W.ops.length, W.ops[0].contratos, W.ops[0].resultado_usd], [1, 5, -491.95], '(v65 rev6) invierno: UNA operación ×5 −$491.95 (−$41.30 vendidos + −$450.65 vencidos)');
+  // VERANO · vie 30-oct-2026 (EDT): compra 2 a las 15:00 ET, compra 3 a las 16:05, venta 2 a las 16:10 (QQQ hasta las 16:15), vencen 3 (lunes 2-nov)
+  const pV = { symbol: 'QQQ', callPut: 'PUT', strikePrice: 600, expiryYear: 26, expiryMonth: 10, expiryDay: 30 };
+  const S = caso('verano 16:10 ET', [txE(8004, 'Option Expired', 3, 0, '2026-11-02T00:00:00Z', pV), txE(8003, 'Sold To Close', -2, 0.80, '2026-10-30T20:10:00Z', pV),
+    txE(8002, 'Bought To Open', 3, 1.50, '2026-10-30T20:05:00Z', pV), txE(8001, 'Bought To Open', 2, 1.00, '2026-10-30T19:00:00Z', pV)], '2026-11-03', '2026-10-30', '2026-10-30T20:30:00.000Z');
+  igual([K.cerradasDesde(S.ops, '2026-11-01').length, K.cerradasDesde(S.ops, '2026-10-26').length], [0, 1], '(v65 rev6) verano: cuenta en octubre (la semana del 26), no en noviembre');
+  // Lo que se VE en Cuentas: la operación vendida en parte y vencida en parte no enseña la hora del vencimiento (16:30 ET no es una
+  // ejecución): «venció en parte» con la prima media, y la duración en días hasta el vencimiento (como una expirada y como el Diario)
+  const op = W.ops[0], d = K.detalleOpCuentas(op, { fills: [], senales: [] });
+  igual([d.expirada, d.vencioEnParte, d.presunta], [false, true, false], '(v65 rev6) detalle: no es «expirada» (hubo una venta real), venció en parte y no es presunta (E*TRADE lo reportó)');
+  igual([K.salidaOpCuentas(op, d, false), K.salidaOpCuentas(op, d, true), K.duracionOpCuentas(op, d), K.duracionTablaCuentas(op, d)],
+    ['<span style="color:var(--oro)">venció en parte</span> · $0.32', '<span style="color:var(--oro)">venció</span><span class="csub">en parte · $0.32</span>', 'venció el mismo día', '<td title="venció el mismo día">mismo día<span class="csub">venció</span></td>'],
+    '(v65 rev6) salida «venció en parte · $0.32» (en la tabla, «en parte» y la prima debajo) y duración «venció el mismo día»: ni 16:30 ni 2.5 h');
+  const tW = K.tarjetaHistorial(op, {}), fW = K.filaHistorialCuentas(op, {});
+  assert(!/16:30|21:30/.test(tW) && !/16:30|21:30/.test(fW) && /venció en parte/.test(tW) && /en parte · \$0\.32/.test(fW),
+    '(v65 rev6) la tarjeta y la fila de la tabla no enseñan la hora del vencimiento en ningún sitio');
+  assert(/15:30/.test(K.tramosOpCuentasHtml(op, d)) && /expiró/.test(K.tramosOpCuentasHtml(op, d)), '(v65 rev6) el desglose: la venta con su hora (15:30) y el tramo vencido «expiró»', K.tramosOpCuentasHtml(op, d));
+  // una venta normal no cambia (su hora real)
+  const opV = K.unirOperaciones([], [{ ...W.filas[0] }], W.libro).ops[0], dV = K.detalleOpCuentas(opV, {});
+  igual([dV.vencioEnParte, K.salidaOpCuentas(opV, dV, false)], [false, '15:30 · $0.80'], '(v65 rev6) una operación vendida entera sigue con su hora de salida');
+  // Schwab: vendida en parte y el resto vencido PRESUNTO (la fila «>venc» que escribe la app): «venció en parte (presunto)»
+  const vS = { broker: 'schwab', symbol: 'NVDA', direccion: 'CALL', strike: 200, expiracion: '2026-11-06', contratos: 1, prima_fill: 1.5, prima_salida: 0, abierta_at: '2026-11-06T15:10:00+00:00',
+    cerrada_at: '2026-11-06T21:30:00.000Z', resultado_usd: -150, fees: 0, clave_ext: 'NVDA  261106C00200000#9>venc2026-11-06', raw: { abre: 9, cierra: 'vencimiento', nota: 'venció sin venderse (A2): pérdida total PRESUNTA' } };
+  const opS = K.unirOperaciones([], [vS, { ...vS, clave_ext: 'NVDA  261106C00200000#9>77#1', raw: { abre: 9, cierra: 77 }, cerrada_at: '2026-11-06T20:30:00.000Z', prima_salida: 2, resultado_usd: 50 }]).ops[0];
+  const dS = K.detalleOpCuentas(opS, {});
+  igual([dS.vencioEnParte, dS.presunta, K.salidaOpCuentas(opS, dS, false), K.salidaOpCuentas(opS, dS, true)],
+    [true, true, '<span style="color:var(--oro)">venció en parte</span> <span class="fresco">(presunto)</span> · $1.00', '<span style="color:var(--oro)">venció</span><span class="csub">en parte · presunto · $1.00</span>'],
+    '(v65 rev6) Schwab vendida en parte y el resto vencido presunto: «venció en parte (presunto)»');
+}
 // v62 rev4: TODAS las pantallas que suman operaciones pasan el libro (mismas cifras en Cuentas, Disciplina y los cupos)
 {
   const llamadas = (C.FUENTE.match(/unirOperaciones\([^)]*\)/g) || []).filter(x => !/^unirOperaciones\(posic, trades, fills\)$/.test(x));

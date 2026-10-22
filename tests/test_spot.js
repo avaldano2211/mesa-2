@@ -29,7 +29,7 @@ const HOY = '2026-10-03';
     igual([D.distanciaStrike('CALL', 372.5, null), D.distanciaStrike('CALL', null, 370.7), D.distanciaStrike('CALL', 372.5, 0), D.distanciaStrike('CALL', 'x', 370.7)], [null, null, null, null], 'sin spot, sin strike, spot 0 o basura → null (no se inventa una distancia)');
   }
   // ════════════════ 2. el contable: el spot viaja del fill al tramo y al viaje (ponderado, fuente PEOR) ════════════════
-  const D = construir(['emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY'],
+  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY'],
     { hoyNY: () => HOY, ymdNY: C.ymdNY }, { consts: ['DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'] });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, spot, fuente) =>
     ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: 0, ejecutado_at: at, fecha_ny: C.ymdNY(at), spot, spot_fuente: fuente });

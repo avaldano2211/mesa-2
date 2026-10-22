@@ -408,7 +408,7 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
 
   // ════════════════ 11. A1 · Cuentas y Disciplina cuentan LO MISMO ════════════════
   // v65 rev4: unirOperaciones pasa SIEMPRE por filasEtradeVigentes (sin libro solo pone el vencimiento de E*TRADE en su día)
-  const U = construir(['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes', 'resumenPeriodo', 'cerradasDesde'], { ymdNY });
+  const U = construir(['unirOperaciones', 'filasEtradeVigentes', 'instanteVencimiento', 'fillsEtradeVigentes', 'resumenPeriodo', 'cerradasDesde'], { ymdNY });
   const POS_A1 = [
     // la MISMA operación registrada a mano y traída del bróker
     { id: 1, user_id: 'u', symbol: 'SPY', direccion: 'CALL', strike: 769, expiracion: '2026-09-19', contratos: 2,
@@ -452,7 +452,7 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   igual(U.resumenPeriodo([], '2026-09-01').mejor, null, 'A1: sin operaciones, mejor/peor son null (no un −1e9 disfrazado)');
 
   // ════════════════ 12. A2 · lo que vence en Schwab sin venderse es PÉRDIDA ════════════════
-  const E2 = construir(['emparejarFillsSchwab', 'fillsDeOrdenesSchwab'], { desOsi, hoyNY });
+  const E2 = construir(['emparejarFillsSchwab', 'fillsDeOrdenesSchwab', 'instanteVencimiento'], { desOsi, hoyNY });
   const OSI_VIEJO = 'SPY   260919C00650000';     // venció el 2026-09-19
   const OSI_VIVO = 'SPY   261003C00700000';      // vence el 2026-10-03
   const fills = [
@@ -465,6 +465,16 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   igual([venc.broker, venc.symbol, venc.contratos, venc.prima_salida], ['schwab', 'SPY', 2, 0], 'A2: se cierra a 0 (pérdida total)');
   cerca(venc.resultado_usd, -300, 'A2: 2 contratos a $1.50 perdidos completos = -$300');
   assert(ymdNY(venc.cerrada_at) === '2026-09-19', 'A2: la pérdida cuenta el DÍA DE SU VENCIMIENTO en NY', venc.cerrada_at);
+  igual(venc.cerrada_at, '2026-09-19T20:30:00.000Z', 'v65 rev6: el vencimiento deducido de Schwab va a las 16:30 ET de su día (20:30Z en verano), no a las 20:00Z');
+  // v65 rev6 · en INVIERNO (vie 6-nov, EST) a las 21:30Z (16:30 ET), después de una venta de la última hora; la clave no lleva la hora
+  const OSI_INV = 'SPY   261106C00680000';
+  const inv = E2.emparejarFillsSchwab([
+    { osi: OSI_INV, symbol: 'SPY', expiracion: '2026-11-06', direccion: 'CALL', strike: 680, side: 'BUY', qty: 3, price: 1.00, ts: '2026-11-06T19:00:00.000Z', fee: 0, id: 'w1' },
+    { osi: OSI_INV, symbol: 'SPY', expiracion: '2026-11-06', direccion: 'CALL', strike: 680, side: 'SELL', qty: 1, price: 1.20, ts: '2026-11-06T20:30:00.000Z', fee: 0, id: 'w2' }], '2026-11-09');
+  igual(inv.map(r => [r.cerrada_at, r.contratos, r.resultado_usd, r.clave_ext]), [['2026-11-06T20:30:00.000Z', 1, 20, OSI_INV + '#w1>w2#1'], ['2026-11-06T21:30:00.000Z', 2, -200, OSI_INV + '#w1>venc2026-11-06']],
+    'v65 rev6: Schwab en invierno: la venta de las 15:30 ET y el resto deducido vencido a las 16:30 ET (21:30Z), el mismo día; la clave_ext «>venc» + fecha, sin hora (no cambia)');
+  igual(E2.emparejarFillsSchwab([{ osi: 'SPY   260230C00680000', symbol: 'SPY', expiracion: '2026-02-30', direccion: 'CALL', strike: 680, side: 'BUY', qty: 1, price: 1, ts: '2026-02-27T15:00:00.000Z', fee: 0, id: 'z1' }], '2026-03-05').length, 0,
+    'v65 rev6: con una expiración que no es fecha no se deduce ningún vencimiento (no se inventa un instante)');
   assert(/venc2026-09-19/.test(venc.clave_ext), 'A2: clave_ext propia del vencimiento (no choca con ninguna venta)', venc.clave_ext);
   igual(rts.expiradas.length, 1, 'A2: las vencidas quedan contadas aparte para decirlo en Cuentas');
   const rts2 = E2.emparejarFillsSchwab(fills, HOY);
@@ -491,7 +501,7 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   igual(E2.fillsDeOrdenesSchwab([{ orderId: 7, status: 'FILLED', filledQuantity: 1, price: 1.5, closeTime: '2026-09-17T14:00:00Z', orderLegCollection: [{ instrument: { assetType: 'OPTION', symbol: OSI_VIEJO }, instruction: 'BUY_TO_OPEN' }] }]).length, 1, 'A2: la compra llena sigue leyéndose igual');
 
   // ════════════════ 13. A3 · la venta sin compra deja constancia ════════════════
-  const E3 = construir(['emparejarEtrade'], {});
+  const E3 = construir(['emparejarEtrade', 'instanteVencimiento'], {});
   const tx = (id, tipo, qty, price, fecha, extra) => ({ transactionId: id, transactionType: tipo, transactionDate: Date.parse(fecha),
     brokerage: { quantity: qty, price, fee: 0, product: Object.assign({ securityType: 'OPTN', symbol: 'SPY', callPut: 'CALL', strikePrice: 650, expiryYear: 26, expiryMonth: 9, expiryDay: 19 }, extra || {}) } });
   const soloVenta = E3.emparejarEtrade([tx(2, 'Sold To Close', -2, 2.10, '2026-09-18')]);
@@ -506,9 +516,14 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
   const expET = E3.emparejarEtrade([tx(1, 'Bought To Open', 2, 1.50, '2026-09-17'), tx(2, 'Option Expired', 2, 0, '2026-09-19')]);
   cerca(expET[0].resultado_usd, -300, 'A3/A2: en E*TRADE el vencimiento ya entraba como venta a 0 (−$300) y sigue igual');
   // v65 rev4: E*TRADE anota el «Option Expired» el sábado o el lunes; la fila nueva cierra el DÍA DE LA EXPIRACIÓN
-  // (16:00 ET, como el Diario), así un vencimiento del viernes no cae en la semana (o el mes) siguiente
+  // (como el Diario), así un vencimiento del viernes no cae en la semana (o el mes) siguiente. v65 rev6: a las 16:30 ET
+  // de ese día con su horario de NY (instanteVencimiento), no a las 20:00Z (15:00 ET en invierno)
   const expLun = E3.emparejarEtrade([tx(1, 'Bought To Open', 2, 1.50, '2026-09-17'), tx(2, 'Option Expired', 2, 0, '2026-09-21')]);
-  igual([expLun[0].cerrada_at, expLun[0].clave_ext], ['2026-09-19T20:00:00.000Z', 'SPY|2026-09-19|CALL|650#1>2#2'], 'v65 rev4: el vencimiento anotado el lunes 21 cierra el viernes 19 a las 16:00 ET (la clave_ext no cambia)');
+  igual([expLun[0].cerrada_at, expLun[0].clave_ext], ['2026-09-19T20:30:00.000Z', 'SPY|2026-09-19|CALL|650#1>2#2'], 'v65 rev4/rev6: el vencimiento anotado el lunes 21 cierra el viernes 19 a las 16:30 ET (20:30Z en verano; la clave_ext no cambia)');
+  const expInv = E3.emparejarEtrade([tx(1, 'Bought To Open', 2, 1.50, '2026-11-05T15:00:00Z', { expiryMonth: 11, expiryDay: 6 }), tx(2, 'Option Expired', 2, 0, '2026-11-07T00:00:00Z', { expiryMonth: 11, expiryDay: 6 })]);
+  igual([expInv[0].cerrada_at, expInv[0].clave_ext], ['2026-11-06T21:30:00.000Z', 'SPY|2026-11-06|CALL|650#1>2#2'], 'v65 rev6: en invierno (vie 6-nov, EST) a las 16:30 ET = 21:30Z; la clave_ext (IDs y contratos) no lleva la hora');
+  const expRara = E3.emparejarEtrade([tx(1, 'Bought To Open', 2, 1.50, '2026-02-26', { expiryMonth: 2, expiryDay: 30 }), tx(2, 'Option Expired', 2, 0, '2026-03-02', { expiryMonth: 2, expiryDay: 30 })]);
+  igual(expRara[0].cerrada_at, new Date(Date.parse('2026-03-02')).toISOString(), 'v65 rev6: con una expiración que no es fecha (30-feb) la fila conserva el instante de E*TRADE (no se inventa uno)');
   igual(completo[0].cerrada_at, new Date(Date.parse('2026-09-18')).toISOString(), 'v65 rev4: una venta normal conserva la fecha de E*TRADE');
 
   // ════════════════ 14. mercado abierto/cerrado (el ritmo de B8) ════════════════

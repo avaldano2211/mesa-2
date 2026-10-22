@@ -274,6 +274,39 @@ function ymdNY(iso) {
   } catch (_) { return ''; }
 }
 const hoyNY = () => ymdNY();
+// v65 rev6 · El INSTANTE de un VENCIMIENTO: las 16:30 de Nueva York del día `exp` (AAAA-MM-DD) con el horario de NY de ESE
+// día (EDT → …T20:30:00.000Z, EST → …T21:30:00.000Z); null si exp no es una fecha AAAA-MM-DD. Es la ÚNICA regla del
+// instante de un vencimiento (el real de E*TRADE y el deducido en emparejarFillsFIFO, el «Option Expired» de
+// emparejarEtrade y su fecha al leer en filasEtradeVigentes, el deducido de Schwab en emparejarFillsSchwab).
+// Por qué: antes era exp + T20:00Z, que son las 16:00 ET en verano pero las 15:00 ET en invierno (desde el 1-nov), y
+// SPY/QQQ/SPXW cotizan hasta las 16:15 ET: el FIFO ponía el vencimiento ANTES de una venta 0DTE de la última hora del día
+// (pérdida total falsa y venta huérfana en el Diario; Cuentas con otra cuenta). A las 16:30 ET ya no queda nada que
+// ejecutar ese día y el día NY sigue siendo exp. NO es la hora de una ejecución: es el ORDEN del contable (el Diario y
+// Cuentas dicen «venció» / «expiró», sin hora). Sin depender de la zona del equipo (Intl con America/New_York); el
+// formateador y el resultado de cada fecha se guardan en la propia función (autocontenida, como ymdNY). PURA.
+function instanteVencimiento(exp) {
+  const m = typeof exp === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(exp) : null;
+  if (!m) return null;
+  const memo = instanteVencimiento._m || (instanteVencimiento._m = new Map());
+  if (memo.has(exp)) return memo.get(exp);
+  const y = Number(m[1]), mes = Number(m[2]) - 1, d = Number(m[3]);
+  const pared = Date.UTC(y, mes, d, 16, 30);                 // las 16:30 «de reloj» de ese día, contadas como si NY fuera UTC
+  const t0 = new Date(pared);
+  let r = null;
+  if (t0.getUTCFullYear() === y && t0.getUTCMonth() === mes && t0.getUTCDate() === d) {   // 2026-02-30 no es una fecha
+    try {
+      const f = instanteVencimiento._f || (instanteVencimiento._f = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
+      // el reloj de NY en un instante, contado como si fuera UTC (reloj − instante = el desfase de NY: −4 h EDT, −5 h EST)
+      const reloj = (ms) => { const p = {}; f.formatToParts(new Date(ms)).forEach(x => { p[x.type] = x.value; }); return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute)); };
+      let t = pared - (reloj(pared) - pared);
+      t = pared - (reloj(t) - t);                              // el desfase leído en el propio instante (otro lado de un cambio de hora)
+      if (reloj(t) === pared) r = new Date(t).toISOString();
+    } catch (_) { r = null; }
+  }
+  memo.set(exp, r);
+  return r;
+}
 
 async function estadoWorker() {
   const { data } = await sb.from('worker_heartbeat').select('*')
@@ -3333,10 +3366,11 @@ function emparejarEtrade(txs) {
       const feeAp = ap.fee * (ap.qty ? usa / ap.qty : 1), feeCi = fee * (usa / qty);
       salidas.push({
         broker: 'etrade', symbol: p.symbol, osi: contrato, direccion: right, strike, expiracion: exp,
-        // v65 rev4: el vencimiento cierra el DÍA DE SU EXPIRACIÓN (16:00 ET), no el de la anotación de E*TRADE (sábado o
-        // lunes): así lo pone el Diario, y un vencimiento del viernes 30 ya no cae en el mes siguiente en Cuentas
+        // v65 rev4: el vencimiento cierra el DÍA DE SU EXPIRACIÓN, no el de la anotación de E*TRADE (sábado o lunes): así
+        // lo pone el Diario, y un vencimiento del viernes 30 ya no cae en el mes siguiente en Cuentas. v65 rev6: a las 16:30
+        // ET de ese día con su horario de NY (instanteVencimiento), no a las 20:00Z (15:00 ET en invierno)
         contratos: usa, prima_fill: ap.precio, prima_salida: precio,
-        abierta_at: ap.ts, cerrada_at: (esExpira && exp) ? exp + 'T20:00:00.000Z' : ts,
+        abierta_at: ap.ts, cerrada_at: (esExpira && instanteVencimiento(exp)) || ts,
         resultado_usd: Math.round(((precio - ap.precio) * usa * 100 - feeAp - feeCi) * 100) / 100,
         fees: Math.round((feeAp + feeCi) * 100) / 100,
         // Clave por IDs de transacción (las fechas de E*TRADE no traen hora:
@@ -3914,9 +3948,10 @@ function emparejarFillsSchwab(fills, hoy) {
     for (const ap of abiertos[osi]) {
       if (!(ap.qty > 1e-9)) continue;
       const d = desOsi(osi); const exp = d && d.expiracion;
-      if (!exp || !/^\d{4}-\d{2}-\d{2}$/.test(hoyY) || !(exp < hoyY)) continue;   // sin expiración o aún viva: no se juzga
-      // 20:00Z = 16:00 ET en verano y 15:00 ET en invierno: el mismo día NY en los dos casos.
-      const ts = exp + 'T20:00:00.000Z';
+      // v65 rev6: a las 16:30 ET del día de la expiración con su horario de NY (instanteVencimiento: 20:30Z en verano,
+      // 21:30Z en invierno), no a las 20:00Z (15:00 ET en invierno); la clave_ext no lleva la hora y no cambia
+      const ts = instanteVencimiento(exp);
+      if (!ts || !/^\d{4}-\d{2}-\d{2}$/.test(hoyY) || !(exp < hoyY)) continue;   // sin expiración (válida) o aún viva: no se juzga
       const fila = { broker: 'schwab', symbol: d.symbol, osi, direccion: d.direccion, strike: d.strike, expiracion: exp,
         contratos: ap.qty, prima_fill: ap.precio, prima_salida: 0, abierta_at: ap.ts, cerrada_at: ts,
         resultado_usd: Math.round((-ap.precio * ap.qty * 100 - (ap.fee || 0)) * 100) / 100,
@@ -5238,7 +5273,8 @@ function comisionDelBroker(op) {
   return f > 0 || BROKERS_CON_COMISION.includes(op.broker);
 }
 // v62 rev · ¿Esta fila del bróker cerró por VENCIMIENTO? Schwab no emite nada al vencer y la app escribe una fila «>venc»
-// con la hora INVENTADA de las 16:00 ET del vencimiento (pérdida total PRESUNTA); E*TRADE manda 'Option Expired'. PURA.
+// con la hora INVENTADA de las 16:30 ET del vencimiento (instanteVencimiento; pérdida total PRESUNTA); E*TRADE manda
+// 'Option Expired'. PURA.
 function filaVencioCuentas(t) {
   return !!t && (/venc/.test(String(t.clave_ext || '')) || !!(t.raw && (t.raw.cierra === 'vencimiento' || /expir/i.test(String(t.raw.tipo || '')))));
 }
@@ -5494,10 +5530,14 @@ function detalleOpCuentas(p, ctx) {
   // (la «>venc» de Schwab, 'Option Expired' de E*TRADE) es una expirada, y su hora de cierre no existió.
   const filasB = Array.isArray(p._partes_filas) ? p._partes_filas : [];
   const expirada = p.estado === 'expirada' || (filasB.length > 0 && filasB.every(filaVencioCuentas));
+  // v65 rev6: un grupo con una venta real y el RESTO vencido (el cierre más tardío del grupo es una fila de vencimiento)
+  // tampoco tiene hora de salida: la del grupo sería la del vencimiento (16:30 ET, instanteVencimiento), que no es una
+  // ejecución. Lo dice como el Diario («venció en parte») y su duración va en días hasta el vencimiento.
+  const vencioEnParte = !expirada && !!p.cerrada_at && filasB.some(t => filaVencioCuentas(t) && t.cerrada_at === p.cerrada_at);
   return { c, pe, ps, costo, venta, neto, com, bruto: (com != null && neto != null) ? r2(neto + com) : null,
     sinComBroker: com == null && ['schwab', 'moomoo'].includes(p.broker),
     pct: (neto != null && costo > 0) ? Math.round(neto / costo * 1000) / 10 : null,
-    dia, diaC, dir, dte: dteEntrada(p), sinHora, expirada, presunta: expirada && filasB.some(filaPresuntaCuentas),
+    dia, diaC, dir, dte: dteEntrada(p), sinHora, expirada, vencioEnParte, presunta: (expirada || vencioEnParte) && filasB.some(filaPresuntaCuentas),
     spot: ctx.errFills ? null : spotDeOperacion(p, fillsOp), senal, senalDespues: despues, senalOtra: otra,
     errFills: !!ctx.errFills, errSen: !!ctx.errSen, tramos };
 }
@@ -5526,14 +5566,21 @@ function entradaOpCuentas(p, d, enTabla) {
 // v62 rev2: en la tabla, «presunto» debajo, en pequeño (en una línea ensanchaba la columna).
 function salidaOpCuentas(p, d, enTabla) {
   if (d.expirada) return `<span style="color:var(--oro)">expiró</span>${d.presunta ? (enTabla ? '<span class="csub">presunto</span>' : ' <span class="fresco">(presunto)</span>') : ''}`;
-  const h = esc(horaOpCuentas(p.cerrada_at, d.dia)), prima = d.ps != null ? `$${d.ps.toFixed(2)}` : '';
+  const prima = d.ps != null ? `$${d.ps.toFixed(2)}` : '';
+  // v65 rev6: vendida en parte y el resto vencido: sin la hora del vencimiento (no es una ejecución), con la prima media.
+  // En la tabla, «en parte» va debajo, en pequeño, con la prima (como «presunto»: en una línea ensanchaba la columna)
+  if (d.vencioEnParte) {
+    if (enTabla) return `<span style="color:var(--oro)">venció</span><span class="csub">${['en parte'].concat(d.presunta ? ['presunto'] : [], prima ? [prima] : []).join(' · ')}</span>`;
+    return `<span style="color:var(--oro)">venció en parte</span>${d.presunta ? ' <span class="fresco">(presunto)</span>' : ''}${prima ? ' · ' + prima : ''}`;
+  }
+  const h = esc(horaOpCuentas(p.cerrada_at, d.dia));
   if (enTabla) return `${h}${prima ? `<span class="csub">${prima}</span>` : ''}`;
   return `${h}${prima ? ' · ' + prima : ''}`;
 }
 // Una expirada no tiene hora de salida (la de Schwab es inventada): su duración va en días hasta el vencimiento.
 function duracionOpCuentas(p, d) {
   if (!p.abierta_at || !p.cerrada_at) return '—';
-  if (d.expirada) {
+  if (d.expirada || d.vencioEnParte) {                         // v65 rev6: también la vendida en parte con el resto vencido
     const n = diasEntre(d.dia, p.expiracion || diaOpNY(p.cerrada_at));
     return n == null || n < 0 ? '—' : n === 0 ? 'venció el mismo día' : `${n} d hasta vencer`;
   }
@@ -5544,7 +5591,7 @@ function duracionOpCuentas(p, d) {
 // vencer»): «venció el mismo día» en una sola ensanchaba la columna. El texto entero va en el title de la celda. PURA.
 function duracionTablaCuentas(p, d) {
   const t = duracionOpCuentas(p, d);
-  const m = d.expirada ? /^(?:venció el (mismo día)|(\d+ d) hasta vencer)$/.exec(t) : null;
+  const m = (d.expirada || d.vencioEnParte) ? /^(?:venció el (mismo día)|(\d+ d) hasta vencer)$/.exec(t) : null;
   if (!m) return `<td>${esc(t)}</td>`;
   return `<td title="${esc(t)}">${m[1] || m[2]}<span class="csub">${m[1] ? 'venció' : 'hasta vencer'}</span></td>`;
 }
@@ -9025,10 +9072,11 @@ function fillsEtradeVigentes(filas) {
   }
   return sobra.size ? filas.filter(f => !sobra.has(f)) : filas;
 }
-// v65 rev4 · y cada VENCIMIENTO de E*TRADE en el DÍA DE SU EXPIRACIÓN (expiracion + T20:00Z, la regla de emparejarFillsFIFO
-// y del vencimiento de Schwab), no en el de la anotación: E*TRADE anota el «Option Expired» el sábado o el lunes, y Cuentas
-// lo ponía ahí (AAPL CALL 350 del viernes 16-oct, el lunes 19: otra semana; uno del viernes 30 caía en el mes siguiente)
-// mientras el Diario lo pone en la expiración. Se aplica SIEMPRE, con libro o sin él (no depende del libro).
+// v65 rev4 · y cada VENCIMIENTO de E*TRADE en el DÍA DE SU EXPIRACIÓN (instanteVencimiento: las 16:30 ET de ese día desde
+// la rev6, la regla de emparejarFillsFIFO y del vencimiento de Schwab), no en el de la anotación: E*TRADE anota el
+// «Option Expired» el sábado o el lunes, y Cuentas lo ponía ahí (AAPL CALL 350 del viernes 16-oct, el lunes 19: otra
+// semana; uno del viernes 30 caía en el mes siguiente) mientras el Diario lo pone en la expiración. Se aplica SIEMPRE, con
+// libro o sin él (no depende del libro).
 // v65 rev4 · y un TOPE por pareja: emparejarEtrade mete los contratos en la clave_ext, así que una sincronización que empareja
 // los mismos fills de otra manera crea filas nuevas y el upsert (ignoreDuplicates) nunca retira las viejas: 26282501224674>
 // …677 está ×18, ×10 y ×17 con un cierre de 18 contratos, y con todos sus IDs en el libro ninguna se descartaba (AAPL CALL
@@ -9037,15 +9085,17 @@ function fillsEtradeVigentes(filas) {
 // subconjunto que la llena (exacta si se puede; a igualdad, las filas más viejas: creado_at y luego id); (2) una pareja que
 // el FIFO no forma (E*TRADE emparejó distinto) solo se queda si a sus dos fills les quedan contratos sin contar. Ninguna
 // fila cuenta un contrato que el libro no tiene; la que ya no cabe, sobra. Sin libro, nada se tira (como siempre).
-// v65 rev5 · la fila que no cabe en (1) pasa a (2) en vez de salir: el FIFO del libro pone el vencimiento a las 20:00Z y
-// puede formar la pareja con MENOS contratos que E*TRADE (venta en la última hora del día del vencimiento), y entonces la
-// fila es real aunque no quepa en su pareja. (2) la deja solo si a sus dos fills les quedan contratos.
+// v65 rev5 · la fila que no cabe en (1) pasa a (2) en vez de salir: el FIFO del libro ponía el vencimiento a las 20:00Z y
+// podía formar la pareja con MENOS contratos que E*TRADE (venta en la última hora del día del vencimiento), y entonces la
+// fila es real aunque no quepa en su pareja. (2) la deja solo si a sus dos fills les quedan contratos. v65 rev6: el
+// vencimiento va a las 16:30 ET (instanteVencimiento) y el FIFO ya empareja esa venta primero, como E*TRADE; la regla (2)
+// se queda de red para cualquier otro emparejamiento distinto.
 function filasEtradeVigentes(trades, fills) {
   if (!Array.isArray(trades)) return trades;
   const expEtrade = (t) => {
     if (!t || t.broker !== 'etrade' || !t.raw || typeof t.raw !== 'object' || !/expir/i.test(String(t.raw.tipo || ''))) return null;
     const exp = String(t.expiracion || '').slice(0, 10);
-    return /^\d{4}-\d{2}-\d{2}$/.test(exp) ? exp + 'T20:00:00.000Z' : null;
+    return instanteVencimiento(exp);                         // v65 rev6: 16:30 ET del día de la expiración (null si no es fecha)
   };
   if (trades.some(t => { const e = expEtrade(t); return e != null && t.cerrada_at !== e; })) {
     trades = trades.map(t => { const e = expEtrade(t); return (e != null && t.cerrada_at !== e) ? { ...t, cerrada_at: e } : t; });
@@ -9104,11 +9154,12 @@ function filasEtradeVigentes(trades, fills) {
     const quedan = new Set(alc.get(Math.max(...alc.keys())));
     // v65 rev5: la fila que no cabe en su pareja NO se tira aquí: pasa a la regla (2), que solo la deja si a sus dos fills
     // les quedan contratos. Por qué: la capacidad de la pareja sale del FIFO del libro, y ese FIFO no siempre empareja como
-    // E*TRADE. emparejarFillsFIFO pone el vencimiento a las 20:00Z (15:00 ET en invierno, 16:00 ET en verano, y SPY/QQQ
+    // E*TRADE. emparejarFillsFIFO ponía el vencimiento a las 20:00Z (15:00 ET en invierno, 16:00 ET en verano, y SPY/QQQ
     // cotizan hasta las 16:15), antes de una venta de la última hora del día del vencimiento; E*TRADE empareja primero
-    // la venta y después el vencimiento que anota el sábado o el lunes. Con el «fuera.add» de la rev4, una fila REAL salía
-    // de Cuentas con sus dos fills llenos de contratos libres (0DTE SPY 700C del 4-dic: compra 5+5, venta 4 a las 15:30 ET,
-    // vencen 6 → Cuentas ×5 −$21.08 contra ×10 −$422.00 del Diario). La regla (2) sigue sin dejar contar un contrato que
+    // la venta y después el vencimiento que anota el sábado o el lunes (v65 rev6: el FIFO también, a las 16:30 ET). Con el
+    // «fuera.add» de la rev4, una fila REAL salía de Cuentas con sus dos fills llenos de contratos libres (0DTE SPY 700C
+    // del 4-dic: compra 5+5, venta 4 a las 15:30 ET, vencen 6 → Cuentas ×5 −$21.08 contra ×10 −$422.00 del Diario).
+    // La regla (2) sigue sin dejar contar un contrato que
     // el libro no tiene: las copias repetidas de otra sincronización (×18/×10/×17) siguen fuera, sus fills ya están gastados.
     filas.forEach((t, i) => { if (quedan.has(i)) gastar(t); else sinPar.push(t); });
   });
@@ -9882,8 +9933,11 @@ function emparejarFillsFIFO(fills, hoy) {
     .filter(f => f && f.broker && f.symbol && (f.lado === 'compra' || DIARIO_LADOS_SALIDA.includes(f.lado)) && num(f.contratos) > 0)
     .map(f => {
       const exp = String(f.expiracion || '').slice(0, 10);
-      // 20:00Z = 16:00 ET en verano y 15:00 ET en invierno: el mismo día NY en los dos casos.
-      if (f.lado === 'vencimiento' && esFecha(exp)) return { ...f, _c: claveFill(f), _at: exp + 'T20:00:00.000Z', _fecha: exp };
+      // v65 rev6: el vencimiento va a las 16:30 ET del día de la expiración con su horario de NY (instanteVencimiento: 20:30Z
+      // en verano, 21:30Z en invierno), DESPUÉS de cualquier venta de ese día (SPY/QQQ/SPXW hasta las 16:15 ET). Con las 20:00Z
+      // de antes, en invierno (15:00 ET) iba antes que una venta 0DTE de la última hora: pérdida total falsa y venta huérfana.
+      const iv = f.lado === 'vencimiento' ? instanteVencimiento(exp) : null;
+      if (iv) return { ...f, _c: claveFill(f), _at: iv, _fecha: exp };
       return { ...f, _c: claveFill(f), _at: String(f.ejecutado_at || ''), _fecha: String(f.fecha_ny || '').slice(0, 10) || (ymdNY(f.ejecutado_at) || '') };
     })
     .sort((a, b) => (a._at < b._at ? -1 : a._at > b._at ? 1 : (rango(a) - rango(b)) || String(a.clave_ext).localeCompare(String(b.clave_ext))));
@@ -9920,9 +9974,10 @@ function emparejarFillsFIFO(fills, hoy) {
     for (const ap of abiertos[k]) {
       if (!(ap.qty > 1e-9)) continue;
       const exp = String(ap.f.expiracion || '').slice(0, 10);
-      if (esFecha(exp) && esFecha(hoyY) && exp < hoyY) {
+      const iv = (esFecha(hoyY) && exp < hoyY) ? instanteVencimiento(exp) : null;   // v65 rev6: 16:30 ET del día (null si exp no es fecha)
+      if (iv) {
         // v60: spot null a propósito: un vencimiento deducido no tiene instante (y el spot de la compra no es el de la salida)
-        const fv = { ...ap.f, precio: 0, spot: null, spot_fuente: null, clave_ext: 'venc' + exp, _at: exp + 'T20:00:00.000Z', _fecha: exp, _c: ap.f._c };
+        const fv = { ...ap.f, precio: 0, spot: null, spot_fuente: null, clave_ext: 'venc' + exp, _at: iv, _fecha: exp, _c: ap.f._c };
         tramo(k, operacionCerrada(fv, ap, ap.qty, ap.precio * ap.qty * 100, 0, ap.com, 'vencimiento', true));
         ap.qty = 0; vencidoAlgo = true;
         continue;
@@ -10313,7 +10368,12 @@ function seccionResumenesDiario(meses, semanas, sel) {
 // v62 rev2: «sin hora» POR INSTANTE (sinHoraIso), nunca por bróker: si la entrada o la salida es una FECHA (00:00), la
 // duración va en días entre sus días NY (diaOpNY: una fecha a medianoche UTC no es el día anterior); con las dos horas,
 // en minutos/horas como cualquier fill.
+// v65 rev6 · Un viaje que terminó VENCIDO (su última salida es el vencimiento) no tiene hora de salida: el instante del
+// vencimiento (16:30 ET, instanteVencimiento) es el ORDEN del contable, no una ejecución, y «6.5 h» la tomaría por una.
+// Su duración va en días hasta el vencimiento, con el texto de Cuentas (duracionOpCuentas): «venció el mismo día» /
+// «3 d hasta vencer». PURA.
 function textoDuracionOp(c) {
+  if (c.lado_salida === 'vencimiento') { const d = diasEntre(diaOpNY(c.entrada_at), c.fecha_ny || diaOpNY(c.salida_at)); return d == null || d < 0 ? '—' : d === 0 ? 'venció el mismo día' : `${d} d hasta vencer`; }
   if (c.sin_hora || sinHoraIso(c.entrada_at) || sinHoraIso(c.salida_at)) { const d = diasEntre(diaOpNY(c.entrada_at), diaOpNY(c.salida_at)); return d == null ? '—' : d === 0 ? 'mismo día' : `${d} d`; }
   return durTxt(c.entrada_at, c.salida_at);
 }
