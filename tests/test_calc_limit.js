@@ -188,7 +188,7 @@ const SUCIO = /NaN|undefined|Infinity|\[object/;
   const s1 = st({ lotes: [{ n: '1', p: '1.21' }, { n: '3', p: '0.29' }], contrato: c, origen: 'tu libro: 2 fichas de este contrato', modo: 'usd', usd: '4' });
   const h1 = hoja(s1);
   assert(!SUCIO.test(h1), 'con datos: nada de NaN');
-  assert(/<b class="mono" style="color:var\(--tx\)">TSLA CALL 420 · vence 2026-11-20 · E\*TRADE<\/b> · <span class="fresco">tu libro: 2 fichas de este contrato<\/span>/.test(h1), 'el contrato en el título y de dónde salió');
+  assert(/<b class="mono" style="color:var\(--tx\)">TSLA CALL 420 · vence 2026-11-20 · E\*TRADE<\/b><span class="fresco" style="display:block">tu libro: 2 fichas de este contrato<\/span>/.test(h1), 'el contrato en el título y, debajo, de dónde salió');
   assert(/<b class="mono">4<\/b> contratos · costo medio <b class="mono">0\.52<\/b> \(\$52\.00 por contrato\) · pagaste <b class="mono">\$208\.00<\/b>/.test(h1), 'resumen: 4 contratos, costo medio 0.52 ($52.00) y $208.00 pagados (las cifras en mono)');
   assert(/<div class="cprecio" id="cLimit">0\.55<small>= \$55\.00 por contrato<\/small><\/div>/.test(h1), 'el LIMIT grande: 0.55 = $55.00 por contrato');
   assert(/<span>Cobras<\/span><b>\$220\.00<\/b><\/div><div><span>Comisiones<\/span><b>\$8\.00<\/b><\/div><div><span>Ganancia neta<\/span><b style="color:var\(--verde\)">\+\$4\.00<\/b><i style="color:var\(--verde\)">\+1\.92 %<\/i>/.test(h1), 'cobras $220.00 · comisiones $8.00 · ganancia neta +$4.00 y +1.92 % debajo (en verde)');
@@ -252,7 +252,7 @@ function domFalso() {
   return { doc, cuerpo, nodos, escuchas, $: (s) => doc.querySelector(s), crear };
 }
 const DOM_CALC = ['abrirCalc', 'cerrarCalc', 'calcTecla', 'calcInput', 'calcManualAnotar', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar',
-  'pintarCalcRes', 'calcResultado', 'calcDestino'];
+  'pintarCalcRes', 'calcResultado', 'calcDestino', 'ordenParaCalc', 'estadoOrdenCalc', 'claveContrato', 'calcPonerEnOrden'];
 function armarHoja(E) {
   E = E || {};
   const D = domFalso(), ls = E.ls || C.localStorageFalso(), reg = { toasts: [], timers: [], copias: [] };
@@ -403,7 +403,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     const mod = C.cargarModuloEntero({ src: './app/main.js?v=65' });
     assert(mod.cargo, 'main.js entero carga con la calculadora', mod.error);
     if (mod.cargo) {
-      const puertas = ['calcAbrir', 'calcCerrar', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar'];
+      const puertas = ['calcAbrir', 'calcCerrar', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto', 'calcDeOrden', 'calcPonerEnOrden'];
       igual(puertas.filter(k => typeof mod.win.MZ[k] !== 'function'), [], 'las puertas de la calculadora cuelgan de window.MZ');
       const viejas = ['abrirFill', 'abrirCuenta', 'abrirOrden', 'ordenPreview', 'ordenPlace', 'cortarPosicion', 'adoptar', 'venderGestor', 'notaDePosicion', 'diarioSincronizar', 'tickerAgregar'];
       igual(viejas.filter(k => typeof mod.win.MZ[k] !== 'function'), [], 'y no pisa ninguna de las de antes');
@@ -415,6 +415,252 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     assert(/\.calc \.cprecio\{[^}]*var\(--mono\)[^}]*font-variant-numeric:tabular-nums/.test(css) && /\.calc input\{[^}]*font-variant-numeric:tabular-nums;font-size:16px/.test(css), 'CSS: el precio y los campos en mono tabular, los campos a 16 px (iOS no amplía)');
     assert(/\.calc \.cstop \.cprecio\{color:var\(--rojo\)\}/.test(css) && /\.calc \.cseg button\.on\{background:var\(--oro\)/.test(css), 'CSS: el stop en rojo y lo elegido en oro (los colores del tema: claro y oscuro)');
     assert(/\.calc \.clote\{display:grid;grid-template-columns:18px minmax\(0,1fr\) minmax\(0,1\.4fr\) 40px/.test(css), 'CSS: cada compra en una fila que cabe a 375 px (columnas con minmax(0,…))');
+  }
+
+  // ════════════════ 14. ya llena desde una posición (libro, bróker, libro de fills) ════════════════
+  // las dos fichas de TSLA 420 de la hoja 2 de Andrés (un refuerzo registrado aparte) y una AAPL que el bróker tiene sin registrar
+  const T1 = { id: 7, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direccion: 'CALL', strike: 420, expiracion: '2026-11-20', contratos: 1, prima_fill: 1.21, gtc_limite: 1.35, plan_pct: 10, stop_pct: 20, abierta_at: '2026-10-28T14:00:00Z', mark: 0.50, activo: true, modo_salida: 'trailing', trail_pct: 20 };
+  const T2 = { ...T1, id: 8, contratos: 3, prima_fill: 0.29, gtc_limite: 0.34, abierta_at: '2026-10-29T14:00:00Z' };
+  const OTRA = { ...T1, id: 9, strike: 430, contratos: 2, prima_fill: 0.80, abierta_at: '2026-10-27T14:00:00Z' };
+  const SCHW = { ...T1, id: 10, broker: 'schwab', contratos: 5, prima_fill: 0.40 };
+  const AAPL = { broker: 'etrade', symbol: 'AAPL', direccion: 'CALL', strike: 235, expiracion: '2026-11-20', contratos: 2, prima_fill: 1.3233333, mark: 1.55, valor_actual: 310, invertido: 264.67, pnl_usd: 45.33, pnl_pct: 17.1, clave: 'etrade|AAPL|CALL|235|2026-11-20' };
+  {
+    const B = construir(['calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'calcContrato', 'calcLote', 'claveCartera', 'claveContrato'], { BROKER_NOMBRE: C.BROKER_NOMBRE });
+    igual(B.calcLote(4, 0.52), { n: '4', p: '0.52' }, 'calcLote: el texto de los campos');
+    igual(B.calcLote(2, 1.3233333), { n: '2', p: '1.323333' }, 'el costo medio de un bróker con 6 decimales (lo pagado cuadra al centavo)');
+    igual([B.calcLote(null, null), B.calcLote(0, -1), B.calcLote('', ''), B.calcLote(NaN, 'x')], [{ n: '', p: '' }, { n: '', p: '' }, { n: '', p: '' }, { n: '', p: '' }], 'lo que no es un número positivo sale como campo vacío (nunca «NaN» ni «0»)');
+    igual(B.calcContrato({ symbol: ' tsla ', direccion: 'call', strike: '420', expiracion: '2026-11-20T00:00:00Z', broker: 'etrade' }), { symbol: 'TSLA', direccion: 'CALL', strike: 420, expiracion: '2026-11-20', broker: 'etrade' }, 'calcContrato normaliza el contrato');
+    igual(B.calcContrato({ symbol: 'X', strike: '' }), { symbol: 'X', direccion: '', strike: null, expiracion: null, broker: null }, 'sin strike ni vencimiento: null, no 0');
+    const d = B.calcDatosDePosicion(8, [OTRA, T2, SCHW, T1, { ...T1, id: 11, estado: 'cerrada' }]);
+    igual(d.lotes, [{ n: '1', p: '1.21' }, { n: '3', p: '0.29' }], 'la ficha y su hermana del MISMO contrato y bróker, en orden de apertura (1 a 1.21 + 3 a 0.29)');
+    igual(d.contrato, { symbol: 'TSLA', direccion: 'CALL', strike: 420, expiracion: '2026-11-20', broker: 'etrade' }, 'con su contrato');
+    igual(d.origen, 'tu libro: 2 fichas de este contrato', 'y dice de dónde salen');
+    igual(B.calcDatosDePosicion(9, [OTRA, T1, T2]).lotes, [{ n: '2', p: '0.8' }], 'otro strike no se mezcla');
+    igual(B.calcDatosDePosicion(10, [T1, T2, SCHW]).lotes, [{ n: '5', p: '0.4' }], 'el mismo contrato en OTRO bróker tampoco');
+    igual(B.calcDatosDePosicion(11, [T1, { ...T1, id: 11, estado: 'cerrada' }]), null, 'una ficha cerrada no abre la calculadora');
+    igual([B.calcDatosDePosicion(99, [T1]), B.calcDatosDePosicion(7, null)], [null, null], 'una ficha que no está → null');
+    const sinK = B.calcDatosDePosicion(12, [{ ...T1, id: 12, strike: null }, { ...T1, id: 13, strike: null }]);
+    igual(sinK.lotes.length, 1, 'una ficha sin strike no se agrupa con nadie (sin clave no hay «mismo contrato»)');
+    const it = B.calcDatosDeItem(AAPL);
+    igual([it.contrato.symbol, it.contrato.broker, it.lotes, it.origen], ['AAPL', 'etrade', [{ n: '2', p: '1.323333' }], 'costo medio de E*TRADE'], 'una línea del bróker: sus contratos y SU costo medio');
+    igual(B.calcDatosDeItem(null), null, 'sin línea → null');
+    const ab = [{ broker: 'schwab', contrato: 'SPY|PUT|680|2026-11-06', symbol: 'SPY', direccion: 'PUT', strike: 680, expiracion: '2026-11-06', contratos: 2, prima: 2.40 },
+      { broker: 'etrade', contrato: 'SPY|PUT|680|2026-11-06', symbol: 'SPY', direccion: 'PUT', strike: 680, expiracion: '2026-11-06', contratos: 9, prima: 9 },
+      { broker: 'schwab', contrato: 'SPY|PUT|680|2026-11-06', symbol: 'SPY', direccion: 'PUT', strike: 680, expiracion: '2026-11-06', contratos: 1, prima: 1.90 }];
+    const dA = B.calcDatosDeAbiertos('schwab|SPY|PUT|680|2026-11-06', ab);
+    igual([dA.lotes, dA.contrato.broker, dA.origen], [[{ n: '2', p: '2.4' }, { n: '1', p: '1.9' }], 'schwab', 'libro de fills: 2 compras abiertas'], 'Diario: las compras vivas de ESE contrato y bróker (FIFO)');
+    igual(B.calcDatosDeAbiertos('x|y', ab), null, 'un contrato que ya no está abierto → null');
+  }
+  {
+    // el módulo REAL: los botones en Posiciones (Mac y teléfono) y la hoja que abren
+    const mod = C.cargarModuloEntero({ hash: '#/copiloto' });
+    assert(mod.cargo, 'el módulo entero carga', mod.error);
+    if (mod.cargo) {
+      const HOY = '2026-10-30';
+      mod.win._cartCalc = { etrade: { estado: 'ok', ts: Date.now(), truncada: false, otros: {}, items: [AAPL] }, schwab: { estado: 'sin', items: [] }, tasty: { estado: 'sin_foto', items: [] }, moomoo: { estado: 'sin_foto', items: [] } };
+      mod.ev('_posCalc = ' + JSON.stringify([T2, T1]));
+      mod.win.innerWidth = 1200;
+      const mac = mod.ev("seccionPosiciones(_posCalc, _cartCalc, PLANES.PLAN_10, '" + HOY + "')");
+      assert(/<tr class="gdet">[\s\S]*?onclick="MZ\.calcDePosicion\(7\)"[^>]*>Calcular limit<\/button>/.test(mac) && /onclick="MZ\.calcDePosicion\(8\)"/.test(mac), 'Mac: «Calcular limit» en la fila de detalle de cada ficha');
+      assert(/onclick="MZ\.calcDeBroker\('etrade\|AAPL\|CALL\|235\|2026-11-20'\)"[^>]*>Calcular limit<\/button><\/td><\/tr>/.test(mac), 'Mac: y en la fila de la AAPL sin registrar, junto a Adoptar');
+      mod.win.innerWidth = 390;
+      const tel = mod.ev("seccionPosiciones(_posCalc, _cartCalc, PLANES.PLAN_10, '" + HOY + "')");
+      assert(/onclick="MZ\.calcDePosicion\(7\)" title="Calculadora de limit y stop con el costo de esta posición">Calcular limit<\/button><\/div>/.test(tel) && /MZ\.calcDePosicion\(8\)/.test(tel), 'teléfono: «Calcular limit» en la tarjeta de cada ficha');
+      assert(/<button class="btnsec" onclick="MZ\.calcDeBroker\('etrade\|AAPL\|CALL\|235\|2026-11-20'\)"[^>]*>Calcular limit<\/button>/.test(tel), 'teléfono: y en la tarjeta SIN REGISTRAR');
+      // tocar «Calcular limit» de la ficha 8: la hoja sale con las DOS fichas del contrato
+      mod.ev('MZ.calcDePosicion(8)');
+      igual(JSON.parse(mod.ev('JSON.stringify(_calc.lotes)')), [{ n: '1', p: '1.21' }, { n: '3', p: '0.29' }], 'tocar «Calcular limit» en la ficha de 3: la hoja trae las dos compras del contrato (1 a 1.21 + 3 a 0.29)');
+      igual(mod.ev('calcTitulo(_calc.contrato)'), 'TSLA CALL 420 · vence 2026-11-20 · E*TRADE', 'y su contrato en el título');
+      mod.ev("_calc.modo = 'usd'; _calc.usd = '4'");
+      igual(mod.ev('JSON.stringify(calcLimitStop(calcEntrada(_calc)).limit)'), JSON.stringify({ precio: 0.55, crudo: 0.55, venta: 220, neta: 4, netaPct: 4 / 208 * 100 }), 'y con $4: limit 0.55 y $4.00 netos (la hoja 2 de Andrés)');
+      mod.ev('Object.assign(_cart, window._cartCalc)');   // la cartera leída del bróker (la que busca buscarItemCartera)
+      mod.ev("MZ.calcDeBroker('etrade|AAPL|CALL|235|2026-11-20')");
+      igual([JSON.parse(mod.ev('JSON.stringify(_calc.lotes)')), mod.ev('_calc.origen')], [[{ n: '2', p: '1.323333' }], 'costo medio de E*TRADE'], 'la sin registrar: sus contratos y el costo medio del bróker');
+      mod.ev('cerrarCalc()');
+      const toasts = []; mod.win.__toasts = toasts; mod.ev('toast = (t) => window.__toasts.push(t)');
+      mod.ev('MZ.calcDePosicion(999)'); mod.ev("MZ.calcDeBroker('nada')"); mod.ev("MZ.calcDeAbierto('nada')");
+      igual([toasts.length, mod.ev('_calc')], [3, null], 'una posición que ya no está: lo dice y no abre nada');
+      // Diario: el abierto del libro de fills
+      const fills = [
+        { broker: 'schwab', symbol: 'SPY', direccion: 'PUT', strike: 680, expiracion: '2026-11-06', lado: 'compra', contratos: 2, precio: 2.40, comision: 1.3, ejecutado_at: '2026-10-29T14:10:00Z', fecha_ny: '2026-10-29', clave_ext: 'a1' },
+        { broker: 'schwab', symbol: 'SPY', direccion: 'PUT', strike: 680, expiracion: '2026-11-06', lado: 'compra', contratos: 1, precio: 1.90, comision: 0.65, ejecutado_at: '2026-10-30T15:10:00Z', fecha_ny: '2026-10-30', clave_ext: 'a2' },
+        { broker: 'etrade', symbol: 'QQQ', direccion: 'CALL', strike: 600, expiracion: '2026-10-23', lado: 'compra', contratos: 1, precio: 1.00, ejecutado_at: '2026-10-20T14:10:00Z', fecha_ny: '2026-10-20', clave_ext: 'b1' }];
+      mod.win.__fills = fills;
+      mod.ev("_diario.abiertos = emparejarFillsFIFO(window.__fills, '" + HOY + "').abiertos");
+      const hA = mod.ev('seccionAbiertosDiario(_diario.abiertos, [], [])');
+      igual((hA.match(/onclick="MZ\.calcDeAbierto\('schwab\|SPY\|PUT\|680\|2026-11-06'\);return false"[^>]*>Calcular limit<\/a>/g) || []).length, 2, 'Diario: «Calcular limit» en cada compra abierta del contrato');
+      assert(!/calcDeAbierto\('etrade\|QQQ/.test(hA), 'y no en un contrato ya vencido (no se puede vender)');
+      mod.ev("MZ.calcDeAbierto('schwab|SPY|PUT|680|2026-11-06')");
+      igual(JSON.parse(mod.ev('JSON.stringify(_calc.lotes)')), [{ n: '2', p: '2.4' }, { n: '1', p: '1.9' }], 'tocarlo abre la hoja con las dos compras vivas (2 a 2.40 + 1 a 1.90)');
+      igual(mod.ev('calcLimitStop(calcEntrada(_calc)).medio.toFixed(4)'), '2.2333', 'costo medio 2.2333');
+      assert(/_diario\.abiertos = F\.abiertos;/.test(C.extraer('vistaDiario')), 'vistaDiario deja a mano los abiertos que pintó');
+    }
+  }
+
+  // ════════════════ 15. «Poner en la orden»: SOLO el precio, nada se envía ════════════════
+  {
+    const CAMPOS = { oSym: 'TSLA', oTipo: 'CALL', oAcc: 'venta', oStrike: '420', oExp: '2026-11-20', oQty: '4', oTerm: 'GTC', oPt: 'LIMIT', oPrecio: '0.34', oBroker: 'etrade', oGtcAuto: '' };
+    const envio = { llamadas: [] };
+    const espia = (n) => (...a) => { envio.llamadas.push(n); return Promise.resolve({}); };
+    const repintes = [];
+    function armarOrden(E) {
+      E = E || {};
+      const H = armarHoja({ mas: ['leerFormOrden', 'calcContrato', 'calcLote', 'calcDatosDePosicion', 'calcDatosDeItem', 'calcDeOrden', 'claveCartera'],
+        prefijo: 'let _ord = null; let _gestor = { filas: [] }; let _cart = {};', sufijo: ' function __setOrd(o) { _ord = o; } function __setGestor(f) { _gestor.filas = f; } function __setCart(c) { _cart = c; }', extras: ['__setOrd', '__setGestor', '__setCart'],
+        deps: { ajustarFormOrden: () => repintes.push('ajustar'), pintarAvisosOrden: () => repintes.push('avisos'), pintarTotalOrden: () => repintes.push('total'),
+          itemsCartera: (c) => (c && c.etrade && c.etrade.items) || [], BROKER_NOMBRE: C.BROKER_NOMBRE,
+          ordenPreview: espia('ordenPreview'), ordenPlace: espia('ordenPlace'), ordenPreviewSchwab: espia('ordenPreviewSchwab'), ordenPlaceSchwab: espia('ordenPlaceSchwab'),
+          etPost: espia('etPost'), swPost: espia('swPost'), abrirOrden: espia('abrirOrden'), construirOrden: espia('construirOrden'), construirOrdenSchwab: espia('construirOrdenSchwab'),
+          sb: { from: espia('sb.from') } } });
+      // la hoja de orden abierta, con sus campos
+      const orden = H.D.crear(); orden.className = 'modal'; orden.id = 'modalOrden';
+      const campos = Object.assign({}, CAMPOS, E.campos || {});
+      orden.innerHTML = Object.keys(campos).concat(['oBtnPrev']).map(k => `<i id="${k}"></i>`).join('');
+      H.D.cuerpo.push(orden);
+      Object.keys(campos).forEach(k => { H.D.nodos[k] = C.nodo({ id: k, value: campos[k], disabled: !!(E.apagados || []).includes(k) }); });
+      H.D.nodos.oBtnPrev = C.nodo({ id: 'oBtnPrev', disabled: !!E.btnApagado });
+      const ord = Object.assign({ broker: 'etrade', pre: { posicion_id: 8, broker: 'etrade', proposito: 'salida_gtc' } }, E.ord || {});
+      H.M.__setOrd(ord);
+      const foto = () => JSON.stringify(Object.keys(campos).map(k => [k, H.D.nodos[k].value]));
+      return Object.assign(H, { ord, orden, foto });
+    }
+    const TSLA_C = { symbol: 'TSLA', direccion: 'CALL', strike: 420, expiracion: '2026-11-20', broker: 'etrade' };
+    const abrirTsla = (H) => { H.M.abrirCalc({ contrato: TSLA_C, lotes: [{ n: 1, p: 1.21 }, { n: 3, p: 0.29 }], origen: 'tu libro' }); H.M.calcModo('usd'); H.D.cuerpo.find(n => n.id === 'modalCalc').oyentes.input(ev('cObj', '4')); };
+    {
+      const H = armarOrden();
+      abrirTsla(H);
+      const antes = JSON.parse(H.foto());
+      assert(/<button type="button" class="pri" onclick="MZ\.calcPonerEnOrden\(\)">Poner en la orden<\/button>/.test(H.D.nodos.cResLimit.innerHTML), 'con la hoja de venta Límite de ESTE contrato abierta debajo: «Poner en la orden»');
+      assert(/la envías tú, con tu toque y tu PIN/.test(H.D.nodos.cResLimit.innerHTML), 'y dice que solo escribe el precio');
+      igual(H.M.__calc().ordVista, H.ord, 'la calculadora anota a QUÉ hoja de orden se lo ofreció');
+      repintes.length = 0;
+      igual(H.M.calcPonerEnOrden(), true, 'tocar «Poner en la orden»…');
+      const despues = JSON.parse(H.foto());
+      igual(H.D.nodos.oPrecio.value, '0.55', '…escribe el limit (0.55) en el campo Límite');
+      igual(despues.filter((x, i) => x[1] !== antes[i][1]).map(x => x[0]), ['oPrecio'], 'y SOLO ese campo cambia (ticker, tipo, acción, strike, vencimiento, cantidad, término, tipo de precio, bróker: igual)');
+      igual(envio.llamadas, [], 'no llama a NINGUNA función de envío (ni vista previa, ni place, ni E*TRADE, ni Schwab, ni la base)');
+      igual(repintes, ['ajustar', 'avisos', 'total'], 'repinta lo mismo que un tecleo en el campo (etiquetas, avisos de doctrina, total)');
+      igual([H.D.cuerpo.map(n => n.id), H.M.__calc()], [['modalOrden'], null], 'la calculadora se cierra y la hoja de orden queda a la vista, sin enviar');
+      igual(H.reg.toasts.pop(), 'Limit 0.55 puesto en la orden: revísala y envíala con tu toque y tu PIN.', 'y lo dice');
+    }
+    {
+      // identidad: la hoja de orden cambió (otra del MISMO contrato) entre que se ofreció el botón y el toque
+      const H = armarOrden();
+      abrirTsla(H);
+      const nueva = Object.assign({}, H.ord);
+      H.M.__setOrd(nueva);
+      igual(H.M.calcPonerEnOrden(), false, 'si la hoja de orden ya es OTRA (aunque del mismo contrato), no se toca');
+      igual([H.D.nodos.oPrecio.value, envio.llamadas], ['0.34', []], 'el precio sigue como estaba y nada se envía');
+      assert(/cambió mientras calculabas: no toqué nada/.test(H.reg.toasts.pop()), 'y lo dice');
+      igual(H.D.cuerpo.some(n => n.id === 'modalCalc'), true, 'la calculadora sigue abierta (con el botón recalculado para la hoja nueva)');
+      assert(H.M.__calc().ordVista === nueva, 'ahora se ofrece a la hoja nueva (y un segundo toque ya iría a ESA)');
+      igual([H.M.calcPonerEnOrden(), H.D.nodos.oPrecio.value, envio.llamadas], [true, '0.55', []], 'el segundo toque, ya sobre la hoja nueva, sí pone el precio (y sigue sin enviar nada)');
+    }
+    const casos = [
+      ['vista previa', { ord: { orden: { x: 1 }, previewIds: [{ previewId: 1 }] } }, 'bloqueada', /ya tiene vista previa: toca «Editar la orden»/, true],
+      ['enviándose', { ord: { enviando: true } }, 'bloqueada', /se está enviando o espera la respuesta/, true],
+      ['sin respuesta clara', { ord: { indeterminado: true } }, 'bloqueada', /se está enviando o espera la respuesta/, true],
+      ['revisión en vuelo (botón apagado)', { btnApagado: true }, 'bloqueada', /esperando al bróker o no se puede enviar/, true],
+      ['campo apagado', { apagados: ['oPrecio'] }, 'bloqueada', /esperando al bróker o no se puede enviar/, true],
+      ['trailing', { campos: { oPt: 'TRAILING_STOP_PRCT', oPrecio: '20' } }, 'no_limit', /no es Límite: cámbiala a Límite/, true],
+      ['una compra', { campos: { oAcc: 'compra' } }, 'compra', /es una compra: el limit de venta no va ahí/, false],
+      ['otro strike', { campos: { oStrike: '425' } }, 'otra', /es de TSLA CALL 425, no de este contrato/, false],
+      ['otro vencimiento', { campos: { oExp: '2026-11-27' } }, 'otra', /no de este contrato/, false],
+      ['PUT', { campos: { oTipo: 'PUT' } }, 'otra', /TSLA PUT 420/, false],
+      ['otro ticker', { campos: { oSym: 'NVDA' } }, 'otra', /NVDA CALL 420/, false],
+      ['una acción', { campos: { oTipo: 'EQ' } }, 'otra', /TSLA \(acción\)/, false],
+    ];
+    casos.forEach(([nombre, E, estado, re, apagado]) => {
+      const H = armarOrden(E);
+      abrirTsla(H);
+      const h = H.D.nodos.cResLimit.innerHTML, antes = H.foto();
+      igual(H.M.estadoOrdenCalc(TSLA_C, H.M.ordenParaCalc()).estado, estado, nombre + ': estado «' + estado + '»');
+      assert(!/MZ\.calcPonerEnOrden/.test(h) && re.test(h) && (apagado ? /class="pri" disabled[^>]*>Poner en la orden/.test(h) : !/Poner en la orden/.test(h)), nombre + ': ' + (apagado ? 'el botón sale APAGADO' : 'sin botón') + ' y se dice por qué', h);
+      igual([H.M.calcPonerEnOrden(), H.foto(), envio.llamadas], [false, antes, []], nombre + ': un toque forzado no toca la orden ni envía nada');
+    });
+    {
+      // sin hoja de orden: solo Copiar; y una orden cerrada entre el render y el toque
+      const H = armarHoja({ deps: { BROKER_NOMBRE: C.BROKER_NOMBRE } });
+      H.M.abrirCalc({ contrato: TSLA_C, lotes: [{ n: 4, p: 0.52 }] });
+      assert(!/Poner en la orden/.test(H.D.nodos.cResLimit ? H.D.nodos.cResLimit.innerHTML : H.D.cuerpo[0].innerHTML), 'sin hoja de orden abierta: solo «Copiar»');
+      igual(H.M.calcPonerEnOrden(), false, 'y un toque forzado no hace nada');
+      const H2 = armarOrden();
+      abrirTsla(H2);
+      H2.orden.remove();
+      igual([H2.M.calcPonerEnOrden(), envio.llamadas], [false, []], 'la orden se cerró antes del toque: no se toca nada');
+      const H3 = armarOrden();
+      H3.M.abrirCalc(null);
+      igual(H3.M.estadoOrdenCalc(null, H3.M.ordenParaCalc()).estado, 'otra', 'abierta a mano (sin contrato) con una orden debajo: no es «este contrato»');
+      const H4 = armarOrden();
+      H4.M.abrirCalc({ contrato: TSLA_C, lotes: [{ n: '', p: '' }] });
+      igual([H4.M.calcPonerEnOrden(), H4.D.nodos.oPrecio.value], [false, '0.34'], 'sin limit calculado no se pone nada');
+      igual(H4.reg.toasts.pop(), 'Todavía no hay limit calculado.', 'y lo dice');
+    }
+    {
+      // calcDeOrden: desde la hoja de una venta, ya llena
+      const H = armarOrden();
+      H.M.__setGestor([T1, T2, OTRA]);
+      H.M.calcDeOrden();
+      igual([H.M.__calc().lotes, H.M.__calc().contrato.strike], [[{ n: '1', p: '1.21' }, { n: '3', p: '0.29' }], 420], 'desde la orden de salida de una ficha: las fichas del contrato (la de la orden y su hermana)');
+      assert(/<button type="button" class="pri" onclick="MZ\.calcPonerEnOrden\(\)">Poner en la orden/.test(H.D.cuerpo.find(n => n.id === 'modalCalc').innerHTML), 'y ofrece «Poner en la orden» a esa misma hoja');
+      igual(H.M.__calc().ordVista, H.ord, '(anotada como la hoja a la que se ofreció)');
+      assert(!/Ojo: la orden es de/.test(H.D.cuerpo.find(n => n.id === 'modalCalc').innerHTML), 'la orden vende ×4 y se calculan ×4: sin aviso');
+      // la GTC de UNA ficha (×3, la de 0.29): el costo es el de esa ficha, no el medio de las dos
+      const Hs = armarOrden({ campos: { oQty: '3' } });
+      Hs.M.__setGestor([T1, T2]);
+      Hs.M.calcDeOrden();
+      igual([Hs.M.__calc().lotes, Hs.M.__calc().origen], [[{ n: '3', p: '0.29' }], 'tu libro'], 'la orden vende ×3 = SU ficha: solo esa ficha (venderla al limit del medio de las dos sería vender con pérdida)');
+      const Hq = armarOrden({ campos: { oQty: '2' } });
+      Hq.M.__setGestor([T1, T2]);
+      Hq.M.calcDeOrden();
+      igual(Hq.M.__calc().lotes.length, 2, 'la orden vende ×2 (ni su ficha ni el total): las dos fichas…');
+      assert(/Ojo: la orden es de ×2 y aquí calculas ×4 \(con su costo medio\): revisa las compras o la cantidad de la orden\./.test(Hq.D.cuerpo.find(n => n.id === 'modalCalc').innerHTML), '…y la hoja AVISA que la orden es de ×2 y se calculan ×4 (sin bloquear: una venta parcial vale)');
+      assert(/MZ\.calcPonerEnOrden\(\)">Poner en la orden/.test(Hq.D.cuerpo.find(n => n.id === 'modalCalc').innerHTML), '(el botón sigue ahí)');
+      const Hb = armarOrden({ ord: { pre: {} }, campos: { oSym: 'AAPL', oStrike: '235', oExp: '2026-11-20', oQty: '2' } });
+      Hb.M.__setCart({ etrade: { items: [AAPL] } });
+      Hb.M.calcDeOrden();
+      igual([Hb.M.__calc().lotes, Hb.M.__calc().origen], [[{ n: '2', p: '1.323333' }], 'costo medio de E*TRADE'], 'una venta sin ficha: el costo medio que da el bróker de ese contrato');
+      const Hc = armarOrden({ ord: { pre: {} }, campos: { oSym: 'NVDA', oStrike: '190', oQty: '3' } });
+      Hc.M.calcDeOrden();
+      igual([Hc.M.__calc().lotes, Hc.M.__calc().origen], [[{ n: '3', p: '' }], 'la orden abierta: pon la prima que pagaste'], 'sin ficha ni bróker: la cantidad de la orden y la prima por poner');
+      const Hd = armarOrden({ campos: { oStrike: '425' } });
+      Hd.M.__setGestor([T1, T2]);
+      Hd.M.calcDeOrden();
+      igual([Hd.M.__calc().contrato.strike, Hd.M.__calc().lotes], [425, [{ n: '4', p: '' }]], 'si el formulario ya no es el contrato de su ficha, manda lo que dice la hoja (no las fichas de otro strike)');
+      const He = armarOrden({ campos: { oTipo: 'EQ' } });
+      He.M.calcDeOrden();
+      igual([He.M.__calc(), He.reg.toasts.pop()], [null, 'La calculadora es para opciones (×100 por contrato).'], 'una orden de ACCIONES: no abre (la calculadora es ×100)');
+    }
+    {
+      // el enlace en la hoja de orden y cuándo se ve
+      const ab = C.extraer('abrirOrden');
+      assert(/<div id="oCalcWrap" class="fresco"[^>]*><a href="#" class="lnk" onclick="MZ\.calcDeOrden\(\);return false">Calcular el limit con tu costo y tu objetivo<\/a><\/div>/.test(ab), 'la hoja de orden lleva «Calcular el limit con tu costo y tu objetivo» bajo el precio');
+      const vis = (tipo, acc) => {
+        const n = {}; const reg = [];
+        ['oTipo', 'oAcc', 'oPt', 'oPrecioWrap', 'oPrecioLbl', 'oOptn', 'oGtcAutoWrap', 'oCalcWrap'].forEach(k => { n[k] = C.nodo({ id: k }); n[k].classList = { toggle: (c, on) => reg.push([k, c, on]) }; });
+        n.oTipo.value = tipo; n.oAcc.value = acc; n.oPt.value = 'LIMIT'; n.oPt.options = [];
+        construir(['ajustarFormOrden'], { $: (s) => n[s.slice(1)] || null }).ajustarFormOrden();
+        return reg.filter(r => r[0] === 'oCalcWrap').map(r => r[2]);
+      };
+      igual([vis('CALL', 'venta'), vis('PUT', 'venta'), vis('CALL', 'compra'), vis('EQ', 'venta')], [[false], [false], [true], [true]], 'se ve solo al VENDER una opción (CALL o PUT); en una compra o con acciones se oculta');
+    }
+    {
+      // doctrina en el fuente: el camino de la calculadora no arma ni envía órdenes
+      const nombres = ['calcLimitStop', 'calcArriba', 'calcNum', 'calcPrefsNormalizar', 'calcPrefsLeer', 'calcPrefsGuardar', 'calcEntrada', 'calcTitulo', 'calcLotesHtml', 'calcResumenHtml', 'calcChipsHtml',
+        'calcObjetivoHtml', 'calcTickHtml', 'calcFeeNota', 'calcFaltaTxt', 'calcCifrasHtml', 'calcLimitHtml', 'calcStopHtml', 'calcFormulaHtml', 'calcHojaHtml', 'calcResultado', 'calcDestino', 'pintarCalcRes',
+        'abrirCalc', 'cerrarCalc', 'calcTecla', 'calcManualAnotar', 'calcInput', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar', 'calcContrato', 'calcLote',
+        'calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto', 'ordenParaCalc', 'estadoOrdenCalc', 'calcPonerEnOrden', 'calcDeOrden'];
+      const todo = nombres.map(C.extraer).join('\n');
+      ['ordenPreview', 'ordenPlace', 'etPost', 'swPost', 'abrirOrden', 'construirOrden', 'preSalida', '/etrade/', '/schwab/', 'cancelarOrden', 'cortarPosicion', 'venderGestor', 'armar(', 'pedirPin', 'unlock']
+        .forEach(t => assert(!todo.includes(t), 'la calculadora no toca «' + t + '»: nada arma ni envía órdenes'));
+      igual((todo.match(/\.(insert|update|upsert|delete)\(/g) || []), [], 'ni escribe en la base');
+      assert(!/sb\.from|fetch\(/.test(todo), 'ni la lee: todo sale de lo que la app ya tiene en memoria');
+      assert(!/\bconfirm\(|\bprompt\(|\balert\(/.test(todo), 'sin confirm(), prompt() ni alert()');
+      const pon = C.extraer('calcPonerEnOrden');
+      igual((pon.match(/\.value = /g) || []).length, 1, 'calcPonerEnOrden escribe UN valor…');
+      assert(/const el = \$\('#oPrecio'\);/.test(pon) && /el\.value = v;/.test(pon), '…el del campo Límite (#oPrecio)');
+      assert(/o\.ord !== visto/.test(pon) && /d\.estado !== 'ok'/.test(pon), 'y antes comprueba que la hoja sea la MISMA a la que se ofreció y que siga siendo venta Límite de este contrato');
+    }
   }
 
   C.resumen();

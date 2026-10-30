@@ -2493,9 +2493,10 @@ function tarjetaPosicion(p, br, hoy, grupo) {
       <button class="btnsec" onclick="MZ.copiar('${esc(p.gtc_limite)}')">Copiar GTC</button>
       <button class="btnsec" onclick="MZ.cerrar(${p.id}, ${p.prima_fill})">Registrar salida</button>
       <button class="btnsec" style="flex:none;padding:10px 12px" onclick="MZ.notaDePosicion(${Number(p.id)}, '${esc(p.symbol)}')" title="Nota del día en el Diario">Nota</button></div>
-    ${operable ? `<div class="fila" style="margin-top:8px;gap:8px">
+    <div class="fila" style="margin-top:8px;gap:8px">${operable ? `
       <button class="btnsec" style="color:var(--oro);border-color:rgba(231,181,77,.45)${p._gtcPendiente ? ';background:rgba(231,181,77,.14);font-weight:700' : ''}" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>${p._gtcPendiente ? '⚠ PON TU GTC' : 'GTC'} +${pct}% ($${esc((gtcDePosicion(p) || 0).toFixed(2))})</button>
-      ${p.stop_pct == null ? `<button class="btnsec" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_stop')).replace(/'/g, "&#39;")})'>Trailing stop</button>` : ''}</div>` : ''}
+      ${p.stop_pct == null ? `<button class="btnsec" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_stop')).replace(/'/g, "&#39;")})'>Trailing stop</button>` : ''}` : ''}
+      <button class="btnsec" onclick="MZ.calcDePosicion(${Number(p.id)})" title="Calculadora de limit y stop con el costo de esta posición">Calcular limit</button></div>
     ${corte != null && operable ? `<div class="fila" style="margin-top:8px">
       <button class="btnsec" style="${tocado ? 'background:var(--rojo);color:#fff;border-color:var(--rojo);font-weight:700' : 'color:var(--rojo);border-color:rgba(242,109,95,.45)'}" onclick="MZ.cortarPosicion(${Number(p.id)})">Cortar</button></div>` : ''}
   </div>`;
@@ -4756,6 +4757,7 @@ function tarjetaSinRegistrar(br, plan, hoy, lect) {
         ? `<button class="btnsec" style="width:100%" disabled>foto del worker de ${esc((lect && lect.txt) || 'hace rato')}: no se adopta hasta que la refresque</button>`
         : `<button class="btnsec" style="width:100%" disabled>lectura de ${esc((lect && lect.txt) || 'hace rato')}: preguntando de nuevo…</button>`)
       : `<button class="pri" style="width:100%" onclick="MZ.adoptar('${esc(br.clave)}')">Crear la ficha en la Mesa</button>`}</div>
+    <div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.calcDeBroker('${esc(br.clave)}')" title="Calculadora de limit y stop con el costo medio del bróker">Calcular limit</button></div>
   </div>`;
 }
 // Tarjeta de una posición del libro que el bróker ya NO tiene (B2 caso c): se
@@ -6312,6 +6314,7 @@ function filaGestor(p, br, hoy, grupo) {
       <button class="btnsec" style="flex:none;padding:7px 11px" onclick="MZ.notaDePosicion(${id}, '${esc(p.symbol)}')" title="Nota del día en el Diario">Nota</button>
       ${operable ? `<button class="btnsec" style="flex:none;padding:7px 11px;color:var(--oro);border-color:rgba(231,181,77,.45)${p._gtcPendiente ? ';background:rgba(231,181,77,.14);font-weight:700' : ''}" onclick='MZ.abrirOrden(${JSON.stringify(preSalida(p, 'salida_gtc')).replace(/'/g, "&#39;")})'>${p._gtcPendiente ? '⚠ PON TU GTC' : 'GTC'} +${pct}% ($${esc((gtcDePosicion(p) || 0).toFixed(2))})</button>` : ''}
       ${corte != null && operable ? `<button class="btnsec" style="flex:none;padding:7px 11px;${tocado ? 'background:var(--rojo);color:#fff;border-color:var(--rojo);font-weight:700' : 'color:var(--rojo);border-color:rgba(242,109,95,.45)'}" onclick="MZ.cortarPosicion(${id})">Cortar</button>` : ''}
+      <button class="btnsec" style="flex:none;padding:7px 11px" onclick="MZ.calcDePosicion(${id})" title="Calculadora de limit y stop con el costo de esta posición">Calcular limit</button>
     </div></td></tr>`;
   return h;
 }
@@ -6332,7 +6335,8 @@ function filaSinRegistrar(br, plan, hoy, lect) {
     <td>—</td>
     <td>${viejo
       ? `<span class="fresco">${lect && lect.fotoVieja ? 'foto del worker de ' + esc((lect && lect.txt) || 'hace rato') + ': no se adopta hasta que la refresque' : 'lectura de ' + esc((lect && lect.txt) || 'hace rato') + ': preguntando de nuevo…'}</span>`
-      : `<button type="button" class="pri" style="padding:7px 12px;font-size:12px" onclick="MZ.adoptar('${esc(br.clave)}')">Adoptar</button>`}</td></tr>`;
+      : `<button type="button" class="pri" style="padding:7px 12px;font-size:12px" onclick="MZ.adoptar('${esc(br.clave)}')">Adoptar</button>`}
+      <button type="button" class="btnsec" style="display:block;flex:none;padding:6px 10px;font-size:12px;margin-top:6px" onclick="MZ.calcDeBroker('${esc(br.clave)}')" title="Calculadora de limit y stop con el costo medio del bróker">Calcular limit</button></td></tr>`;
 }
 // ============================================================================
 // v56 · EN VIVO (Andrés, 2026-09-28, con la sesión abierta: «los valores no se están actualizando
@@ -7806,6 +7810,7 @@ function abrirOrden(pre) {
         <option value="STOP" ${pt === 'STOP' ? 'selected' : ''}>Stop</option>
         <option value="TRAILING_STOP_PRCT" ${pt === 'TRAILING_STOP_PRCT' ? 'selected' : ''}>Trailing stop %</option></select></div>
       <div id="oPrecioWrap"><label id="oPrecioLbl">Límite</label><input id="oPrecio" type="number" inputmode="decimal" step="0.01" value="${precio0 == null ? '' : esc(precio0)}" placeholder="ej. 0.98"></div></div>
+    <div id="oCalcWrap" class="fresco" style="margin:2px 2px 0;text-align:right"><a href="#" class="lnk" onclick="MZ.calcDeOrden();return false">Calcular el limit con tu costo y tu objetivo</a></div>
     <label id="oGtcAutoWrap" style="display:flex;align-items:center;gap:8px;margin:8px 2px 0;font-size:12.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--tx)"><input type="checkbox" id="oGtcAuto" ${gtcAutoDefecto() ? 'checked' : ''} style="width:auto;margin:0"> Al llenarse, enviar sola la venta GTC +${planActivo().gtcPct}% (pide PIN si el equipo está desarmado)</label>
     <div id="oAvisos"></div>
     <div id="oPrev"></div>
@@ -8154,6 +8159,7 @@ function ajustarFormOrden() {
   if (!venta && (pt.value === 'STOP' || pt.value === 'TRAILING_STOP_PRCT')) pt.value = 'LIMIT';
   wrap.classList.toggle('oculto', pt.value === 'MARKET');
   const gw = $('#oGtcAutoWrap'); if (gw) gw.classList.toggle('oculto', venta);
+  const cw = $('#oCalcWrap'); if (cw) cw.classList.toggle('oculto', !venta || tipo.value === 'EQ');   // v65: la calculadora de limit, solo al vender una opción
   lbl.textContent = pt.value === 'LIMIT' ? (tipo.value === 'EQ' ? 'Límite (por acción)' : 'Límite (por contrato)')
     : pt.value === 'STOP' ? 'Precio stop' : pt.value === 'TRAILING_STOP_PRCT' ? 'Trailing (%)' : 'Precio';
 }
@@ -9163,6 +9169,9 @@ function calcLimitHtml(r, dest) {
   const L = r && r.limit;
   if (!L) return `<div class="cres"><div class="sec" style="margin:0">LIMIT PARA VENDER</div><div class="cprecio">—</div><div class="fresco">${esc(calcFaltaTxt(r, 'limit'))}</div></div>`;
   const d = dest || { estado: 'sin', texto: '' };
+  // la orden vende OTRA cantidad que la que se calcula (una ficha de un contrato con dos, una venta parcial): se dice, no se
+  // bloquea — el precio sale del costo medio de lo que hay en la hoja, y eso tiene que estar a la vista
+  const otraCant = d.estado === 'ok' && d.cantidad > 0 && Math.abs(d.cantidad - r.n) > 1e-9;
   const poner = d.estado === 'ok' ? `<button type="button" class="pri" onclick="MZ.calcPonerEnOrden()">Poner en la orden</button>`
     : (d.estado === 'bloqueada' || d.estado === 'no_limit') ? `<button type="button" class="pri" disabled style="opacity:.45;cursor:not-allowed">Poner en la orden</button>` : '';
   return `<div class="cres">
@@ -9171,6 +9180,7 @@ function calcLimitHtml(r, dest) {
     ${calcCifrasHtml(L, r, 'Ganancia neta')}
     <div class="cbtns">${poner}<button type="button" class="btnsec" onclick="MZ.calcCopiar('limit')">Copiar</button></div>
     ${d.texto ? `<div class="fresco" style="margin-top:6px">${esc(d.texto)}</div>` : ''}
+    ${otraCant ? `<div class="fresco" style="margin-top:4px;color:var(--oro)">Ojo: la orden es de ×${esc(d.cantidad)} y aquí calculas ×${esc(r.n)} (con su costo medio): revisa las compras o la cantidad de la orden.</div>` : ''}
   </div>`;
 }
 function calcStopHtml(r) {
@@ -9200,7 +9210,7 @@ function calcHojaHtml(st, r, dest) {
   const c = st && st.contrato;
   return `<div class="hoja calc">
     <div class="fila"><h3 style="margin:0">Calculadora de limit y stop</h3><button type="button" class="cfg" onclick="MZ.calcCerrar()" aria-label="Cerrar la calculadora" title="Cerrar (Esc)">✕</button></div>
-    <div class="mut" id="cTitulo">${c && c.symbol ? `<b class="mono" style="color:var(--tx)">${esc(calcTitulo(c))}</b>${st.origen ? ` · <span class="fresco">${esc(st.origen)}</span>` : ''}` : 'A mano: escribe tus compras (desde una posición se abre ya llena).'}</div>
+    <div class="mut" id="cTitulo">${c && c.symbol ? `<b class="mono" style="color:var(--tx)">${esc(calcTitulo(c))}</b>${st.origen ? `<span class="fresco" style="display:block">${esc(st.origen)}</span>` : ''}` : 'A mano: escribe tus compras (desde una posición se abre ya llena).'}</div>
     <div class="sec" style="margin-top:8px">COMPRAS <span class="fresco" style="letter-spacing:0;font-weight:500">prima por contrato: 0.52 = $52</span></div>
     <div class="clotes" id="cLotes">${calcLotesHtml(st && st.lotes)}</div>
     <button type="button" class="btnsec" style="flex:none;margin-top:4px" onclick="MZ.calcLoteMas()">+ Añadir compra</button>
@@ -9223,8 +9233,15 @@ function calcHojaHtml(st, r, dest) {
 }
 // ---- la hoja en pantalla ----
 function calcResultado() { return _calc ? calcLimitStop(calcEntrada(_calc)) : null; }
-// ¿Hay una hoja de orden a la que ofrecer «Poner en la orden»? (todavía no: solo «Copiar»)
-function calcDestino() { return { estado: 'sin', texto: '' }; }
+// ¿Hay una hoja de orden a la que ofrecer «Poner en la orden»? Anota en _calc.ordVista el formulario al que se ofreció:
+// el toque comprueba que sigue siendo ESE (identidad, como la orden tras cada await).
+function calcDestino() {
+  if (!_calc) return { estado: 'sin', texto: '' };
+  const o = ordenParaCalc();
+  const d = estadoOrdenCalc(_calc.contrato, o);
+  _calc.ordVista = (d.estado === 'ok' && o) ? o.ord : null;
+  return d;
+}
 function pintarCalcRes() {
   if (!_calc || !$('#modalCalc')) return;
   const r = calcResultado(), d = calcDestino();
@@ -9314,9 +9331,146 @@ async function calcCopiar(que) {
   try { await navigator.clipboard.writeText(v); toast((que === 'stop' ? 'Stop ' : 'Limit ') + v + ' copiado'); }
   catch (_) { toast('Copia manual: ' + v); }
 }
+
+// ---- abrirla YA LLENA desde una posición abierta ----
+// Lo que la hoja necesita: { contrato: { symbol, direccion, strike, expiracion, broker }, lotes: [{ n, p }], origen }.
+function calcContrato(x) {
+  x = x || {};
+  const k = Number(x.strike);
+  return { symbol: String(x.symbol || '').trim().toUpperCase(), direccion: String(x.direccion || '').toUpperCase(),
+    strike: (x.strike != null && x.strike !== '' && Number.isFinite(k)) ? k : null,
+    expiracion: String(x.expiracion || '').slice(0, 10) || null, broker: x.broker || null };
+}
+// Una compra en el texto de sus campos: «4» y «0.52» (la prima con hasta 6 decimales: el costo medio de un bróker, 0.523333,
+// no se redondea a 4 y lo pagado cuadra al centavo). Lo que no es un número positivo sale como campo vacío. PURA.
+function calcLote(n, p) {
+  const N = Number(n), P = Number(p);
+  return { n: (n != null && n !== '' && N > 0) ? String(Math.round(N * 1e4) / 1e4) : '', p: (p != null && p !== '' && P > 0) ? String(Math.round(P * 1e6) / 1e6) : '' };
+}
+// Una ficha del libro (Copiloto) y sus hermanas ABIERTAS del mismo contrato y bróker (un refuerzo registrado aparte): una
+// compra por ficha en orden de apertura, así el costo medio es el de TODO lo que venderías. Con el libro, no con el
+// bróker: los cálculos de la Mesa van con el libro (la diferencia de contratos ya se avisa en la tarjeta). PURA.
+function calcDatosDePosicion(id, filas) {
+  const lista = (Array.isArray(filas) ? filas : []).filter(x => x && (x.estado == null || x.estado === 'abierta'));
+  const p = lista.find(x => Number(x.id) === Number(id));
+  if (!p) return null;
+  const k = claveCartera({ ...p, broker: p.broker || 'etrade' });
+  const grupo = (k ? lista.filter(x => claveCartera({ ...x, broker: x.broker || 'etrade' }) === k) : [p]).slice()
+    .sort((a, b) => String(a.abierta_at || '').localeCompare(String(b.abierta_at || '')) || (Number(a.id) - Number(b.id)));
+  return { contrato: calcContrato({ ...p, broker: p.broker || 'etrade' }), lotes: grupo.map(x => calcLote(x.contratos, x.prima_fill)),
+    origen: grupo.length > 1 ? `tu libro: ${grupo.length} fichas de este contrato` : 'tu libro' };
+}
+// Una línea de la cartera del bróker (la que la Mesa no tiene registrada): sus contratos y SU costo medio. PURA.
+function calcDatosDeItem(it) {
+  if (!it || !it.symbol) return null;
+  return { contrato: calcContrato(it), lotes: [calcLote(it.contratos, it.prima_fill)], origen: 'costo medio de ' + (BROKER_NOMBRE[it.broker] || it.broker || 'tu bróker') };
+}
+// Los lotes que quedan ABIERTOS de un contrato según el libro de fills (Diario: FIFO, una fila por compra viva). PURA.
+function calcDatosDeAbiertos(clave, abiertos) {
+  const lista = (Array.isArray(abiertos) ? abiertos : []).filter(a => a && `${a.broker}|${a.contrato}` === String(clave || ''));
+  if (!lista.length) return null;
+  return { contrato: calcContrato(lista[0]), lotes: lista.map(a => calcLote(a.contratos, a.prima)),
+    origen: lista.length > 1 ? `libro de fills: ${lista.length} compras abiertas` : 'libro de fills' };
+}
+function calcDePosicion(id) {
+  const d = calcDatosDePosicion(id, (typeof _gestor === 'object' && _gestor) ? _gestor.filas : []);
+  if (!d) { toast('No encuentro esa posición abierta: vuelve a abrir el Copiloto.'); return; }
+  abrirCalc(d);
+}
+function calcDeBroker(clave) {
+  const d = calcDatosDeItem(buscarItemCartera(clave));
+  if (!d) { toast('Esa posición ya no está en la lectura del bróker: vuelve a preguntar.'); return; }
+  abrirCalc(d);
+}
+function calcDeAbierto(clave) {
+  const d = calcDatosDeAbiertos(clave, (typeof _diario === 'object' && _diario) ? _diario.abiertos : []);
+  if (!d) { toast('Ese contrato ya no está abierto en el libro: vuelve a abrir el Diario.'); return; }
+  abrirCalc(d);
+}
+
+// ---- «Poner en la orden» ----
+// La hoja de orden abierta, leída para la calculadora: null si no hay; si hay, su formulario y, si no se debe tocar, por
+// qué (bloqueo). No se toca con vista previa (lo que se enviaría ya quedó fijado: cambiar el campo descuadraría lo que se ve
+// de lo que sale), enviándose, sin respuesta clara del bróker, ni con el botón de revisar apagado (revisión en vuelo, o un
+// bróker sin sesión).
+function ordenParaCalc() {
+  if (typeof _ord === 'undefined' || !_ord || !$('#modalOrden')) return null;
+  const precio = $('#oPrecio'), btn = $('#oBtnPrev');
+  const bloqueo = (_ord.enviando || _ord.indeterminado) ? 'La orden se está enviando o espera la respuesta del bróker: no se toca.'
+    : (_ord.orden || _ord.previewIds) ? 'La orden ya tiene vista previa: toca «Editar la orden» y vuelve a ponerlo.'
+      : ((precio && precio.disabled) || (btn && btn.disabled)) ? 'La orden está esperando al bróker o no se puede enviar ahora: no se toca.' : '';
+  return { ord: _ord, form: leerFormOrden(), bloqueo };
+}
+// Qué hacer con esa orden (PURA): 'sin' (no hay) · 'otra' (otro contrato, o una acción) · 'compra' · 'bloqueada' ·
+// 'no_limit' (stop, trailing o mercado) · 'ok' (venta Límite de ESTE contrato, libre: se ofrece «Poner en la orden»).
+function estadoOrdenCalc(contrato, orden) {
+  if (!orden || !orden.form) return { estado: 'sin', texto: '' };
+  const f = orden.form;
+  const k = claveContrato(contrato || {});
+  const kf = (f.tipo === 'CALL' || f.tipo === 'PUT') ? claveContrato({ symbol: f.symbol, direccion: f.tipo, strike: f.strike, expiracion: f.expiracion }) : '';
+  if (!k || k !== kf) {
+    const deQue = kf ? kf.split('|').slice(0, 3).join(' ') : (f.symbol ? f.symbol + (f.tipo === 'EQ' ? ' (acción)' : ' (sin strike o vencimiento)') : 'otro contrato');
+    return { estado: 'otra', texto: `La orden abierta es de ${deQue}, no de este contrato: no se toca.` };
+  }
+  if (f.accion !== 'venta') return { estado: 'compra', texto: 'La orden abierta es una compra: el limit de venta no va ahí.' };
+  if (orden.bloqueo) return { estado: 'bloqueada', texto: orden.bloqueo };
+  if (f.priceType !== 'LIMIT') return { estado: 'no_limit', texto: 'La orden abierta no es Límite: cámbiala a Límite para poner este precio.' };
+  return { estado: 'ok', texto: 'Hay una orden de venta de este contrato abierta: «Poner en la orden» solo escribe el precio; la envías tú, con tu toque y tu PIN.',
+    cantidad: calcNum(f.cantidad) };
+}
+// SOLO escribe el limit en el campo Límite de esa hoja de orden y repinta lo que repinta un tecleo en él (etiquetas, avisos
+// de doctrina, total). No revisa, no previsualiza, no envía: la orden sigue necesitando su toque y su PIN. Todo se vuelve a
+// comprobar en el momento del toque: que la hoja sea la MISMA a la que se ofreció el botón (identidad), del mismo
+// contrato, de venta, Límite y libre; si algo cambió no se toca nada y se dice.
+function calcPonerEnOrden() {
+  if (!_calc) return false;
+  const r = calcResultado();
+  if (!r || !r.limit) { toast('Todavía no hay limit calculado.'); return false; }
+  const visto = _calc.ordVista;
+  const o = ordenParaCalc(), d = estadoOrdenCalc(_calc.contrato, o);
+  if (d.estado !== 'ok' || !o || !visto || o.ord !== visto) {
+    toast(d.estado === 'ok' ? 'La hoja de orden cambió mientras calculabas: no toqué nada.' : (d.texto || 'No hay una orden de venta de este contrato abierta: no toqué nada.'));
+    pintarCalcRes();
+    return false;
+  }
+  const el = $('#oPrecio');
+  if (!el || el.disabled) { toast('El campo Límite de la orden no se puede tocar ahora: no toqué nada.'); pintarCalcRes(); return false; }
+  const v = r.limit.precio.toFixed(2);
+  el.value = v;
+  ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden();
+  cerrarCalc();
+  toast(`Limit ${v} puesto en la orden: revísala y envíala con tu toque y tu PIN.`);
+  return true;
+}
+// Desde la hoja de una orden de VENTA de una opción: la calculadora con ese contrato y, para los lotes, la ficha de la
+// posición (y sus hermanas) si la orden sale de una, o la línea del bróker de ese contrato, o la cantidad de la orden con la
+// prima por poner.
+function calcDeOrden() {
+  const o = ordenParaCalc();
+  if (!o) return;
+  const f = o.form;
+  if (f.tipo !== 'CALL' && f.tipo !== 'PUT') { toast('La calculadora es para opciones (×100 por contrato).'); return; }
+  const contrato = calcContrato({ symbol: f.symbol, direccion: f.tipo, strike: f.strike, expiracion: f.expiracion, broker: o.ord.broker || 'etrade' });
+  const k = claveContrato(contrato);
+  const posId = o.ord.pre && o.ord.pre.posicion_id;
+  let d = null;
+  if (posId) {
+    // todas las fichas del contrato… salvo que la orden venda justo la cantidad de SU ficha (la GTC de un refuerzo): entonces
+    // el costo es el de esa ficha, no el medio de todas (venderla al limit del medio de todas podría ser vender con pérdida)
+    const filas = ((typeof _gestor === 'object' && _gestor) ? _gestor.filas : []) || [];
+    const todas = calcDatosDePosicion(posId, filas), sola = calcDatosDePosicion(posId, filas.filter(x => x && Number(x.id) === Number(posId)));
+    const suma = (x) => (x ? x.lotes.reduce((s, l) => s + (calcNum(l.n) || 0), 0) : 0), qty = calcNum(f.cantidad);
+    d = (todas && Math.abs(suma(todas) - qty) > 1e-9 && sola && Math.abs(suma(sola) - qty) <= 1e-9) ? sola : todas;
+  }
+  if (d && claveContrato(d.contrato) !== k) d = null;   // el formulario ya no es de esa posición: manda lo que dice la hoja
+  if (!d && k) d = calcDatosDeItem(itemsCartera(_cart).find(it => claveContrato(it) === k && (it.broker || 'etrade') === contrato.broker) || null);
+  if (!d) d = { contrato, lotes: [calcLote(f.cantidad, null)], origen: 'la orden abierta: pon la prima que pagaste' };
+  abrirCalc(d);
+}
 window.MZ = Object.assign(window.MZ || {}, {
   calcAbrir: () => abrirCalc(null), calcCerrar: cerrarCalc,
   calcLoteMas, calcLoteQuitar, calcModo, calcTick, calcChip, calcCopiar,
+  calcDePosicion, calcDeBroker, calcDeAbierto, calcDeOrden, calcPonerEnOrden,
 });
 
 // ---------- Disciplina ----------
@@ -10782,7 +10936,8 @@ function seccionAbiertosDiario(abiertos, comparacion, huerfanas) {
       <div><b style="font-size:13.5px">${esc(a.symbol)} ${esc(a.direccion)} ${esc(a.strike)}</b> <span class="fresco">${esc(fechaCorta(a.expiracion))}</span>
         <div class="fresco">${esc(BROKER_CORTO[a.broker] || a.broker)} · entró ${esc(fechaCorta(a.fecha_ny))}${a.dias_abiertos != null ? ` · ${a.dias_abiertos} d abierto` : ''}</div></div>
       <div class="mono" style="text-align:right;flex:none"><b>×${esc(a.contratos)} @ $${esc(Number(a.prima).toFixed(2))}</b>
-        <div class="fresco">costó ${dineroD(a.costo)} · <span style="${a.vence_en != null && a.vence_en <= 0 ? 'color:var(--rojo);font-weight:700' : ''}">${a.vence_en == null ? 'sin vencimiento' : a.vence_en === 0 ? 'VENCE HOY' : a.vence_en < 0 ? 'vencido' : 'vence en ' + a.vence_en + ' d'}</span></div></div></div>`).join('')}
+        <div class="fresco">costó ${dineroD(a.costo)} · <span style="${a.vence_en != null && a.vence_en <= 0 ? 'color:var(--rojo);font-weight:700' : ''}">${a.vence_en == null ? 'sin vencimiento' : a.vence_en === 0 ? 'VENCE HOY' : a.vence_en < 0 ? 'vencido' : 'vence en ' + a.vence_en + ' d'}</span></div>${a.vence_en != null && a.vence_en < 0 ? '' : `
+        <a href="#" class="lnk" onclick="MZ.calcDeAbierto('${esc(a.broker + '|' + a.contrato)}');return false" style="font-family:var(--sans);font-weight:600;text-decoration:none" title="Calculadora de limit y stop con las compras abiertas de este contrato">Calcular limit</a>`}</div></div>`).join('')}
     <div class="fresco" style="padding:6px 0 0">No suman al realizado. Un contrato con expiración pasada y sin venta ya cuenta como pérdida total en su día.</div></div>`;
   const cmp = (comparacion || []);
   const malas = cmp.filter(x => !x.coincide);
@@ -11159,6 +11314,7 @@ async function vistaDiario(forzar) {
   sincronizarLibroFondo();
   const sel = periodoDiarioSel();
   const F = emparejarFillsFIFO(fills, hoy);
+  _diario.abiertos = F.abiertos;                                          // v65: «Calcular limit» de un abierto lee de aquí sus compras vivas
   const cerradasSel = F.cerradas.filter(c => enPeriodoDiario(sel, c.fecha_ny));
   const viajesSel = F.viajes.filter(v => enPeriodoDiario(sel, v.fecha_ny));
   const dias = diaADia(cerradasSel, null, null, viajesSel);
