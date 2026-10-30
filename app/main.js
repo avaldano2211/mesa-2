@@ -9103,6 +9103,7 @@ const CALC_DEF = { fee: 0.02, tick: 0.01, modo: 'pct', pct: 12, usd: 50, stop: 2
 const CALC_CHIPS = { pct: [5, 10, 12, 15, 20, 25, 35, 50], usd: [5, 10, 25, 50, 100, 250] };
 let _calc = null;          // la hoja abierta: { lotes: [{ n, p }] (TEXTO tal cual se teclea), contrato, origen, modo, pct, usd, fee, tick, stop, ordVista }
 let _calcManual = null;    // las compras tecleadas a mano desde la cabecera, solo en memoria: al volver a abrirla siguen ahí
+let _calcVuelta = null;    // rev67: el elemento que tenía el foco al abrirla (el botón que la abrió): ahí vuelve al cerrarla
 
 // Las preferencias, validadas: un campo ausente o inválido toma el de `base` (por defecto, los de fábrica). Solo esos seis
 // campos salen de aquí, así que nada más puede acabar en mz_calc. PURA.
@@ -9145,7 +9146,7 @@ function calcLotesHtml(lotes) {
     + L.map((l, i) => `<div class="clote"><span class="cnum">${i + 1}</span>`
       + `<input id="cN${i}" data-c="n" data-i="${i}" type="text" inputmode="decimal" autocomplete="off" value="${esc(l && l.n)}" placeholder="1" aria-label="Contratos de la compra ${i + 1}">`
       + `<input id="cP${i}" data-c="p" data-i="${i}" type="text" inputmode="decimal" autocomplete="off" value="${esc(l && l.p)}" placeholder="0.52" aria-label="Prima pagada en la compra ${i + 1}">`
-      + `<button type="button" class="cquitar" onclick="MZ.calcLoteQuitar(${i})" aria-label="Quitar la compra ${i + 1}"${L.length < 2 ? ' disabled' : ''}>×</button></div>`).join('');
+      + `<button type="button" class="cquitar" onclick="MZ.calcLoteQuitar(${i})" aria-label="Quitar la compra ${i + 1}" id="cQuitar${i}"${L.length < 2 ? ' disabled' : ''}>×</button></div>`).join('');
 }
 // Las compras (1, 2, 3…) cuyos contratos son un número positivo pero NO entero («1.5», «1,5», «0,00004»): calcLimitStop no
 // las cuenta, y quitarlas en silencio sería peor que el Infinity de antes. Se dice cuáles. PURA.
@@ -9161,18 +9162,18 @@ function calcResumenHtml(r, lotes) {
 }
 function calcChipsHtml(st) {
   const usd = st && st.modo === 'usd', actual = calcNum(st && (usd ? st.usd : st.pct));
-  return CALC_CHIPS[usd ? 'usd' : 'pct'].map(v => `<button type="button" class="chip2${actual === v ? ' on' : ''}" onclick="MZ.calcChip(${v})">${usd ? '$' + v : v + '%'}</button>`).join('');
+  return CALC_CHIPS[usd ? 'usd' : 'pct'].map(v => `<button type="button" class="chip2${actual === v ? ' on' : ''}" onclick="MZ.calcChip(${v})" id="cChip${usd ? 'U' : 'P'}${v}" aria-pressed="${actual === v}">${usd ? '$' + v : v + '%'}</button>`).join('');
 }
 function calcObjetivoHtml(st) {
   const usd = st && st.modo === 'usd';
   return `<div class="fila" style="gap:8px;justify-content:flex-start">
-      <div class="cseg" role="group" aria-label="Objetivo en porcentaje o en dólares"><button type="button" class="${usd ? '' : 'on'}" onclick="MZ.calcModo('pct')">%</button><button type="button" class="${usd ? 'on' : ''}" onclick="MZ.calcModo('usd')">$ total</button></div>
+      <div class="cseg" role="group" aria-label="Objetivo en porcentaje o en dólares"><button type="button" class="${usd ? '' : 'on'}" onclick="MZ.calcModo('pct')" id="cModoPct" aria-pressed="${!usd}">%</button><button type="button" class="${usd ? 'on' : ''}" onclick="MZ.calcModo('usd')" id="cModoUsd" aria-pressed="${!!usd}">$ total</button></div>
       <input id="cObj" type="text" inputmode="decimal" autocomplete="off" value="${esc(st && (usd ? st.usd : st.pct))}" aria-label="${usd ? 'Ganancia neta en dólares, todos los contratos' : 'Ganancia neta en porcentaje sobre lo pagado'}" style="flex:1 1 110px;min-width:0"></div>
     <div class="fresco" style="margin:4px 2px 0">${usd ? 'Ganancia NETA en dólares, sumando todos los contratos (después de comisiones).' : 'Ganancia NETA en % sobre lo que pagaste (después de comisiones).'}</div>
     <div class="chips" id="cChips">${calcChipsHtml(st)}</div>`;
 }
 function calcTickHtml(st) {
-  return CALC_TICKS.map(t => `<button type="button" class="${st && st.tick === t ? 'on' : ''}" onclick="MZ.calcTick(${t})">${Math.round(t * 100)}¢</button>`).join('');
+  return CALC_TICKS.map(t => `<button type="button" class="${st && st.tick === t ? 'on' : ''}" onclick="MZ.calcTick(${t})" id="cTick${Math.round(t * 100)}" aria-pressed="${!!(st && st.tick === t)}">${Math.round(t * 100)}¢</button>`).join('');
 }
 function calcFeeNota(fee) {
   const f = calcNum(fee);
@@ -9236,12 +9237,12 @@ function calcFormulaHtml(r) {
 }
 function calcHojaHtml(st, r, dest) {
   const c = st && st.contrato;
-  return `<div class="hoja calc">
+  return `<div class="hoja calc" id="cHoja" tabindex="-1" role="dialog" aria-modal="true" aria-label="Calculadora de limit y stop">
     <div class="fila"><h3 style="margin:0">Calculadora de limit y stop</h3><button type="button" class="cfg" onclick="MZ.calcCerrar()" aria-label="Cerrar la calculadora" title="Cerrar (Esc)">✕</button></div>
     <div class="mut" id="cTitulo">${c && c.symbol ? `<b class="mono" style="color:var(--tx)">${esc(calcTitulo(c))}</b>${st.origen ? `<span class="fresco" style="display:block">${esc(st.origen)}</span>` : ''}` : 'A mano: escribe tus compras (desde una posición se abre ya llena).'}</div>
     <div class="sec" style="margin-top:8px">COMPRAS <span class="fresco" style="letter-spacing:0;font-weight:500">prima por contrato: 0.52 = $52</span></div>
     <div class="clotes" id="cLotes">${calcLotesHtml(st && st.lotes)}</div>
-    <button type="button" class="btnsec" style="flex:none;margin-top:4px" onclick="MZ.calcLoteMas()">+ Añadir compra</button>
+    <button type="button" class="btnsec" style="flex:none;margin-top:4px" onclick="MZ.calcLoteMas()" id="cMas">+ Añadir compra</button>
     <div class="mut" id="cResumen" style="margin-top:4px">${calcResumenHtml(r, st && st.lotes)}</div>
     <div class="sec" style="margin-top:12px">LO QUE QUIERES GANAR</div>
     <div id="cObjBox">${calcObjetivoHtml(st)}</div>
@@ -9270,8 +9271,29 @@ function calcDestino() {
   _calc.ordVista = (d.estado === 'ok' && o) ? o.ord : null;
   return d;
 }
+// ---- el foco (rev67) ----
+// Ningún cuadro de la app es inert y la hoja es lo último del <body>: si el foco cae a <body>, el siguiente Tab empieza por
+// la cabecera y la página de DETRÁS, y con el teclado de la Mac hay que recorrer todo el Copiloto para volver aquí.
+// ¿Hay teclado físico (Mac, iPad con trackpad)? Ahí el foco puede ir a un CAMPO; en el teléfono, un foco en un campo saca
+// el teclado y tapa la hoja (y el resultado), así que ahí va a la hoja misma (tabindex=-1), que no lo saca.
+function calcTecladoFisico() {
+  try { return !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches); } catch (_) { return false; }
+}
+// innerHTML se lleva el botón que tenía el foco (un chip, %/$, 1¢/5¢, ×) y el foco cae a <body>. Se anota su id ANTES de
+// repintar y luego se enfoca el primero de `ids` que exista y no esté apagado (el mismo botón, ya nuevo, o el equivalente).
+// Sin foco anotado (Safari no enfoca un botón al tocarlo con el ratón) no se mueve nada.
+function calcFocoId() { const a = document.activeElement; return (a && a.id) ? String(a.id) : ''; }
+function calcFocoVolver(ids) {
+  for (const id of ids) {
+    if (!id) continue;
+    const el = $('#' + id);
+    if (el && !el.disabled && typeof el.focus === 'function') { if (document.activeElement !== el) el.focus(); return true; }
+  }
+  return false;
+}
 function pintarCalcRes() {
   if (!_calc || !$('#modalCalc')) return;
+  const foco = calcFocoId();
   const r = calcResultado(), d = calcDestino();
   const poner = (id, h) => { const el = $('#' + id); if (el) el.innerHTML = h; };
   poner('cResumen', calcResumenHtml(r, _calc.lotes));
@@ -9280,11 +9302,17 @@ function pintarCalcRes() {
   poner('cResLimit', calcLimitHtml(r, d));
   poner('cResStop', calcStopHtml(r));
   poner('cFormula', calcFormulaHtml(r));
+  if (/^cChip/.test(foco)) calcFocoVolver([foco]);   // un chip: se repinta aquí (el nuevo «on»)
 }
 // datos = { contrato, lotes: [{ n, p }], origen } (ya lleno desde una posición) o nada (a mano, desde la cabecera).
 function abrirCalc(datos) {
   datos = datos || {};
-  cerrarCalc();
+  // a dónde vuelve el foco al cerrarla: el que lo tenía (el botón que la abrió); si se abre DESDE otra calculadora (la
+  // sustituye), a donde iba a volver aquélla
+  const act = document.activeElement, vieja = $('#modalCalc');
+  const vuelta = (vieja && act && typeof vieja.contains === 'function' && vieja.contains(act)) ? _calcVuelta : act;
+  cerrarCalc(true);
+  _calcVuelta = (vuelta && vuelta !== document.body) ? vuelta : null;
   const pref = calcPrefsLeer();
   const contrato = (datos.contrato && datos.contrato.symbol) ? datos.contrato : null;
   const txt = (v) => (v == null || (typeof v === 'number' && !Number.isFinite(v))) ? '' : String(v);
@@ -9298,9 +9326,23 @@ function abrirCalc(datos) {
   document.body.appendChild(m);
   m.addEventListener('input', calcInput);
   if (!window._mzCalcTecla) { window._mzCalcTecla = true; document.addEventListener('keydown', calcTecla); }
-  if (!contrato && !(calcNum(lotes[0].p) > 0)) setTimeout(() => { const i = $('#cP0'); if (i) i.focus(); }, 60);
+  // el foco ENTRA en la hoja: a mano y sin prima, a la primera prima (como siempre); ya llena, con teclado físico al objetivo
+  // (lo que se cambia), y en el teléfono a la hoja misma (un campo sacaría el teclado y taparía el resultado)
+  const vacia = !contrato && !(calcNum(lotes[0].p) > 0), yo = _calc;
+  setTimeout(() => {
+    if (_calc !== yo) return;   // se cerró o la sustituyó otra en estos 60 ms
+    const el = $(vacia ? '#cP0' : calcTecladoFisico() ? '#cObj' : '#cHoja');
+    if (el) el.focus();
+  }, 60);
 }
-function cerrarCalc() { const m = $('#modalCalc'); if (m) m.remove(); _calc = null; }
+// sinFoco: al sustituirla por otra, o cuando quien la cierra pone el foco en otro sitio («Poner en la orden»)
+function cerrarCalc(sinFoco) {
+  const m = $('#modalCalc'); if (m) m.remove();
+  const v = _calcVuelta;
+  _calc = null; _calcVuelta = null;
+  // el foco vuelve al botón que la abrió (si sigue en la página): si no, caería a <body>
+  if (m && !sinFoco && v && v.isConnected !== false && typeof v.focus === 'function') { try { v.focus(); } catch (_) {} }
+}
 function calcTecla(e) { if (e && e.key === 'Escape' && $('#modalCalc')) cerrarCalc(); }
 function calcManualAnotar() { if (_calc && !_calc.contrato) _calcManual = _calc.lotes.map(l => ({ n: l.n, p: l.p })); }
 // Un tecleo: al estado (el texto tal cual) y se repintan los resultados; los campos no se tocan.
@@ -9326,24 +9368,31 @@ function calcLoteMas() {
 }
 function calcLoteQuitar(i) {
   if (!_calc || _calc.lotes.length < 2 || !_calc.lotes[Number(i)]) return;
+  const foco = calcFocoId();
   _calc.lotes.splice(Number(i), 1);
   calcManualAnotar();
   const b = $('#cLotes'); if (b) b.innerHTML = calcLotesHtml(_calc.lotes);
   pintarCalcRes();
+  // con el foco en una ×: a la × que queda en su sitio (o a la última); si queda una sola compra su × está apagada: a «+ Añadir compra»
+  if (/^cQuitar/.test(foco)) calcFocoVolver(['cQuitar' + Math.min(Number(i), _calc.lotes.length - 1), 'cMas']);
 }
 function calcModo(m) {
   if (!_calc) return;
+  const foco = calcFocoId();
   _calc.modo = m === 'usd' ? 'usd' : 'pct';
   calcPrefsGuardar(_calc);
   const b = $('#cObjBox'); if (b) b.innerHTML = calcObjetivoHtml(_calc);
   pintarCalcRes();
+  calcFocoVolver([foco]);   // %/$ (o el campo del objetivo): el mismo, ya repintado
 }
 function calcTick(t) {
   if (!_calc || !CALC_TICKS.includes(Number(t))) return;
+  const foco = calcFocoId();
   _calc.tick = Number(t);
   calcPrefsGuardar(_calc);
   const b = $('#cTick'); if (b) b.innerHTML = calcTickHtml(_calc);
   pintarCalcRes();
+  calcFocoVolver([foco]);   // 1¢/5¢: el mismo, ya repintado
 }
 function calcChip(v) {
   if (!_calc) return;
@@ -9487,7 +9536,9 @@ function calcPonerEnOrden() {
   const v = r.limit.precio.toFixed(2);
   el.value = v;
   ajustarFormOrden(); pintarAvisosOrden(); pintarTotalOrden();
-  cerrarCalc();
+  // el foco, al campo Límite que se acaba de escribir (con teclado físico: de ahí se sigue a «Revisar»); en el teléfono un
+  // foco en el campo sacaría el teclado encima de la orden: vuelve al enlace que abrió la calculadora
+  if (calcTecladoFisico()) { cerrarCalc(true); try { el.focus(); } catch (_) {} } else cerrarCalc();
   toast(`Limit ${v} puesto en la orden: revísala y envíala con tu toque y tu PIN.`);
   return true;
 }
@@ -9517,7 +9568,7 @@ function calcDeOrden() {
   abrirCalc(d);
 }
 window.MZ = Object.assign(window.MZ || {}, {
-  calcAbrir: () => abrirCalc(null), calcCerrar: cerrarCalc,
+  calcAbrir: () => abrirCalc(null), calcCerrar: () => cerrarCalc(),
   calcLoteMas, calcLoteQuitar, calcModo, calcTick, calcChip, calcCopiar,
   calcDePosicion, calcDeBroker, calcDeAbierto, calcDeOrden, calcPonerEnOrden,
 });

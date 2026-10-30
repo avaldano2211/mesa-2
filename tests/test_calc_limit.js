@@ -185,7 +185,7 @@ const SUCIO = /NaN|undefined|Infinity|\[object/;
   assert(/A mano: escribe tus compras/.test(h0), 'abierta a mano lo dice (sin contrato en el título)');
   assert(!/Poner en la orden/.test(h0) && !/MZ\.calcCopiar/.test(h0), 'sin precio no hay «Copiar» ni «Poner en la orden»');
   assert(/id="cN0" data-c="n" data-i="0" type="text" inputmode="decimal"[^>]*value="1"/.test(h0) && /id="cP0" data-c="p" data-i="0"[^>]*value=""[^>]*placeholder="0\.52"/.test(h0), 'una compra vacía: contratos 1 y la prima por llenar (0.52 de ejemplo)');
-  assert(/class="cquitar" onclick="MZ\.calcLoteQuitar\(0\)" aria-label="Quitar la compra 1" disabled>/.test(h0), 'la única compra no se puede quitar');
+  assert(/class="cquitar" onclick="MZ\.calcLoteQuitar\(0\)" aria-label="Quitar la compra 1" id="cQuitar0" disabled>/.test(h0), 'la única compra no se puede quitar');
   [[{ n: '0', p: '1' }], [{ n: '-2', p: '0.5' }], [{ n: '2', p: '-1' }], [{ n: 'x', p: 'y' }], [], null].forEach(l => {
     const h = hoja(st({ lotes: l }));
     assert(!SUCIO.test(h) && /<div class="cprecio">—<\/div>/.test(h), 'compras ' + JSON.stringify(l) + ': «—» y sin NaN en pantalla');
@@ -218,16 +218,18 @@ const SUCIO = /NaN|undefined|Infinity|\[object/;
   assert(!/Poner en la orden/.test(h1), 'sin hoja de orden abierta: solo «Copiar»');
   assert(/costo medio 0\.52  \(\$208\.00 ÷ 4 ÷ 100\)\n\+ objetivo  0\.01  \(\$4\.00 ÷ 4 ÷ 100\)\n\+ comisión  0\.02  \(compra \+ venta\)\n= 0\.55 → limit 0\.55 \(arriba a 1¢\)\nstop 0\.52 × \(1 − 20 %\) = 0\.416 → 0\.42/.test(h1), 'la cuenta paso a paso, como en su Excel', h1.split('cFormula">')[1]);
   assert(/value="1\.21"/.test(h1) && /value="0\.29"/.test(h1) && /id="cN1" data-c="n" data-i="1"[^>]*value="3"/.test(h1), 'las dos compras en sus campos');
-  assert(/onclick="MZ\.calcLoteQuitar\(1\)" aria-label="Quitar la compra 2">/.test(h1), 'con dos compras sí se puede quitar una');
-  assert(/<button type="button" class="">%<\/button><button type="button" class="on">\$ total<\/button>/.test(h1.replace(/ onclick="[^"]*"/g, '')) && /id="cObj"[^>]*value="4"/.test(h1), 'el modo $ marcado y el objetivo 4');
+  assert(/onclick="MZ\.calcLoteQuitar\(1\)" aria-label="Quitar la compra 2" id="cQuitar1">/.test(h1), 'con dos compras sí se puede quitar una');
+  assert(/<button type="button" class="">%<\/button><button type="button" class="on">\$ total<\/button>/.test(h1.replace(/ (onclick|id|aria-pressed)="[^"]*"/g, '')) && /id="cObj"[^>]*value="4"/.test(h1), 'el modo $ marcado y el objetivo 4');
+  assert(/onclick="MZ\.calcModo\('pct'\)" id="cModoPct" aria-pressed="false">%<\/button><button type="button" class="on" onclick="MZ\.calcModo\('usd'\)" id="cModoUsd" aria-pressed="true">\$ total/.test(h1), 'rev67: %/$ con aria-pressed (el lector de pantalla dice cuál está elegido) y un id para devolverles el foco');
   assert(/Ganancia NETA en dólares, sumando todos los contratos/.test(h1), 'y dice que es neta y de todos los contratos');
   // con el 12 % y la comisión de su Excel
   const h2 = hoja(st({ lotes: [{ n: '1', p: '2.40' }], pct: '12', fee: '0.01' }));
   assert(/id="cLimit">2\.70</.test(h2) && /\+\$29\.00<\/b><i[^>]*>\+12\.08 %/.test(h2) && /id="cStopP">1\.92</.test(h2), 'hoja 1: 2.70 (+$29.00 · +12.08 %) y stop 1.92');
   assert(/0\.01 de prima por contrato = \$0\.50 al comprar \+ \$0\.50 al vender\./.test(h2), 'la nota de la comisión en dólares');
   assert(/12 % de 2\.40/.test(h2), 'la fórmula del % dice de qué');
-  assert(/<button type="button" class="chip2 on" onclick="MZ\.calcChip\(12\)">12%<\/button>/.test(h2) && (h2.match(/chip2 on/g) || []).length === 1, 'el chip del 12 % encendido (y solo ese)');
-  assert(/<button type="button" class="on" onclick="MZ\.calcTick\(0\.01\)">1¢<\/button><button type="button" class="" onclick="MZ\.calcTick\(0\.05\)">5¢<\/button>/.test(h2), 'el incremento: 1¢ marcado, 5¢ a un toque');
+  assert(/<button type="button" class="chip2 on" onclick="MZ\.calcChip\(12\)" id="cChipP12" aria-pressed="true">12%<\/button>/.test(h2) && (h2.match(/chip2 on/g) || []).length === 1, 'el chip del 12 % encendido (y solo ese)');
+  igual([(h2.match(/aria-pressed="true"/g) || []).length, (h2.match(/class="chip2" onclick="MZ\.calcChip\(\d+\)" id="cChipP\d+" aria-pressed="false"/g) || []).length], [3, 7], 'rev67: aria-pressed en los chips (el 12 % sí, los otros 7 no), en %/$ y en 1¢/5¢');
+  assert(/<button type="button" class="on" onclick="MZ\.calcTick\(0\.01\)" id="cTick1" aria-pressed="true">1¢<\/button><button type="button" class="" onclick="MZ\.calcTick\(0\.05\)" id="cTick5" aria-pressed="false">5¢<\/button>/.test(h2), 'el incremento: 1¢ marcado, 5¢ a un toque');
   assert(/id="cLimit">2\.75</.test(hoja(st({ lotes: [{ n: '1', p: '2.40' }], tick: 0.05 }))) && /arriba a 5¢/.test(hoja(st({ lotes: [{ n: '1', p: '2.40' }], tick: 0.05 }))), 'con 5¢: 2.75 y la fórmula lo dice');
   // lo tecleado se escapa
   const h3 = hoja(st({ lotes: [{ n: '"><b>', p: '<img>' }], contrato: { symbol: 'A<B', direccion: 'CALL', strike: 1, expiracion: '2026-11-20' } }));
@@ -252,29 +254,76 @@ const SUCIO = /NaN|undefined|Infinity|\[object/;
 // <body> con sus cuadros, y los nodos de DENTRO de la hoja (por id) solo si su HTML los trae.
 function domFalso() {
   const cuerpo = [], nodos = {}, escuchas = [];
+  // rev67: el FOCO, con un DOM de juguete algo más fiel. Cada bloque repintado guarda su HTML (`bloques`) y la página
+  // efectiva es el HTML de los cuadros del <body> con los bloques sustituidos. Un innerHTML nuevo (o quitar el cuadro) se
+  // lleva los nodos que había DENTRO: dejan de estar conectados, el siguiente $('#id') da uno NUEVO (apagado si su etiqueta
+  // lo dice) y, si uno tenía el foco, el foco cae a <body> — lo que hace el navegador. focus() lo anota en activeElement.
+  const bloques = {};
+  const VACIOS = /^(input|br|img|hr|meta|link)$/i;
+  // [ini, fin) del contenido del elemento con ese id en `h`, o null
+  const interior = (h, id) => {
+    const p = h.indexOf('id="' + id + '"'); if (p < 0) return null;
+    const a = h.lastIndexOf('<', p), cierre = h.indexOf('>', p); if (a < 0 || cierre < 0) return null;
+    const tag = (/^<(\w+)/.exec(h.slice(a)) || [])[1]; if (!tag) return null;
+    if (VACIOS.test(tag)) return [cierre + 1, cierre + 1];
+    const re = /<(\/?)(\w+)[^>]*>/g; re.lastIndex = cierre + 1; let prof = 1, m;
+    while ((m = re.exec(h))) { if (m[2] !== tag) continue; prof += m[1] ? -1 : 1; if (!prof) return [cierre + 1, m.index]; }
+    return null;
+  };
+  const efectivo = (h) => {
+    h = String(h);
+    Object.keys(bloques).forEach(k => { const r = interior(h, k); if (r) h = h.slice(0, r[0]) + efectivo(bloques[k]) + h.slice(r[1]); });
+    return h;
+  };
+  const pagina = () => cuerpo.map(n => efectivo(n.__html)).join('\n');
+  const idsDe = (h) => (String(h).match(/id="([\w-]+)"/g) || []).map(x => x.slice(4, -1));
+  const soltar = (h) => idsDe(h).forEach(k => {
+    delete bloques[k];
+    const viejo = nodos[k]; if (!viejo) return;
+    delete nodos[k]; viejo.isConnected = false;
+    if (doc.activeElement === viejo) doc.activeElement = doc.body;
+  });
+  const enfocable = (n) => { n.focus = () => { doc.activeElement = n; }; return n; };
   const crear = () => {
-    const n = C.nodo({ style: {}, oyentes: {}, id: '' });
+    const n = enfocable(C.nodo({ style: {}, oyentes: {}, id: '' }));
+    n.__html = '';
+    Object.defineProperty(n, 'innerHTML', { get: () => n.__html, set: (v) => { soltar(efectivo(n.__html)); n.__html = String(v); }, enumerable: true, configurable: true });
+    n.contains = (x) => !!x && !!x.id && idsDe(efectivo(n.__html)).includes(x.id);
     n.addEventListener = (t, f) => { n.oyentes[t] = f; };
-    n.remove = () => { const i = cuerpo.indexOf(n); if (i >= 0) cuerpo.splice(i, 1); };
+    n.remove = () => { const i = cuerpo.indexOf(n); if (i >= 0) { cuerpo.splice(i, 1); soltar(efectivo(n.__html)); } };
     return n;
+  };
+  const interno = (id, tag) => {
+    const n = enfocable(C.nodo({ id, disabled: /\sdisabled[\s>]/.test(tag) }));
+    Object.defineProperty(n, 'innerHTML', { get: () => (id in bloques ? bloques[id] : ''), set: (v) => {
+      // lo que había dentro (en la página efectiva) se va con el HTML viejo
+      const pg = pagina(), r = interior(pg, id);
+      if (r) soltar(pg.slice(r[0], r[1]));
+      bloques[id] = String(v);
+    }, enumerable: true, configurable: true });
+    return (nodos[id] = n);
   };
   const doc = {
     createElement: crear,
-    body: { appendChild: (n) => { cuerpo.push(n); } },
+    body: { appendChild: (n) => { cuerpo.push(n); }, id: '' },
+    activeElement: null,
     addEventListener: (t, f) => { escuchas.push([t, f]); },
     querySelector: (s) => {
       if (s === '.modal') return cuerpo.find(n => /(^| )modal( |$)/.test(n.className)) || null;
       const m = /^#([\w-]+)$/.exec(s); if (!m) return null;
       const arriba = cuerpo.find(n => n.id === m[1]); if (arriba) return arriba;
-      const dentro = cuerpo.find(n => String(n.innerHTML).includes('id="' + m[1] + '"'));
-      return dentro ? (nodos[m[1]] || (nodos[m[1]] = C.nodo({ id: m[1] }))) : null;
+      if (nodos[m[1]]) return nodos[m[1]];
+      const pg = pagina();
+      const tag = (pg.match(new RegExp('<[^>]*id="' + m[1] + '"[^>]*>')) || [null])[0];
+      return tag ? interno(m[1], tag) : null;
     },
     querySelectorAll: (s) => s === '.modal' ? cuerpo.filter(n => /(^| )modal( |$)/.test(n.className)) : [],
   };
+  doc.activeElement = doc.body;
   return { doc, cuerpo, nodos, escuchas, $: (s) => doc.querySelector(s), crear };
 }
 const DOM_CALC = ['abrirCalc', 'cerrarCalc', 'calcTecla', 'calcInput', 'calcManualAnotar', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar',
-  'pintarCalcRes', 'calcResultado', 'calcDestino', 'ordenParaCalc', 'estadoOrdenCalc', 'claveContrato', 'calcPonerEnOrden'];
+  'calcTecladoFisico', 'calcFocoId', 'calcFocoVolver', 'pintarCalcRes', 'calcResultado', 'calcDestino', 'ordenParaCalc', 'estadoOrdenCalc', 'claveContrato', 'calcPonerEnOrden'];
 function armarHoja(E) {
   E = E || {};
   const D = domFalso(), ls = E.ls || C.localStorageFalso(), reg = { toasts: [], timers: [], copias: [] };
@@ -283,7 +332,7 @@ function armarHoja(E) {
     toast: (t) => reg.toasts.push(t), setTimeout: (f, ms) => { reg.timers.push({ f, ms }); return 0; },
     navigator: { clipboard: { writeText: async (v) => { if (E.sinPortapapeles) throw new Error('no'); reg.copias.push(v); } } } }, E.deps || {});
   const M = construir(DOM_CALC.concat(BASE_CALC, VISTA_CALC, E.mas || []), deps,
-    { consts: CONSTS_CALC.concat(['_calc', '_calcManual'], E.consts || []), prefijo: E.prefijo || '', sufijo: 'function __calc() { return _calc; } function __manual() { return _calcManual; }' + (E.sufijo || ''), extras: ['__calc', '__manual'].concat(E.extras || []) });
+    { consts: CONSTS_CALC.concat(['_calc', '_calcManual', '_calcVuelta'], E.consts || []), prefijo: E.prefijo || '', sufijo: 'function __calc() { return _calc; } function __manual() { return _calcManual; }' + (E.sufijo || ''), extras: ['__calc', '__manual'].concat(E.extras || []) });
   return { M, D, ls, reg, win };
 }
 const ev = (id, valor, extra) => ({ target: Object.assign({ id, value: valor, dataset: {} }, extra || {}) });
@@ -295,7 +344,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     igual(D.cuerpo.length, 1, 'abrir: un cuadro en <body> (fuera de #vista: el repintado de la vista no lo toca)');
     const m = D.cuerpo[0];
     igual([m.className, m.id, m.style.zIndex], ['modal', 'modalCalc', 52], 'es una .modal (los guardas de la app la ven) con id modalCalc, encima de la orden (50) y debajo del PIN (55)');
-    assert(/<div class="hoja calc">/.test(m.innerHTML) && /Calculadora de limit y stop/.test(m.innerHTML), 'con la hoja de la calculadora dentro');
+    assert(/<div class="hoja calc" id="cHoja" tabindex="-1" role="dialog" aria-modal="true" aria-label="Calculadora de limit y stop">/.test(m.innerHTML) && /Calculadora de limit y stop/.test(m.innerHTML), 'con la hoja de la calculadora dentro (un diálogo que puede recibir el foco)');
     igual(typeof m.oyentes.input, 'function', 'escucha los tecleos de sus campos (input)');
     igual(D.escuchas.filter(e => e[0] === 'keydown').length, 1, 'y Escape (keydown en el documento)');
     igual([reg.timers.length, reg.timers[0] && reg.timers[0].ms], [1, 60], 'a mano y sin prima: el foco va a la primera prima');
@@ -358,7 +407,9 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     igual(D.cuerpo.filter(n => n.id === 'modalCalc').length, 1, 'abrir con una ya abierta la sustituye: nunca dos calculadoras');
     igual(M.__calc().lotes, [{ n: '4', p: '0.52' }], 'ya llena: los lotes de la posición (en texto)');
     assert(/TSLA CALL 420 · vence 2026-11-20 · E\*TRADE/.test(D.cuerpo[0].innerHTML) && /id="cLimit">/.test(D.cuerpo[0].innerHTML), 'con su contrato en el título y el resultado ya calculado');
-    igual(reg.timers.length, 1, 'ya llena no salta el teclado (no se enfoca nada)');
+    // rev67: ahora el foco ENTRA en la hoja; sin teclado físico (sin matchMedia aquí: el teléfono) va a la hoja misma, no a un campo
+    reg.timers[reg.timers.length - 1].f();
+    igual(D.doc.activeElement && D.doc.activeElement.id, 'cHoja', 'ya llena no salta el teclado: en el teléfono el foco va a la HOJA (tabindex=-1), no a un campo');
     igual(M.__manual(), [{ n: '3', p: '0,29' }], 'y no pisa las compras tecleadas a mano');
     M.abrirCalc({ contrato: { symbol: 'X' }, lotes: [{ n: NaN, p: null }] });
     igual(M.__calc().lotes, [{ n: '', p: '' }], 'un NaN o null de una posición rara sale como campo vacío, no como «NaN»');
@@ -382,6 +433,76 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     assert(/id="cLimit">2\.71</.test(D.nodos.cResLimit.innerHTML), 'con localStorage bloqueado la hoja funciona igual (de fábrica: 12 % y 0.02 → 2.71)');
   }
 
+  // ════════════════ 12b. rev67: el FOCO entra en la hoja, no se pierde al repintar y vuelve al cerrar ════════════════
+  // (ningún cuadro es inert y la hoja es lo último del <body>: con el foco en <body>, el Tab de la Mac recorría todo el Copiloto)
+  const MAC = { matchMedia: (q) => ({ matches: q === '(hover: hover) and (pointer: fine)' }) };
+  const TSLA_L = { contrato: { symbol: 'TSLA', direccion: 'CALL', strike: 420, expiracion: '2026-11-20', broker: 'etrade' }, lotes: [{ n: 1, p: 1.21 }, { n: 3, p: 0.29 }], origen: 'tu libro' };
+  const id = (D) => D.doc.activeElement && D.doc.activeElement.id;
+  const correr = (reg) => { const t = reg.timers.splice(0); t.forEach(x => x.f()); };
+  {
+    const { M, D, reg } = armarHoja({ deps: { window: MAC } });
+    const boton = D.crear(); boton.id = 'bCalc8'; boton.focus();          // «Calcular limit» de la ficha 8, en el Copiloto
+    M.abrirCalc(TSLA_L);
+    correr(reg);
+    igual(id(D), 'cObj', 'Mac: abierta ya llena desde una posición, el foco ENTRA en la hoja, en el objetivo (lo que se cambia)');
+    // un chip (15 %) con el teclado: pintarCalcRes rehace los chips con innerHTML
+    const chip = D.$('#cChipP15'); chip.focus();
+    M.calcChip(15);
+    assert(id(D) === 'cChipP15' && D.doc.activeElement !== chip && chip.isConnected === false, 'un chip: el foco sigue en el 15 % (el NUEVO botón; el viejo se fue con el repintado), no en <body>', id(D));
+    assert(/class="chip2 on" onclick="MZ\.calcChip\(15\)" id="cChipP15" aria-pressed="true"/.test(D.nodos.cChips.innerHTML), '(y es el encendido, con aria-pressed)');
+    // 1¢/5¢
+    D.$('#cTick5').focus(); M.calcTick(0.05);
+    igual(id(D), 'cTick5', '5¢: el foco sigue en 5¢');
+    // %/$
+    D.$('#cModoUsd').focus(); M.calcModo('usd');
+    igual(id(D), 'cModoUsd', '$ total: el foco sigue en «$ total» (el bloque del objetivo se rehízo entero)');
+    D.$('#cModoPct').focus(); M.calcModo('pct');
+    igual(id(D), 'cModoPct', 'y de vuelta a %');
+    // un chip tocado con el ratón en Safari (el botón no se enfoca): no se le pone el foco a nada
+    D.$('#cObj').focus(); M.calcChip(20);
+    igual(id(D), 'cObj', 'un chip con el foco en el campo del objetivo: el foco se queda en el campo');
+    // quitar compras con el teclado
+    M.calcLoteMas(); D.$('#cQuitar1').focus();
+    M.calcLoteQuitar(1);
+    igual([M.__calc().lotes.length, id(D)], [2, 'cQuitar1'], '× de la compra 2 de 3: el foco pasa a la × que queda en su sitio');
+    M.calcLoteQuitar(1);
+    igual([M.__calc().lotes.length, id(D)], [1, 'cMas'], '× de la última que se podía quitar: la que queda tiene la × apagada → el foco va a «+ Añadir compra»');
+    D.doc.activeElement = D.doc.body; M.calcLoteMas(); D.doc.activeElement = D.doc.body;
+    M.calcLoteQuitar(0);
+    igual(id(D), '', 'quitar con el ratón (foco en <body>): no se mueve el foco a ningún lado');
+    // Escape: vuelve al botón que la abrió
+    const tecla = D.escuchas.find(e => e[0] === 'keydown')[1];
+    tecla({ key: 'Escape' });
+    igual([D.cuerpo.length, D.doc.activeElement === boton], [0, true], 'Escape: el foco vuelve a «Calcular limit» de la ficha 8, no a <body>');
+    // «Cerrar»
+    M.abrirCalc(TSLA_L); D.$('#cFee').focus(); M.cerrarCalc();
+    igual(D.doc.activeElement === boton, true, '«Cerrar» (o ✕): igual');
+    // la abre OTRA desde dentro (la sustituye): al cerrar, vuelve al botón de la primera
+    M.abrirCalc(TSLA_L); D.$('#cObj').focus();
+    M.abrirCalc({ contrato: TSLA_L.contrato, lotes: [{ n: 4, p: 0.52 }] });
+    M.cerrarCalc();
+    igual(D.doc.activeElement === boton, true, 'si otra la sustituye desde dentro, al cerrar se vuelve al botón de la primera (no a un campo que ya no existe)');
+    // el botón que la abrió ya no está (la página se repintó): no se enfoca un nodo suelto
+    M.abrirCalc(TSLA_L); boton.isConnected = false; D.doc.activeElement = D.$('#cObj');
+    M.cerrarCalc();
+    assert(D.doc.activeElement !== boton, 'si el botón de origen ya no está en la página, no se le da el foco');
+    // un temporizador de una hoja ya cerrada no mueve el foco
+    boton.isConnected = true; boton.focus();
+    M.abrirCalc(TSLA_L); M.cerrarCalc(); correr(reg);
+    igual(D.doc.activeElement === boton, true, 'cerrada antes de sus 60 ms: su temporizador no toca el foco');
+    // a mano y sin prima: a la primera prima (como siempre)
+    M.abrirCalc(null); correr(reg);
+    igual(id(D), 'cP0', 'a mano y sin prima: el foco a la primera prima, como antes');
+  }
+  {
+    // el teléfono (sin teclado físico): a la hoja, nunca a un campo (no salta el teclado)
+    const { M, D, reg } = armarHoja({ deps: { window: { matchMedia: () => ({ matches: false }) } } });
+    M.abrirCalc(TSLA_L); correr(reg);
+    igual(id(D), 'cHoja', 'teléfono: ya llena, el foco a la hoja (tabindex=-1), no al objetivo: no sale el teclado tapando el resultado');
+    const { M: M2, D: D2, reg: reg2 } = armarHoja({ deps: { window: { matchMedia: () => { throw new Error('viejo'); } } } });
+    M2.abrirCalc(TSLA_L); correr(reg2);
+    igual(id(D2), 'cHoja', 'un matchMedia que revienta cuenta como teléfono');
+  }
   // ════════════════ 13. los guardas de la app con la calculadora abierta ════════════════
   {
     const { M, D } = armarHoja();
@@ -437,6 +558,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     assert(/\.calc \.cprecio\{[^}]*var\(--mono\)[^}]*font-variant-numeric:tabular-nums/.test(css) && /\.calc input\{[^}]*font-variant-numeric:tabular-nums;font-size:16px/.test(css), 'CSS: el precio y los campos en mono tabular, los campos a 16 px (iOS no amplía)');
     assert(/\.calc \.cstop \.cprecio\{color:var\(--rojo\)\}/.test(css) && /\.calc \.cseg button\.on\{background:var\(--oro\)/.test(css), 'CSS: el stop en rojo y lo elegido en oro (los colores del tema: claro y oscuro)');
     assert(/\.calc \.clote\{display:grid;grid-template-columns:18px minmax\(0,1fr\) minmax\(0,1\.4fr\) 40px/.test(css), 'CSS: cada compra en una fila que cabe a 375 px (columnas con minmax(0,…))');
+    assert(/\.hoja\.calc:focus\{outline:none\}/.test(css), 'CSS rev67: la hoja enfocada (en el teléfono) sin un marco alrededor de todo el cuadro');
     // rev67 · la cabecera a 375 px con el mercado cerrado: medida en el navegador con la cabecera REAL (rev67/cabecera), «Cuentas
     // y diario» + «mercado cerrado» pasaba de 62 a 97 px (la fecha partida en «VIERNES, 30 OCT ·» / «NY» y el título en dos)
     assert(/header\.top \.fecha\{[^}]*white-space:nowrap;overflow:hidden;text-overflow:ellipsis\}/.test(css), 'CSS: la fecha no se parte (y, si de verdad no cabe, se recorta con «…» en vez de montarse sobre la píldora)');
@@ -546,13 +668,13 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
           buscarItemCartera: (k) => [AAPL, MOO_T].find(it => it.clave === k) || null, _diario: { abiertos: ABIERTOS_T },
           ordenPreview: espia('ordenPreview'), ordenPlace: espia('ordenPlace'), ordenPreviewSchwab: espia('ordenPreviewSchwab'), ordenPlaceSchwab: espia('ordenPlaceSchwab'),
           etPost: espia('etPost'), swPost: espia('swPost'), abrirOrden: espia('abrirOrden'), construirOrden: espia('construirOrden'), construirOrdenSchwab: espia('construirOrdenSchwab'),
-          sb: { from: espia('sb.from') } } });
+          sb: { from: espia('sb.from') }, ...(E.deps || {}) } });
       // la hoja de orden abierta, con sus campos
       const orden = H.D.crear(); orden.className = 'modal'; orden.id = 'modalOrden';
       const campos = Object.assign({}, CAMPOS, E.campos || {});
       orden.innerHTML = Object.keys(campos).concat(['oBtnPrev']).map(k => `<i id="${k}"></i>`).join('');
       H.D.cuerpo.push(orden);
-      Object.keys(campos).forEach(k => { H.D.nodos[k] = C.nodo({ id: k, value: campos[k], disabled: !!(E.apagados || []).includes(k) }); });
+      Object.keys(campos).forEach(k => { const n = C.nodo({ id: k, value: campos[k], disabled: !!(E.apagados || []).includes(k) }); n.focus = () => { H.D.doc.activeElement = n; }; H.D.nodos[k] = n; });
       H.D.nodos.oBtnPrev = C.nodo({ id: 'oBtnPrev', disabled: !!E.btnApagado });
       const ord = Object.assign({ broker: 'etrade', pre: { posicion_id: 8, broker: 'etrade', proposito: 'salida_gtc' } }, E.ord || {});
       H.M.__setOrd(ord);
@@ -577,6 +699,19 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
       igual(repintes, ['ajustar', 'avisos', 'total'], 'repinta lo mismo que un tecleo en el campo (etiquetas, avisos de doctrina, total)');
       igual([H.D.cuerpo.map(n => n.id), H.M.__calc()], [['modalOrden'], null], 'la calculadora se cierra y la hoja de orden queda a la vista, sin enviar');
       igual(H.reg.toasts.pop(), 'Limit 0.55 puesto en la orden: revísala y envíala con tu toque y tu PIN.', 'y lo dice');
+    }
+    {
+      // rev67 · el foco tras «Poner en la orden»: Mac → al campo Límite (de ahí se sigue a «Revisar»); teléfono → al enlace
+      // de la orden que abrió la calculadora (un foco en el campo sacaría el teclado encima de la orden)
+      const enlace = (H) => { const a = H.D.crear(); a.id = 'oCalcLnk'; return a; };
+      const Hm = armarOrden({ deps: { window: { matchMedia: () => ({ matches: true }) } } });
+      const am = enlace(Hm); am.focus();
+      abrirTsla(Hm); Hm.D.$('#cObj').focus();   // con el teclado, el foco está en la calculadora al pulsar el botón
+      igual([Hm.M.calcPonerEnOrden(), Hm.D.doc.activeElement === Hm.D.nodos.oPrecio], [true, true], 'Mac: el foco queda en el campo Límite con el 0.55 recién puesto, no en <body>');
+      const Ht = armarOrden({ deps: { window: { matchMedia: () => ({ matches: false }) } } });
+      const at = enlace(Ht); at.focus();
+      abrirTsla(Ht); Ht.D.$('#cObj').focus();
+      igual([Ht.M.calcPonerEnOrden(), Ht.D.doc.activeElement === at], [true, true], 'teléfono: vuelve al enlace «Calcular el limit…» de la orden (sin teclado encima)');
     }
     {
       // identidad: la hoja de orden cambió (otra del MISMO contrato) entre que se ofreció el botón y el toque
