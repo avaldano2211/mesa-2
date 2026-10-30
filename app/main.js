@@ -11011,12 +11011,16 @@ function seccionEjecucionesDiario(fills, filtro, todas) {
   const T = 120, n = lista.length, ver = todas ? lista : lista.slice(0, T);
   const cuenta = (b) => (fills || []).filter(x => b === 'todos' || x.broker === b).length;
   const lado = (l) => l === 'compra' ? '<span style="color:var(--verde)">COMPRA</span>' : l === 'venta' ? '<span style="color:var(--rojo)">VENTA</span>' : `<span style="color:var(--oro)">${esc(String(l || '').toUpperCase())}</span>`;
+  // v65 rev7: la venta a $0 que moomoo anota de madrugada tras el vencimiento (vencimientoMoomoo) es su VENCIMIENTO y se
+  // rotula así, como el «Option Expired» de E*TRADE (que también enseña el instante en que el bróker lo anotó): VENTA ×N @
+  // $0.00 a las 01:22 de un sábado parecía una ejecución. El libro no cambia: solo el rótulo.
+  const ladoDe = (x) => (x.lado === 'venta' && x.broker === 'moomoo' && vencimientoMoomoo(x.broker, x.precio, x.ejecutado_at, x.expiracion)) ? 'vencimiento' : x.lado;
   let h = `<div class="sec">EJECUCIONES DEL PERÍODO · ${(fills || []).length}</div>
     <div class="chips" style="margin-top:0">${['todos'].concat(bs).map(b => `<button class="chip2${f === b ? ' on' : ''}" onclick="MZ.diarioBroker('${b}')">${b === 'todos' ? 'Todas' : esc(BROKER_CORTO[b])}<small>${cuenta(b)}</small></button>`).join('')}</div>`;
   if (!n) return h + `<div class="card vacio">Sin ejecuciones ${f === 'todos' ? '' : 'de ' + esc(BROKER_NOMBRE[f] || f) + ' '}en el período.<br><span class="fresco">Se guardan al sincronizar cada bróker en Cuentas (E*TRADE y Schwab desde este equipo; tasty y moomoo las escribe el worker).</span></div>`;
   h += `<div class="card" style="padding:2px 13px 8px">${ver.map(x => `<div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
       <div class="fila"><span><b style="font-size:13.5px">${esc(x.symbol)} ${esc(x.direccion || '')} ${x.strike != null ? esc(x.strike) : ''}</b> <span class="fresco">${esc(fechaCorta(x.expiracion))}</span></span>
-        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap">${lado(x.lado)} ×${esc(x.contratos)} @ $${esc(Number(x.precio).toFixed(2))}</span></div>
+        <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap">${lado(ladoDe(x))} ×${esc(x.contratos)} @ $${esc(Number(x.precio).toFixed(2))}</span></div>
       <div class="fila fresco" style="margin-top:2px"><span>${sinHoraIso(x.ejecutado_at) ? esc(fechaCorta(String(x.fecha_ny || '').slice(0, 10) || diaOpNY(x.ejecutado_at))) + ' (sin hora)' : esc(fmtFechaNY(x.ejecutado_at, true))} · ${esc(BROKER_CORTO[x.broker] || x.broker)}</span>
         <span>monto ${dineroD(Number(x.precio) * Number(x.contratos) * 100)}${Number(x.comision) ? ' · com ' + dineroD(x.comision) : ''}</span></div></div>`).join('')}
     ${n > T && !todas ? `<div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.diarioMasEjec()">Ver las ${n - T} restantes</button></div>` : ''}

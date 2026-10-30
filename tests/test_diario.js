@@ -407,7 +407,8 @@ function sbGrabador(respuestas) {
   // ════════════════ 3. RENDER del Diario (HTML puro sobre los datos) ════════════════
   const V = construir(['seccionPeriodoDiario', 'tarjetasResumenDiario', 'seccionCoberturaDiario', 'seccionDiaADia', 'seccionResumenesDiario', 'seccionOperacionesDiario', 'seccionAbiertosDiario',
     'seccionEjecucionesDiario', 'seccionNotasDiario', 'selectorCuentas', 'textoDuracionOp', 'fechaHoraD', 'periodoDiarioNormalizar', 'lunesDe', 'viernesDe', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'tituloPeriodoDiario', 'diasEntre', 'claveFill',
-    'rangoPeriodoDiario', 'subtituloPeriodoDiario', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion'],   // v62 rev2: fechas y duración por instante
+    'rangoPeriodoDiario', 'subtituloPeriodoDiario', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion',   // v62 rev2: fechas y duración por instante
+    'vencimientoMoomoo', 'instanteVencimiento'],   // v65 rev7: la venta a $0 de moomoo tras el vencimiento se rotula VENCIMIENTO
     { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, ymdNY, fmtFechaNY, durTxt, claveContrato, filaAccionDiario: () => '',   // v60: la fila de la acción se prueba en test_spot.js
       MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C'), BROKER_CORTO: constante('BROKER_CORTO'),
       dineroD: constante('dineroD'), dineroS: constante('dineroS'), pctD: constante('pctD'), pctD2: constante('pctD2'), colD: constante('colD'), nOps: constante('nOps') });
@@ -540,6 +541,14 @@ function sbGrabador(respuestas) {
     // con MÁS contratos a $0 que los abiertos: el sobrante es una huérfana de vencimiento (como un «Option Expired» de más)
     const RH7 = D.emparejarFillsFIFO([X('o1', 'compra', 1, 1.00, '2026-10-16T14:00:00Z'), X('o0', 'venta', 3, 0, '2026-10-17T05:22:00Z')], HOY7);
     igual([RH7.cerradas.length, RH7.huerfanas.map(h => [h.lado, h.contratos, h.fecha_ny, h.ejecutado_at])], [1, [['vencimiento', 2, '2026-10-16', '2026-10-16T20:30:00.000Z']]], '(v65 rev7) los contratos a $0 de más quedan como huérfanos del vencimiento, en su día (no se inventa una compra)');
+    // la lista de EJECUCIONES: la venta a $0 del sábado se rotula VENCIMIENTO (como el «Option Expired» de E*TRADE, con el
+    // instante en que el bróker lo anotó); la compra sigue COMPRA, una venta real a 0.00 dentro del día sigue VENTA, y la misma
+    // forma en tasty también. El libro no cambia: solo el rótulo
+    const ej = (xs) => (V.seccionEjecucionesDiario(xs, 'todos', true).match(/white-space:nowrap">(.*?) ×/g) || []).map(m => m.replace(/<[^>]*>/g, '').replace(/^.*nowrap">/, '').replace(/ ×$/, ''));
+    const e5 = CASOS[4].fills(CASOS[4].p), real0 = X('r0', 'venta', 2, 0, '2026-10-16T19:59:00Z');
+    igual([ej(e5), ej([real0]), ej(e5.map(f => ({ ...f, broker: 'tasty' })))], [['VENCIMIENTO', 'COMPRA'], ['VENTA'], ['VENTA', 'COMPRA']],
+      '(v65 rev7) ejecuciones: la venta a $0 de moomoo del sábado sale como VENCIMIENTO; una venta real a 0.00 a las 15:59 ET, y la de tasty, siguen VENTA');
+    assert(/VENCIMIENTO<\/span> ×2 @ \$0\.00/.test(V.seccionEjecucionesDiario(e5, 'moomoo', true)) && e5[1].lado === 'venta', '(v65 rev7) con su cantidad y su $0.00, y el fill del libro sigue siendo una venta');
   }
   igual([V.fechaHoraD('2026-10-09T13:48:25.000Z'), V.fechaHoraD('2026-10-06T00:00:00.000Z'), V.fechaHoraD('2026-09-22T04:00:00.000Z')], [esc(fmtFechaNY('2026-10-09T13:48:25.000Z', true)), '6 oct', '22 sep'],
     'fechaHoraD por instante: con hora, fecha y hora; a 00:00 UTC o 00:00 NY, solo la fecha (y la del día que dice)');
