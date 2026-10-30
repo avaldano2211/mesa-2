@@ -186,7 +186,7 @@ function sbGrabador(respuestas) {
   // ════════════════ 2. EL CONTABLE: emparejarFillsFIFO ════════════════
   const claveContrato = construir(['claveContrato']).claveContrato;
   // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
-  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
+  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
     'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
     { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
@@ -443,6 +443,103 @@ function sbGrabador(respuestas) {
     const hW6 = V.seccionOperacionesDiario([vW6]);
     assert(/<span>salida<\/span><b><span style="color:var\(--oro\)">venció en parte<\/span><\/b>/.test(hW6) && /<span>duró<\/span><b>venció el mismo día<\/b>/.test(hW6) && !/16:30|21:30|15:00|16:00/.test(hW6),
       '(v65 rev6) la tarjeta: salida «venció en parte», duró «venció el mismo día» y ninguna hora del vencimiento (ni 16:30, ni las 15:00/16:00 de antes)');
+  }
+  // v65 rev7 · moomoo NO manda un lado «vencimiento»: OpenD anota la liquidación de una opción vencida como una VENTA a $0 de
+  // madrugada del día SIGUIENTE (de 00:35 a 01:24 NY en el libro real; la de un viernes, el sábado). El FIFO la lee como el
+  // VENCIMIENTO que es (vencimientoMoomoo): a las 16:30 ET del día de la expiración, «venció» y sin hora. Los 5 casos del libro
+  // real con su FORMA (día de la semana, horas NY, compras, ventas y refuerzos); símbolos, strikes, primas y contratos inventados.
+  {
+    const VM = construir(['vencimientoMoomoo', 'instanteVencimiento']).vencimientoMoomoo;
+    const M = (clave, exp, lado, n, precio, at, extra) => ({ ...F('moomoo', clave, extra && extra.symbol || 'QQQ', extra && extra.direccion || 'CALL', 500, exp, lado, n, precio, at), ...(extra || {}) });
+    const HOY7 = '2026-10-22';
+    const CASOS = [
+      // 1 · PUT del viernes 28-ago (EDT): un viaje que se cierra el jueves (compras 10:04, ventas 10:07) y otro que entra el jueves
+      // 10:09, refuerza el viernes 09:31 y 09:33 y vence; la venta a $0 llega el SÁBADO a las 00:35
+      { nombre: 'PUT del viernes, vendida a $0 el sábado 00:35', exp: '2026-08-28', dia: '2026-08-28', iv: '2026-08-28T20:30:00.000Z', duro: '1 d hasta vencer', p: { symbol: 'IWM', direccion: 'PUT' },
+        fills: (p) => [M('a1', '2026-08-28', 'compra', 2, 1.10, '2026-08-27T14:04:10Z', p), M('a2', '2026-08-28', 'compra', 1, 1.10, '2026-08-27T14:04:11Z', p),
+          M('a3', '2026-08-28', 'venta', 2, 1.25, '2026-08-27T14:07:20Z', p), M('a4', '2026-08-28', 'venta', 1, 1.25, '2026-08-27T14:07:21Z', p),
+          M('a5', '2026-08-28', 'compra', 2, 1.20, '2026-08-27T14:09:30Z', p), M('a6', '2026-08-28', 'compra', 4, 0.40, '2026-08-28T13:31:05Z', p), M('a7', '2026-08-28', 'compra', 4, 0.40, '2026-08-28T13:31:06Z', p),
+          M('a8', '2026-08-28', 'compra', 5, 0.35, '2026-08-28T13:33:40Z', p), M('a9', '2026-08-28', 'compra', 3, 0.35, '2026-08-28T13:33:41Z', p), M('a0', '2026-08-28', 'venta', 18, 0, '2026-08-29T04:35:00Z', p)] },
+      // 2 · 0DTE CALL del lunes 28-sep: compras a las 09:33 y 10:05; la venta a $0, el martes a las 01:20
+      { nombre: '0DTE del lunes, vendida a $0 el martes 01:20', exp: '2026-09-28', dia: '2026-09-28', iv: '2026-09-28T20:30:00.000Z', duro: 'venció el mismo día', p: { symbol: 'SPY' },
+        fills: (p) => [M('b1', '2026-09-28', 'compra', 3, 0.90, '2026-09-28T13:33:00Z', p), M('b2', '2026-09-28', 'compra', 2, 0.90, '2026-09-28T13:33:01Z', p), M('b3', '2026-09-28', 'compra', 5, 0.60, '2026-09-28T14:05:00Z', p),
+          M('b0', '2026-09-28', 'venta', 10, 0, '2026-09-29T05:20:00Z', p)] },
+      // 3 · CALL comprada el viernes 2-oct a las 14:52, vence el lunes 5; la venta a $0, el martes a las 01:24
+      { nombre: 'CALL del viernes que vence el lunes, a $0 el martes 01:24', exp: '2026-10-05', dia: '2026-10-05', iv: '2026-10-05T20:30:00.000Z', duro: '3 d hasta vencer', p: { symbol: 'DIA' },
+        fills: (p) => [M('c1', '2026-10-05', 'compra', 10, 2.40, '2026-10-02T18:52:00Z', p), M('c0', '2026-10-05', 'venta', 10, 0, '2026-10-06T05:24:00Z', p)] },
+      // 4 · CALL comprada el martes 6-oct (09:31 y 09:38), vence el miércoles 7; la venta a $0, el jueves a las 01:12
+      { nombre: 'CALL del martes que vence el miércoles, a $0 el jueves 01:12', exp: '2026-10-07', dia: '2026-10-07', iv: '2026-10-07T20:30:00.000Z', duro: '1 d hasta vencer', p: { symbol: 'XLF' },
+        fills: (p) => [M('d1', '2026-10-07', 'compra', 6, 1.50, '2026-10-06T13:31:00Z', p), M('d2', '2026-10-07', 'compra', 4, 1.50, '2026-10-06T13:31:01Z', p),
+          M('d3', '2026-10-07', 'compra', 5, 1.30, '2026-10-06T13:38:00Z', p), M('d4', '2026-10-07', 'compra', 5, 1.30, '2026-10-06T13:38:01Z', p), M('d0', '2026-10-07', 'venta', 20, 0, '2026-10-08T05:12:00Z', p)] },
+      // 5 · 0DTE CALL del viernes 16-oct a las 09:43; la venta a $0, el SÁBADO a las 01:22
+      { nombre: '0DTE del viernes, vendida a $0 el sábado 01:22', exp: '2026-10-16', dia: '2026-10-16', iv: '2026-10-16T20:30:00.000Z', duro: 'venció el mismo día', p: { symbol: 'XLE' },
+        fills: (p) => [M('e1', '2026-10-16', 'compra', 2, 3.10, '2026-10-16T13:43:00Z', p), M('e0', '2026-10-16', 'venta', 2, 0, '2026-10-17T05:22:00Z', p)] },
+    ];
+    for (const k of CASOS) {
+      const fs7 = k.fills(k.p), copia = JSON.stringify(fs7);
+      const cero = fs7[fs7.length - 1];
+      const R7 = D.emparejarFillsFIFO(fs7, HOY7);
+      const v = R7.viajes[R7.viajes.length - 1], t = R7.cerradas.filter(c => c.ids.cierra === cero.clave_ext);
+      const costo = Math.round(fs7.filter(f => f.lado === 'compra').reduce((s, f) => s + f.contratos * f.precio * 100, 0) * 100) / 100 - (k.exp === '2026-08-28' ? 330 : 0);
+      igual([VM(cero.broker, cero.precio, cero.ejecutado_at, cero.expiracion), ymdNY(cero.ejecutado_at) > k.exp], [k.iv, true], `(v65 rev7) ${k.nombre}: vencimientoMoomoo la reconoce (anotada el día ${ymdNY(cero.ejecutado_at)}, después de la expiración)`);
+      igual([v.lado_salida, v.vencido, v.vencido_total, v.derivado, v.fecha_ny, v.salida_at, v.prima_salida, v.venta, v.pnl, R7.huerfanas.length],
+        ['vencimiento', true, true, false, k.dia, k.iv, 0, 0, -costo, 0],
+        `(v65 rev7) ${k.nombre}: un VENCIMIENTO reportado (no deducido) el día de la expiración ${k.dia} a las 16:30 ET, pérdida total −${costo}, sin huérfanas`);
+      assert(t.length > 0 && t.every(c => c.lado_salida === 'vencimiento' && c.vencido && !c.derivado && c.fecha_ny === k.dia && c.salida_at === k.iv && c.spot_salida === null),
+        `(v65 rev7) ${k.nombre}: cada tramo de la venta a $0 es un vencimiento de su día, a las 16:30 ET y sin spot de salida`);
+      igual(Object.keys(R7.cerradas.reduce((m, c) => (m[c.fecha_ny] = 1, m), {})).filter(d => d > k.exp), [], `(v65 rev7) ${k.nombre}: ningún $ cae después de la expiración (ni el día siguiente ni el sábado)`);
+      // la venta a $0 da EXACTAMENTE lo que el vencimiento deducido sin ella (salvo que moomoo SÍ lo reportó y la clave del cierre)
+      const sinCero = D.emparejarFillsFIFO(fs7.slice(0, -1), HOY7), firma = (r) => r.cerradas.map(c => [c.ids.abre, c.contratos, c.pnl, c.fecha_ny, c.salida_at, c.lado_salida].join('|'));
+      igual([firma(R7), sinCero.cerradas.filter(c => c.derivado).length > 0], [firma(sinCero), true], `(v65 rev7) ${k.nombre}: los mismos tramos, $, días e instantes que el vencimiento deducido sin la venta a $0`);
+      igual([V.textoDuracionOp(v), JSON.stringify(fs7) === copia], [k.duro, true], `(v65 rev7) ${k.nombre}: duró «${k.duro}» (no ${k.duro === 'venció el mismo día' ? 'horas' : 'días'} hasta la anotación) y los fills de entrada no se tocan`);
+      const h7 = V.seccionOperacionesDiario([v]);
+      assert(/<span>salida<\/span><b><span style="color:var\(--oro\)">venció<\/span><\/b>/.test(h7) && !/deducido/.test(h7) && !/00:35|01:20|01:24|01:12|01:22|16:30|20:30/.test(h7),
+        `(v65 rev7) ${k.nombre}: la tarjeta dice «venció» (sin «deducido»: moomoo lo reportó) y ninguna hora (ni la de madrugada ni las 16:30)`);
+    }
+    // ANTES (el defecto): sin la regla, la venta a $0 del sábado era una venta del SÁBADO a las 01:22 que «duró 16 h»
+    const e = CASOS[4].fills(CASOS[4].p), eT = D.emparejarFillsFIFO(e.map(f => ({ ...f, broker: 'tasty' })), HOY7).viajes[0];
+    igual([eT.lado_salida, eT.fecha_ny, eT.vencido, V.textoDuracionOp(eT)], ['venta', '2026-10-17', false, '16 h'], '(v65 rev7) la misma forma en OTRO bróker no cambia (venta del sábado 01:22 que «duró 16 h», como antes salía la de moomoo): la regla es solo de moomoo');
+    // ── lo que NO se toca: ventas reales a 0.00 dentro del día de negociación, otros brókeres, sin precio, 0.01, exp que no es fecha
+    const X = (clave, lado, n, precio, at, exp, extra) => M(clave, exp || '2026-10-16', lado, n, precio, at, { symbol: 'SPY', ...(extra || {}) });
+    const cmp = X('n1', 'compra', 3, 0.05, '2026-10-14T14:00:00Z');
+    const casoNo = (nombre, venta, lado) => {
+      const r = D.emparejarFillsFIFO([cmp, venta], HOY7), c = r.cerradas.find(x => x.ids.cierra === venta.clave_ext);
+      igual([c && c.lado_salida, c && c.salida_at, c && c.fecha_ny, c && c.vencido], [lado || 'venta', venta.ejecutado_at, ymdNY(venta.ejecutado_at), false], `(v65 rev7) NO se toca: ${nombre}`);
+    };
+    casoNo('moomoo vende a 0.00 a las 15:59 ET del día de la expiración (una venta real)', X('n2', 'venta', 3, 0, '2026-10-16T19:59:00Z'));
+    casoNo('moomoo vende a 0.00 a las 16:14 ET del día de la expiración (SPY cotiza hasta las 16:15)', X('n3', 'venta', 3, 0, '2026-10-16T20:14:00Z'));
+    casoNo('moomoo vende a 0.00 el día ANTES de la expiración', X('n4', 'venta', 3, 0, '2026-10-15T15:00:00Z'));
+    casoNo('moomoo vende a $0.01 de madrugada del día siguiente (no es 0)', X('n5', 'venta', 3, 0.01, '2026-10-17T05:22:00Z'));
+    casoNo('moomoo sin precio (null) de madrugada del día siguiente: vacío no es 0', X('n6', 'venta', 3, null, '2026-10-17T05:22:00Z'));
+    casoNo('moomoo con precio vacío ("") de madrugada del día siguiente', X('n7', 'venta', 3, '', '2026-10-17T05:22:00Z'));
+    {
+      const cmpS = { ...cmp, broker: 'schwab' }, vS = { ...X('n8', 'venta', 3, 0, '2026-10-17T05:22:00Z'), broker: 'schwab' };
+      const c = D.emparejarFillsFIFO([cmpS, vS], HOY7).cerradas[0];
+      igual([c.lado_salida, c.fecha_ny], ['venta', '2026-10-17'], '(v65 rev7) NO se toca: la de Schwab sigue siendo una venta de su instante');
+    }
+    const r30 = D.emparejarFillsFIFO([X('x1', 'compra', 1, 1, '2026-02-27T15:00:00Z', '2026-02-30'), X('x2', 'venta', 1, 0, '2026-03-03T06:00:00Z', '2026-02-30')], '2026-03-05').cerradas[0];
+    igual([r30.lado_salida, r30.salida_at], ['venta', '2026-03-03T06:00:00Z'], '(v65 rev7) NO se toca: con una expiración imposible (30-feb) no hay vencimiento que poner');
+    // la pura, en sus bordes: estrictamente DESPUÉS de las 16:30 ET (con el horario de NY de ese día)
+    igual([VM('moomoo', 0, '2026-10-16T20:30:00.000Z', '2026-10-16'), VM('moomoo', 0, '2026-10-16T20:30:00.001Z', '2026-10-16'), VM('moomoo', 0, '2026-10-16T20:29:59Z', '2026-10-16'),
+      VM('moomoo', '0.00', '2026-10-17T05:22:00Z', '2026-10-16'), VM('moomoo', '0', '2026-10-17T05:22:00+00:00', '2026-10-16T00:00:00'), VM('tasty', 0, '2026-10-17T05:22:00Z', '2026-10-16'),
+      VM('moomoo', 0, '', '2026-10-16'), VM('moomoo', 0, 'basura', '2026-10-16'), VM('moomoo', 0, '2026-10-17T05:22:00Z', ''), VM('moomoo', 0, '2026-10-17T05:22:00Z', null)],
+      [null, '2026-10-16T20:30:00.000Z', null, '2026-10-16T20:30:00.000Z', '2026-10-16T20:30:00.000Z', null, null, null, null, null],
+      '(v65 rev7) vencimientoMoomoo: justo a las 16:30 ET no (es el instante del vencimiento), 1 ms después sí; 0 como texto («0.00», «0»); exp con hora se corta al día; otro bróker, sin instante, instante basura o sin exp → null');
+    // INVIERNO · vie 20-nov (EST): la venta a $0 del sábado a las 01:20 ET (06:20Z) va a las 16:30 ET = 21:30Z del viernes
+    const RI = D.emparejarFillsFIFO([X('i1', 'compra', 2, 1.00, '2026-11-20T15:00:00Z', '2026-11-20'), X('i0', 'venta', 2, 0, '2026-11-21T06:20:00Z', '2026-11-20')], '2026-11-23');
+    igual([RI.cerradas[0].salida_at, RI.cerradas[0].fecha_ny, RI.cerradas[0].lado_salida, RI.viajes[0].vencido], ['2026-11-20T21:30:00.000Z', '2026-11-20', 'vencimiento', true], '(v65 rev7) en invierno: a las 16:30 ET = 21:30Z del viernes, no el sábado');
+    // VENDIDA EN PARTE y el resto a $0: un viaje que «venció en parte», todo el día de la expiración; la venta real conserva su hora y su spot
+    const fP = [X('p1', 'compra', 3, 1.00, '2026-10-16T14:00:00Z'), X('p2', 'venta', 1, 1.20, '2026-10-16T19:00:00Z', null, { spot: 655.5, spot_fuente: 'm1' }), X('p0', 'venta', 2, 0, '2026-10-17T05:22:00Z', null, { spot: 660, spot_fuente: 'dia' })];
+    const RPm = D.emparejarFillsFIFO(fP, HOY7), vPm = RPm.viajes[0];
+    igual([RPm.viajes.length, vPm.pnl, vPm.vencido, vPm.vencido_total, vPm.derivado, vPm.fecha_ny, vPm.salidas, RPm.cerradas.map(c => [c.lado_salida, c.salida_at, c.spot_salida])],
+      [1, -180, true, false, false, '2026-10-16', 2, [['venta', '2026-10-16T19:00:00Z', 655.5], ['vencimiento', '2026-10-16T20:30:00.000Z', null]]],
+      '(v65 rev7) vendida en parte (×1 a las 15:00 ET) y el resto a $0 el sábado: UN viaje −$180 que venció en parte el viernes; la venta real con su hora y su spot, el vencimiento sin el spot del sábado');
+    assert(/venció en parte/.test(V.seccionOperacionesDiario([vPm])) && V.textoDuracionOp(vPm) === 'venció el mismo día', '(v65 rev7) y su tarjeta: «venció en parte», «venció el mismo día»');
+    // HOY es el propio día de la expiración (la venta a $0 aún no llegó): el lote sigue vivo, como siempre
+    igual(D.emparejarFillsFIFO([X('h1', 'compra', 2, 1.00, '2026-10-16T14:00:00Z')], '2026-10-16').abiertos.length, 1, '(v65 rev7) el día de la expiración, sin la venta a $0, el lote sigue abierto (nada se adelanta)');
+    // con MÁS contratos a $0 que los abiertos: el sobrante es una huérfana de vencimiento (como un «Option Expired» de más)
+    const RH7 = D.emparejarFillsFIFO([X('o1', 'compra', 1, 1.00, '2026-10-16T14:00:00Z'), X('o0', 'venta', 3, 0, '2026-10-17T05:22:00Z')], HOY7);
+    igual([RH7.cerradas.length, RH7.huerfanas.map(h => [h.lado, h.contratos, h.fecha_ny, h.ejecutado_at])], [1, [['vencimiento', 2, '2026-10-16', '2026-10-16T20:30:00.000Z']]], '(v65 rev7) los contratos a $0 de más quedan como huérfanos del vencimiento, en su día (no se inventa una compra)');
   }
   igual([V.fechaHoraD('2026-10-09T13:48:25.000Z'), V.fechaHoraD('2026-10-06T00:00:00.000Z'), V.fechaHoraD('2026-09-22T04:00:00.000Z')], [esc(fmtFechaNY('2026-10-09T13:48:25.000Z', true)), '6 oct', '22 sep'],
     'fechaHoraD por instante: con hora, fecha y hora; a 00:00 UTC o 00:00 NY, solo la fecha (y la del día que dice)');

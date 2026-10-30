@@ -307,6 +307,21 @@ function instanteVencimiento(exp) {
   memo.set(exp, r);
   return r;
 }
+// v65 rev7 · moomoo NO manda un lado «vencimiento»: OpenD (history_deal_list_query) anota la liquidación de una opción
+// que vence sin valor como una VENTA a $0 de madrugada del día SIGUIENTE (las 5 del libro real, de las 00:35 a las 01:24
+// NY; las de un viernes, el sábado). El worker la guarda así en fills y en broker_trades (prima_salida 0, cerrada_at a esa
+// hora), y el Diario y Cuentas ponían la pérdida el día siguiente y con esa hora, como si fuera una ejecución, mientras
+// los vencimientos de E*TRADE y Schwab caen a las 16:30 ET del día de la expiración y dicen «venció», sin hora. Se arregla
+// AL LEER (nada se borra ni se reescribe): una venta de moomoo a precio 0 ejecutada DESPUÉS del vencimiento de su contrato
+// (instanteVencimiento: después de las 16:30 ET de su día ya no se negocia ese contrato) es su VENCIMIENTO, y va a ese
+// instante. Una venta real a 0.00 dentro del día de negociación (hasta las 16:15 ET el último día) no se toca, ni la de
+// ningún otro bróker, ni una sin precio (vacío no es 0). Devuelve el instante del vencimiento si lo es, null si no. PURA.
+function vencimientoMoomoo(broker, precio, instante, exp) {
+  if (broker !== 'moomoo' || precio == null || precio === '' || Number(precio) !== 0) return null;
+  const iv = instanteVencimiento(String(exp || '').slice(0, 10));
+  const t = Date.parse(instante || '');
+  return (iv && Number.isFinite(t) && t > Date.parse(iv)) ? iv : null;
+}
 
 async function estadoWorker() {
   const { data } = await sb.from('worker_heartbeat').select('*')
@@ -10402,7 +10417,8 @@ function viajeDe(v) {
 //   · vencidos: lote con expiración PASADA y sin venta ni fila de vencimiento → pérdida total el día
 //     del vencimiento (derivado: true). Si el bróker SÍ reportó el vencimiento (E*TRADE: 'Option
 //     Expired', lado vencimiento a 0) se usa esa fila y no se duplica; su DÍA es el de la expiración
-//     (E*TRADE lo anota el sábado: un vencimiento del 30 no puede caer en el mes siguiente).
+//     (E*TRADE lo anota el sábado: un vencimiento del 30 no puede caer en el mes siguiente). v65 rev7: moomoo
+//     lo anota como una venta a $0 de madrugada del día siguiente, y se lee igual (vencimientoMoomoo).
 //   · huérfanas: venta sin compra en el libro. Se cuentan y se dicen, no se descartan: delatan
 //     historia incompleta (la compra es anterior a la ventana bajada, o falta un login).
 // Un contrato que vence HOY sigue vivo hasta las 16:00 ET y no se toca. `hoy` (YYYY-MM-DD en NY).
@@ -10421,6 +10437,12 @@ function emparejarFillsFIFO(fills, hoy) {
       // de antes, en invierno (15:00 ET) iba antes que una venta 0DTE de la última hora: pérdida total falsa y venta huérfana.
       const iv = f.lado === 'vencimiento' ? instanteVencimiento(exp) : null;
       if (iv) return { ...f, _c: claveFill(f), _at: iv, _fecha: exp };
+      // v65 rev7: la venta a $0 que moomoo anota de madrugada DESPUÉS del vencimiento (vencimientoMoomoo) es su VENCIMIENTO:
+      // lado vencimiento, a las 16:30 ET del día de la expiración, como el «Option Expired» de E*TRADE (el Diario dice
+      // «venció», sin hora, y la pérdida cae el día de la expiración, no el siguiente ni el sábado). Sin spot, como el
+      // vencimiento deducido: el que el worker le puso es el del día de la anotación, no el del vencimiento.
+      const ivM = (f.lado === 'venta' && f.broker === 'moomoo') ? vencimientoMoomoo(f.broker, f.precio, f.ejecutado_at, exp) : null;
+      if (ivM) return { ...f, lado: 'vencimiento', spot: null, spot_fuente: null, _c: claveFill(f), _at: ivM, _fecha: exp };
       return { ...f, _c: claveFill(f), _at: String(f.ejecutado_at || ''), _fecha: String(f.fecha_ny || '').slice(0, 10) || (ymdNY(f.ejecutado_at) || '') };
     })
     .sort((a, b) => (a._at < b._at ? -1 : a._at > b._at ? 1 : (rango(a) - rango(b)) || String(a.clave_ext).localeCompare(String(b.clave_ext))));

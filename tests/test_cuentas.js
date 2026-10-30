@@ -36,7 +36,9 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   // v65 rev4: el tope por pareja de filasEtradeVigentes usa el FIFO del libro (el mismo contable que el Diario)
   'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin',
   // v65 rev6: el instante de un vencimiento (16:30 ET del día de la expiración, con el horario de NY de ese día)
-  'instanteVencimiento'];
+  'instanteVencimiento',
+  // v65 rev7: la venta a $0 que moomoo anota tras el vencimiento es su vencimiento (el FIFO del libro la lee así)
+  'vencimientoMoomoo'];
 const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'BROKERS_CON_COMISION', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
   'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA'];
 function cuentas(op) {
