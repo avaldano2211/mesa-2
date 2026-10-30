@@ -9062,6 +9062,263 @@ function calcLimitStop(e) {
     sube, comisiones, limit, stop, falta };
 }
 
+// ---- la HOJA de la calculadora ----
+// Una .modal como la del fill o la de la orden, abierta desde la cabecera (junto a ⚙) en CUALQUIER pestaña. Por qué una
+// .modal: los guardas que ya existen miran `document.querySelector('.modal')` — la cartera que cambia no redibuja el
+// Copiloto, la GTC automática no se abre encima, la versión nueva no recarga, el libro no repinta el Diario, Vender y Cortar
+// piden cerrar el cuadro antes — y vive en <body>, fuera de #vista: el innerHTML del repintado de 60 s o de Realtime no le
+// toca los campos ni el foco. Escape o «Cerrar» la cierran (solo a ella: si está encima de una orden, la orden sigue).
+// Al teclear solo se repintan los RESULTADOS (cResumen, cChips, cFeeNota, cResLimit, cResStop, cFormula), nunca los campos:
+// el cursor y el teclado del iPhone se quedan donde están.
+// Se recuerdan en este equipo (localStorage, mz_calc) la comisión, el incremento, el modo, el objetivo (% y $) y el % de
+// stop; NUNCA contratos, primas ni nada de las cuentas (las compras tecleadas a mano viven solo en memoria).
+const CALC_K = 'mz_calc';
+const CALC_DEF = { fee: 0.02, tick: 0.01, modo: 'pct', pct: 12, usd: 50, stop: 20 };   // 0.02 = $1 al comprar + $1 al vender por contrato; 12 % y −20 %: la hoja 1 de Andrés
+const CALC_CHIPS = { pct: [5, 10, 12, 15, 20, 25, 35, 50], usd: [5, 10, 25, 50, 100, 250] };
+let _calc = null;          // la hoja abierta: { lotes: [{ n, p }] (TEXTO tal cual se teclea), contrato, origen, modo, pct, usd, fee, tick, stop, ordVista }
+let _calcManual = null;    // las compras tecleadas a mano desde la cabecera, solo en memoria: al volver a abrirla siguen ahí
+
+// Las preferencias, validadas: un campo ausente o inválido toma el de `base` (por defecto, los de fábrica). Solo esos seis
+// campos salen de aquí, así que nada más puede acabar en mz_calc. PURA.
+function calcPrefsNormalizar(o, base) {
+  o = (o && typeof o === 'object') ? o : {};
+  base = base || CALC_DEF;
+  const v = (x, ok, def) => { const n = calcNum(x); return ok(n) ? n : def; };
+  return {
+    fee: v(o.fee, n => n >= 0 && n <= 1, base.fee),
+    tick: CALC_TICKS.includes(Number(o.tick)) ? Number(o.tick) : base.tick,
+    modo: (o.modo === 'pct' || o.modo === 'usd') ? o.modo : base.modo,
+    pct: v(o.pct, n => n >= 0 && n <= 10000, base.pct),
+    usd: v(o.usd, n => n >= 0 && n <= 10000000, base.usd),
+    stop: v(o.stop, n => n >= 0 && n < 100, base.stop),
+  };
+}
+function calcPrefsLeer() {
+  try { return calcPrefsNormalizar(JSON.parse(localStorage.getItem(CALC_K) || 'null')); } catch (_) { return calcPrefsNormalizar(null); }
+}
+// Lo que hay en la hoja, si vale; un campo a medio teclear (vacío, «0,») deja el último bueno guardado, no el de fábrica.
+function calcPrefsGuardar(st) {
+  if (!st) return;
+  try { localStorage.setItem(CALC_K, JSON.stringify(calcPrefsNormalizar(st, calcPrefsLeer()))); } catch (_) {}
+}
+// Lo que calcLimitStop necesita, sacado del estado de la hoja (el objetivo del modo elegido). PURA.
+function calcEntrada(st) {
+  st = st || {};
+  return { lotes: st.lotes, fee: st.fee, tick: st.tick, modo: st.modo, objetivo: st.modo === 'usd' ? st.usd : st.pct, stopPct: st.stop };
+}
+// «TSLA CALL 420 · vence 2026-11-20 · E*TRADE» (el contrato en el título de la hoja). PURA.
+function calcTitulo(c) {
+  if (!c || !c.symbol) return '';
+  return `${c.symbol} ${c.direccion || ''}${c.strike != null ? ' ' + c.strike : ''}`.replace(/\s+/g, ' ').trim()
+    + (c.expiracion ? ' · vence ' + c.expiracion : '') + (c.broker ? ' · ' + (BROKER_CORTO[c.broker] || c.broker) : '');
+}
+// ---- render (HTML puro a partir del estado y del resultado) ----
+function calcLotesHtml(lotes) {
+  const L = Array.isArray(lotes) && lotes.length ? lotes : [{ n: '1', p: '' }];
+  return `<div class="clote cab"><span></span><span>Contratos</span><span>Prima pagada</span><span></span></div>`
+    + L.map((l, i) => `<div class="clote"><span class="cnum">${i + 1}</span>`
+      + `<input id="cN${i}" data-c="n" data-i="${i}" type="text" inputmode="decimal" autocomplete="off" value="${esc(l && l.n)}" placeholder="1" aria-label="Contratos de la compra ${i + 1}">`
+      + `<input id="cP${i}" data-c="p" data-i="${i}" type="text" inputmode="decimal" autocomplete="off" value="${esc(l && l.p)}" placeholder="0.52" aria-label="Prima pagada en la compra ${i + 1}">`
+      + `<button type="button" class="cquitar" onclick="MZ.calcLoteQuitar(${i})" aria-label="Quitar la compra ${i + 1}"${L.length < 2 ? ' disabled' : ''}>×</button></div>`).join('');
+}
+function calcResumenHtml(r) {
+  if (!r) return '<span class="fresco">Pon al menos una compra con contratos y prima.</span>';
+  return `<b class="mono">${esc(r.n)}</b> contrato${r.n === 1 ? '' : 's'} · costo medio <b class="mono">${esc(fmtPrima(r.medio))}</b> (${dineroD(r.medio * 100)} por contrato) · pagaste <b class="mono">${dineroD(r.pagado)}</b>`;
+}
+function calcChipsHtml(st) {
+  const usd = st && st.modo === 'usd', actual = calcNum(st && (usd ? st.usd : st.pct));
+  return CALC_CHIPS[usd ? 'usd' : 'pct'].map(v => `<button type="button" class="chip2${actual === v ? ' on' : ''}" onclick="MZ.calcChip(${v})">${usd ? '$' + v : v + '%'}</button>`).join('');
+}
+function calcObjetivoHtml(st) {
+  const usd = st && st.modo === 'usd';
+  return `<div class="fila" style="gap:8px;justify-content:flex-start">
+      <div class="cseg" role="group" aria-label="Objetivo en porcentaje o en dólares"><button type="button" class="${usd ? '' : 'on'}" onclick="MZ.calcModo('pct')">%</button><button type="button" class="${usd ? 'on' : ''}" onclick="MZ.calcModo('usd')">$ total</button></div>
+      <input id="cObj" type="text" inputmode="decimal" autocomplete="off" value="${esc(st && (usd ? st.usd : st.pct))}" aria-label="${usd ? 'Ganancia neta en dólares, todos los contratos' : 'Ganancia neta en porcentaje sobre lo pagado'}" style="flex:1 1 110px;min-width:0"></div>
+    <div class="fresco" style="margin:4px 2px 0">${usd ? 'Ganancia NETA en dólares, sumando todos los contratos (después de comisiones).' : 'Ganancia NETA en % sobre lo que pagaste (después de comisiones).'}</div>
+    <div class="chips" id="cChips">${calcChipsHtml(st)}</div>`;
+}
+function calcTickHtml(st) {
+  return CALC_TICKS.map(t => `<button type="button" class="${st && st.tick === t ? 'on' : ''}" onclick="MZ.calcTick(${t})">${Math.round(t * 100)}¢</button>`).join('');
+}
+function calcFeeNota(fee) {
+  const f = calcNum(fee);
+  if (!(f >= 0)) return 'Pon la comisión por contrato, en prima (0 si tu bróker no cobra).';
+  return `${esc(fmtPrima(f))} de prima por contrato = ${dineroD(f * 50)} al comprar + ${dineroD(f * 50)} al vender.`;
+}
+// Por qué no hay limit (o stop): lo que falta, en una línea.
+function calcFaltaTxt(r, que) {
+  if (!r) return 'Pon tus compras arriba.';
+  if (r.falta.includes('comision')) return 'Pon la comisión (0 si tu bróker no cobra).';
+  return que === 'stop' ? 'Pon un % de pérdida entre 0 y 99.' : 'Pon cuánto quieres ganar (% o $).';
+}
+// Las tres cifras de una salida: lo que cobras, las comisiones y lo que queda (verde / rojo), en $ y en %.
+function calcCifrasHtml(x, r, etiqueta) {
+  const col = colUtil(x.neta);
+  return `<div class="cnums"><div><span>Cobras</span><b>${dineroD(x.venta)}</b></div><div><span>Comisiones</span><b>${dineroD(r.comisiones)}</b></div>`
+    + `<div><span>${esc(etiqueta)}</span><b style="color:${col}">${x.neta > 0 ? '+' : ''}${dineroD(x.neta)}</b><i style="color:${col}">${pctEsp(x.netaPct, 2)}</i></div></div>`;
+}
+// El LIMIT. `dest` = estadoOrdenCalc: «Poner en la orden» solo con una orden de venta Límite de ESTE contrato abierta y
+// libre; si está pero no se puede tocar (vista previa, envío, no es Límite) el botón sale apagado y se dice por qué.
+function calcLimitHtml(r, dest) {
+  const L = r && r.limit;
+  if (!L) return `<div class="cres"><div class="sec" style="margin:0">LIMIT PARA VENDER</div><div class="cprecio">—</div><div class="fresco">${esc(calcFaltaTxt(r, 'limit'))}</div></div>`;
+  const d = dest || { estado: 'sin', texto: '' };
+  const poner = d.estado === 'ok' ? `<button type="button" class="pri" onclick="MZ.calcPonerEnOrden()">Poner en la orden</button>`
+    : (d.estado === 'bloqueada' || d.estado === 'no_limit') ? `<button type="button" class="pri" disabled style="opacity:.45;cursor:not-allowed">Poner en la orden</button>` : '';
+  return `<div class="cres">
+    <div class="sec" style="margin:0">LIMIT PARA VENDER</div>
+    <div class="cprecio" id="cLimit">${esc(L.precio.toFixed(2))}<small>= ${dineroD(L.precio * 100)} por contrato</small></div>
+    ${calcCifrasHtml(L, r, 'Ganancia neta')}
+    <div class="cbtns">${poner}<button type="button" class="btnsec" onclick="MZ.calcCopiar('limit')">Copiar</button></div>
+    ${d.texto ? `<div class="fresco" style="margin-top:6px">${esc(d.texto)}</div>` : ''}
+  </div>`;
+}
+function calcStopHtml(r) {
+  const S = r && r.stop;
+  if (!S) return `<div class="cres cstop"><div class="cprecio">—</div><div class="fresco">${esc(calcFaltaTxt(r, 'stop'))}</div></div>`;
+  return `<div class="cres cstop">
+    <div class="cprecio" id="cStopP">${esc(S.precio.toFixed(2))}<small>= ${dineroD(S.precio * 100)} por contrato</small></div>
+    ${calcCifrasHtml(S, r, S.neta < 0 ? 'Pérdida neta' : 'Resultado neto')}
+    <div class="cbtns"><button type="button" class="btnsec" onclick="MZ.calcCopiar('stop')">Copiar</button></div>
+  </div>`;
+}
+// La cuenta paso a paso (plegada bajo «Cómo se calcula»): que Andrés pueda cotejarla con su Excel.
+function calcFormulaHtml(r) {
+  if (!r) return 'Pon tus compras y aquí verás la cuenta paso a paso.';
+  const p = (x) => fmtPrima(Math.round(x * 1e4) / 1e4);
+  const t = r.tick === 0.05 ? '5¢' : '1¢';
+  const ls = [`costo medio ${p(r.medio)}  (${dineroD(r.pagado)} ÷ ${r.n} ÷ 100)`];
+  if (r.limit) {
+    ls.push(r.modo === 'usd' ? `+ objetivo  ${p(r.sube)}  (${dineroD(r.objetivo)} ÷ ${r.n} ÷ 100)` : `+ objetivo  ${p(r.sube)}  (${r.objetivo} % de ${p(r.medio)})`);
+    ls.push(`+ comisión  ${p(r.fee)}  (compra + venta)`);
+    ls.push(`= ${p(r.limit.crudo)} → limit ${r.limit.precio.toFixed(2)} (arriba a ${t})`);
+  }
+  if (r.stop) ls.push(`stop ${p(r.medio)} × (1 − ${r.stopPct} %) = ${p(r.stop.crudo)} → ${r.stop.precio.toFixed(2)}`);
+  return esc(ls.join('\n'));
+}
+function calcHojaHtml(st, r, dest) {
+  const c = st && st.contrato;
+  return `<div class="hoja calc">
+    <div class="fila"><h3 style="margin:0">Calculadora de limit y stop</h3><button type="button" class="cfg" onclick="MZ.calcCerrar()" aria-label="Cerrar la calculadora" title="Cerrar (Esc)">✕</button></div>
+    <div class="mut" id="cTitulo">${c && c.symbol ? `<b class="mono" style="color:var(--tx)">${esc(calcTitulo(c))}</b>${st.origen ? ` · <span class="fresco">${esc(st.origen)}</span>` : ''}` : 'A mano: escribe tus compras (desde una posición se abre ya llena).'}</div>
+    <div class="sec" style="margin-top:8px">COMPRAS <span class="fresco" style="letter-spacing:0;font-weight:500">prima por contrato: 0.52 = $52</span></div>
+    <div class="clotes" id="cLotes">${calcLotesHtml(st && st.lotes)}</div>
+    <button type="button" class="btnsec" style="flex:none;margin-top:4px" onclick="MZ.calcLoteMas()">+ Añadir compra</button>
+    <div class="mut" id="cResumen" style="margin-top:4px">${calcResumenHtml(r)}</div>
+    <div class="sec" style="margin-top:12px">LO QUE QUIERES GANAR</div>
+    <div id="cObjBox">${calcObjetivoHtml(st)}</div>
+    <div class="dos">
+      <div><label for="cFee">Comisión compra + venta</label><input id="cFee" type="text" inputmode="decimal" autocomplete="off" value="${esc(st && st.fee)}" aria-label="Comisión de compra más venta por contrato, en prima"></div>
+      <div><label>Incremento</label><div class="cseg" id="cTick" role="group" aria-label="Incremento del precio">${calcTickHtml(st)}</div></div></div>
+    <div class="fresco" id="cFeeNota" style="margin:4px 2px 0">${calcFeeNota(st && st.fee)}</div>
+    <div id="cResLimit" aria-live="polite">${calcLimitHtml(r, dest)}</div>
+    <div class="sec" style="margin-top:12px">STOP LOSS</div>
+    <label for="cStop">Pérdida máxima (% del costo medio)</label>
+    <input id="cStop" type="text" inputmode="decimal" autocomplete="off" value="${esc(st && st.stop)}">
+    <div id="cResStop" aria-live="polite">${calcStopHtml(r)}</div>
+    <details class="cform"><summary>Cómo se calcula</summary><div class="cformula" id="cFormula">${calcFormulaHtml(r)}</div></details>
+    <div class="fresco" style="margin-top:6px">Solo calcula: nada de esto arma ni envía órdenes. En este equipo se recuerdan la comisión, el incremento, el objetivo y el % de stop; tus compras no.</div>
+    <button type="button" class="btnsec" style="flex:none;margin-top:8px" onclick="MZ.calcCerrar()">Cerrar</button>
+  </div>`;
+}
+// ---- la hoja en pantalla ----
+function calcResultado() { return _calc ? calcLimitStop(calcEntrada(_calc)) : null; }
+// ¿Hay una hoja de orden a la que ofrecer «Poner en la orden»? (todavía no: solo «Copiar»)
+function calcDestino() { return { estado: 'sin', texto: '' }; }
+function pintarCalcRes() {
+  if (!_calc || !$('#modalCalc')) return;
+  const r = calcResultado(), d = calcDestino();
+  const poner = (id, h) => { const el = $('#' + id); if (el) el.innerHTML = h; };
+  poner('cResumen', calcResumenHtml(r));
+  poner('cChips', calcChipsHtml(_calc));
+  poner('cFeeNota', calcFeeNota(_calc.fee));
+  poner('cResLimit', calcLimitHtml(r, d));
+  poner('cResStop', calcStopHtml(r));
+  poner('cFormula', calcFormulaHtml(r));
+}
+// datos = { contrato, lotes: [{ n, p }], origen } (ya lleno desde una posición) o nada (a mano, desde la cabecera).
+function abrirCalc(datos) {
+  datos = datos || {};
+  cerrarCalc();
+  const pref = calcPrefsLeer();
+  const contrato = (datos.contrato && datos.contrato.symbol) ? datos.contrato : null;
+  const txt = (v) => (v == null || (typeof v === 'number' && !Number.isFinite(v))) ? '' : String(v);
+  const lotes = (Array.isArray(datos.lotes) && datos.lotes.length) ? datos.lotes.map(l => ({ n: txt(l && l.n), p: txt(l && l.p) }))
+    : (!contrato && _calcManual && _calcManual.length) ? _calcManual.map(l => ({ n: l.n, p: l.p })) : [{ n: '1', p: '' }];
+  _calc = { lotes, contrato, origen: contrato ? String(datos.origen || '') : '', modo: pref.modo, pct: String(pref.pct), usd: String(pref.usd),
+    fee: String(pref.fee), tick: pref.tick, stop: String(pref.stop), ordVista: null };
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalCalc';
+  m.style.zIndex = 52;   // encima de la hoja de orden (50), debajo del PIN (55) y del cuadro de cuenta de Schwab (60)
+  m.innerHTML = calcHojaHtml(_calc, calcResultado(), calcDestino());
+  document.body.appendChild(m);
+  m.addEventListener('input', calcInput);
+  if (!window._mzCalcTecla) { window._mzCalcTecla = true; document.addEventListener('keydown', calcTecla); }
+  if (!contrato && !(calcNum(lotes[0].p) > 0)) setTimeout(() => { const i = $('#cP0'); if (i) i.focus(); }, 60);
+}
+function cerrarCalc() { const m = $('#modalCalc'); if (m) m.remove(); _calc = null; }
+function calcTecla(e) { if (e && e.key === 'Escape' && $('#modalCalc')) cerrarCalc(); }
+function calcManualAnotar() { if (_calc && !_calc.contrato) _calcManual = _calc.lotes.map(l => ({ n: l.n, p: l.p })); }
+// Un tecleo: al estado (el texto tal cual) y se repintan los resultados; los campos no se tocan.
+function calcInput(e) {
+  const t = e && e.target;
+  if (!t || !_calc) return;
+  const c = t.dataset && t.dataset.c, i = t.dataset ? Number(t.dataset.i) : NaN;
+  if ((c === 'n' || c === 'p') && _calc.lotes[i]) { _calc.lotes[i][c] = String(t.value == null ? '' : t.value); calcManualAnotar(); }
+  else if (t.id === 'cObj') _calc[_calc.modo === 'usd' ? 'usd' : 'pct'] = String(t.value == null ? '' : t.value);
+  else if (t.id === 'cFee') _calc.fee = String(t.value == null ? '' : t.value);
+  else if (t.id === 'cStop') _calc.stop = String(t.value == null ? '' : t.value);
+  else return;
+  calcPrefsGuardar(_calc);
+  pintarCalcRes();
+}
+function calcLoteMas() {
+  if (!_calc) return;
+  _calc.lotes.push({ n: '1', p: '' });
+  calcManualAnotar();
+  const b = $('#cLotes'); if (b) b.innerHTML = calcLotesHtml(_calc.lotes);
+  pintarCalcRes();
+  const i = $('#cP' + (_calc.lotes.length - 1)); if (i) i.focus();
+}
+function calcLoteQuitar(i) {
+  if (!_calc || _calc.lotes.length < 2 || !_calc.lotes[Number(i)]) return;
+  _calc.lotes.splice(Number(i), 1);
+  calcManualAnotar();
+  const b = $('#cLotes'); if (b) b.innerHTML = calcLotesHtml(_calc.lotes);
+  pintarCalcRes();
+}
+function calcModo(m) {
+  if (!_calc) return;
+  _calc.modo = m === 'usd' ? 'usd' : 'pct';
+  calcPrefsGuardar(_calc);
+  const b = $('#cObjBox'); if (b) b.innerHTML = calcObjetivoHtml(_calc);
+  pintarCalcRes();
+}
+function calcTick(t) {
+  if (!_calc || !CALC_TICKS.includes(Number(t))) return;
+  _calc.tick = Number(t);
+  calcPrefsGuardar(_calc);
+  const b = $('#cTick'); if (b) b.innerHTML = calcTickHtml(_calc);
+  pintarCalcRes();
+}
+function calcChip(v) {
+  if (!_calc) return;
+  _calc[_calc.modo === 'usd' ? 'usd' : 'pct'] = String(v);
+  calcPrefsGuardar(_calc);
+  const i = $('#cObj'); if (i) i.value = String(v);
+  pintarCalcRes();
+}
+async function calcCopiar(que) {
+  const r = calcResultado(), x = r && r[que === 'stop' ? 'stop' : 'limit'];
+  if (!x) { toast('Todavía no hay precio que copiar.'); return; }
+  const v = x.precio.toFixed(2);
+  try { await navigator.clipboard.writeText(v); toast((que === 'stop' ? 'Stop ' : 'Limit ') + v + ' copiado'); }
+  catch (_) { toast('Copia manual: ' + v); }
+}
+window.MZ = Object.assign(window.MZ || {}, {
+  calcAbrir: () => abrirCalc(null), calcCerrar: cerrarCalc,
+  calcLoteMas, calcLoteQuitar, calcModo, calcTick, calcChip, calcCopiar,
+});
+
 // ---------- Disciplina ----------
 function nombreMesNY() {
   return new Intl.DateTimeFormat('es', { timeZone: 'America/New_York', month: 'long' }).format(new Date());
