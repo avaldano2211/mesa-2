@@ -322,6 +322,15 @@ function vencimientoMoomoo(broker, precio, instante, exp) {
   const t = Date.parse(instante || '');
   return (iv && Number.isFinite(t) && t > Date.parse(iv)) ? iv : null;
 }
+// v65 rev67 · ¿Este fill solo ANOTA un vencimiento? El «Option Expired» de E*TRADE (lado vencimiento) o la venta a $0 que
+// moomoo anota de madrugada tras el vencimiento (vencimientoMoomoo, la misma prueba que emparejarFillsFIFO). No es una
+// ejecución: el Diario lo contaba como DÍA OPERADO en la fecha de la anotación (el sábado de un 0DTE del viernes), y con
+// la semana de lunes a viernes salían «6 día(s) operado(s)» y el promedio por día un 17 % más bajo (en el libro real, 2 de
+// 60 días eran sábados sin $: −3.3 %). Su pérdida ya cae el día de la expiración, y ese día cuenta por su tramo cerrado. PURA.
+function fillSoloVencimiento(f) {
+  if (!f) return false;
+  return f.lado === 'vencimiento' || (f.lado === 'venta' && !!vencimientoMoomoo(f.broker, f.precio, f.ejecutado_at, f.expiracion));
+}
 
 async function estadoWorker() {
   const { data } = await sb.from('worker_heartbeat').select('*')
@@ -10663,6 +10672,7 @@ function resumenPorPeriodo(cerradas, tipo, desde, hasta, viajes, fills) {
   const fila = (k) => g[k] || (g[k] = { clave: k, pnl: 0, ops: 0, aciertos: 0, costo: 0, dias: new Set(), mejor: null, peor: null, por_broker: {} });
   const porViajes = Array.isArray(viajes);
   if (Array.isArray(fills)) for (const f of fills) {
+    if (fillSoloVencimiento(f)) continue;   // rev67: anotar un vencimiento no es operar (su día cuenta por el tramo cerrado)
     const d = String((f && f.fecha_ny) || '').slice(0, 10); if (!d || !en(d)) continue;
     const k = clave(d); if (k) fila(k).dias.add(d);
   }
@@ -10700,7 +10710,8 @@ function resumenPorPeriodo(cerradas, tipo, desde, hasta, viajes, fills) {
 // total/costo/%/comisiones salen de los TRAMOS; ops, aciertos, mejor/peor y vencidas de los VIAJES
 // (`viajes`; sin ellos, de los tramos).
 // `fills` (v55): con las ejecuciones del período, los días operados son los días con CUALQUIER fill (ver
-// resumenPorPeriodo); sin ellas, los días con algún tramo cerrado (uso suelto de la pura).
+// resumenPorPeriodo); sin ellas, los días con algún tramo cerrado (uso suelto de la pura). Un fill que solo anota un
+// vencimiento no es una ejecución y no cuenta (rev67, fillSoloVencimiento).
 function metricasDiario(cerradas, dias, viajes, fills) {
   const r2 = (n) => Math.round(n * 100) / 100;
   const cs = cerradas || [], ds = dias || [], ops = Array.isArray(viajes) ? viajes : cs;
@@ -10708,7 +10719,8 @@ function metricasDiario(cerradas, dias, viajes, fills) {
   const costo = cs.reduce((s, c) => s + (c.costo || 0), 0);
   const pnls = ops.map(c => c.pnl);
   const fechas = new Set(ds.map(d => String(d.fecha_ny || '').slice(0, 10)).filter(Boolean));
-  if (Array.isArray(fills)) fills.forEach(f => { const d = String((f && f.fecha_ny) || '').slice(0, 10); if (d) fechas.add(d); });
+  // rev67: sin los fills que solo anotan un vencimiento (fillSoloVencimiento): su día es el de la expiración, ya en `dias`
+  if (Array.isArray(fills)) fills.forEach(f => { if (fillSoloVencimiento(f)) return; const d = String((f && f.fecha_ny) || '').slice(0, 10); if (d) fechas.add(d); });
   const nDias = fechas.size;
   const prom = nDias ? r2(total / nDias) : null;
   return { total, ops: ops.length, aciertos: pnls.filter(p => p > 0).length, pct: costo > 0 ? Math.round(total / costo * 10000) / 100 : null,

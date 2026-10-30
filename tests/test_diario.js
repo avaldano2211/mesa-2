@@ -186,7 +186,7 @@ function sbGrabador(respuestas) {
   // ════════════════ 2. EL CONTABLE: emparejarFillsFIFO ════════════════
   const claveContrato = construir(['claveContrato']).claveContrato;
   // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
-  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
+  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
     'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
     { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
@@ -549,6 +549,40 @@ function sbGrabador(respuestas) {
     igual([ej(e5), ej([real0]), ej(e5.map(f => ({ ...f, broker: 'tasty' })))], [['VENCIMIENTO', 'COMPRA'], ['VENTA'], ['VENTA', 'COMPRA']],
       '(v65 rev7) ejecuciones: la venta a $0 de moomoo del sábado sale como VENCIMIENTO; una venta real a 0.00 a las 15:59 ET, y la de tasty, siguen VENTA');
     assert(/VENCIMIENTO<\/span> ×2 @ \$0\.00/.test(V.seccionEjecucionesDiario(e5, 'moomoo', true)) && e5[1].lado === 'venta', '(v65 rev7) con su cantidad y su $0.00, y el fill del libro sigue siendo una venta');
+  }
+  // v65 rev67 · los DÍAS OPERADOS: un fill que solo ANOTA un vencimiento (la venta a $0 que moomoo pone el sábado, el «Option
+  // Expired» de E*TRADE fechado el sábado) no es una ejecución. La semana de lunes a viernes (una compra y una venta al día) más
+  // un 0DTE del viernes que moomoo anota a $0 el sábado 01:22: el día a día enseña lunes a viernes, pero la tarjeta decía
+  // «6 día(s) operado(s)», PROMEDIO POR DÍA 25 en vez de 30 (−17 %) y la columna «días» de la semana 6
+  {
+    const S = (b, c, lado, n, p, at, exp) => F(b, c, 'XYZ', 'CALL', 100, exp || '2026-10-30', lado, n, p, at);
+    const semana = (b) => {
+      const xs = [];
+      ['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16'].forEach((d, i) => xs.push(S(b, 'b' + i, 'compra', 1, 1, d + 'T14:00:00Z'), S(b, 's' + i, 'venta', 1, 1.5, d + 'T15:00:00Z')));
+      return xs.concat([S(b, 'z1', 'compra', 2, 0.5, '2026-10-16T14:30:00Z', '2026-10-16')]);
+    };
+    const medir = (fs) => {
+      const R = D.emparejarFillsFIFO(fs, '2026-10-22'), dd = D.diaADia(R.cerradas, null, null, R.viajes);
+      const M = D.metricasDiario(R.cerradas, dd, R.viajes, fs);
+      return { dias: dd.map(d => d.fecha_ny), M, sem: D.resumenPorPeriodo(R.cerradas, 'semana', null, null, R.viajes, fs)[0], mes: D.resumenPorPeriodo(R.cerradas, 'mes', null, null, R.viajes, fs)[0] };
+    };
+    const LV = ['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16'];
+    const moo = semana('moomoo').concat([S('moomoo', 'z0', 'venta', 2, 0, '2026-10-17T05:22:00Z', '2026-10-16')]);
+    const m = medir(moo);
+    igual(m.dias, LV, '(v65 rev67) moomoo: el día a día enseña de lunes a viernes (la pérdida del 0DTE, el viernes)');
+    igual([m.M.dias_operados, m.M.total, m.M.prom_dia, m.M.proy_mes, m.M.proy_anio], [5, 150, 30, 630, 7560], '(v65 rev67) moomoo: 5 días operados (no 6: el sábado no se operó), PROMEDIO POR DÍA 30 (no 25) y las proyecciones sobre 5 días');
+    igual([m.sem.desde, m.sem.dias, m.mes.dias], ['2026-10-12', 5, 5], '(v65 rev67) moomoo: la columna «días» de la semana y del mes, 5');
+    const et = medir(semana('etrade').map(f => ({ ...f, broker: 'etrade' })).concat([{ ...S('etrade', 'x0', 'vencimiento', 2, 0, '2026-10-17T05:22:00Z', '2026-10-16') }]));
+    igual([et.dias, et.M.dias_operados, et.M.prom_dia, et.sem.dias], [LV, 5, 30, 5], '(v65 rev67) el «Option Expired» de E*TRADE fechado el sábado tampoco cuenta (ya tenía el mismo efecto)');
+    // lo que SÍ cuenta: una venta real a 0.00 DENTRO del día (15:59 ET del viernes) es una ejecución de su día, y un fill de
+    // vencimiento no se lleva su día si ese día también se operó
+    const real = semana('moomoo').concat([S('moomoo', 'z0', 'venta', 2, 0, '2026-10-16T19:59:00Z', '2026-10-16')]);
+    igual([D.fillSoloVencimiento(real[real.length - 1]), medir(real).M.dias_operados], [false, 5], '(v65 rev67) una venta real a $0.00 dentro del día es una ejecución (cuenta su día)');
+    const soloVence = [S('moomoo', 'q1', 'compra', 1, 1, '2026-10-15T14:00:00Z', '2026-10-16'), S('moomoo', 'q0', 'venta', 1, 0, '2026-10-17T05:22:00Z', '2026-10-16')];
+    const sv = medir(soloVence);
+    igual([sv.dias, sv.M.dias_operados, sv.sem.dias], [['2026-10-16'], 2, 2], '(v65 rev67) comprada el jueves y vencida el viernes sin tocarla: 2 días, el jueves (la compra) y el viernes (su pérdida, el día del día a día), nunca el sábado');
+    igual([D.fillSoloVencimiento(moo[moo.length - 1]), D.fillSoloVencimiento({ lado: 'vencimiento' }), D.fillSoloVencimiento(moo[0]), D.fillSoloVencimiento({ ...moo[moo.length - 1], broker: 'tasty' }), D.fillSoloVencimiento({ ...moo[moo.length - 1], lado: 'compra' }), D.fillSoloVencimiento(null)],
+      [true, true, false, false, false, false], '(v65 rev67) fillSoloVencimiento: la de moomoo a $0 tras el vencimiento y el lado vencimiento sí; una compra, la misma forma en tasty, una compra a $0 o nada, no');
   }
   igual([V.fechaHoraD('2026-10-09T13:48:25.000Z'), V.fechaHoraD('2026-10-06T00:00:00.000Z'), V.fechaHoraD('2026-09-22T04:00:00.000Z')], [esc(fmtFechaNY('2026-10-09T13:48:25.000Z', true)), '6 oct', '22 sep'],
     'fechaHoraD por instante: con hora, fecha y hora; a 00:00 UTC o 00:00 NY, solo la fecha (y la del día que dice)');
