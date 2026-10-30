@@ -119,10 +119,22 @@ const TSLA = [{ n: 1, p: 1.21 }, { n: 3, p: 0.29 }];   // hoja 2: Buy 1 a $121 +
   const r = calc({ lotes: [{ n: '1', p: '1,21' }, { n: '3', p: '0,29' }], modo: 'usd', objetivo: '$4', fee: '0,02' });
   igual([r.n, r.pagado, r.limit.precio, r.limit.neta], [4, 208, 0.55, 4], 'el TSLA tecleado con comas da lo mismo');
 }
+// ════════════════ 9b. rev67: contratos ENTEROS ≥ 1 (una fracción diminuta daba n = 0 y un costo medio Infinity) ════════════════
+{
+  ['0.00001', '0,00004', '0.5', '1.5', '1,5', 0.00001, 2.5].forEach(n => igual(calc({ lotes: [{ n, p: '1' }] }), null, 'contratos ' + JSON.stringify(n) + ' (no es un entero ≥ 1) → sin resultado, no Infinity'));
+  const r = calc({ lotes: [{ n: '1.5', p: '9' }, { n: '1', p: '1.21' }, { n: '0,00004', p: '1' }, { n: '3', p: '0.29' }], modo: 'usd', objetivo: 4 });
+  igual([r.n, r.pagado, r.limit.precio], [4, 208, 0.55], 'una compra con fracción entre las buenas no cuenta (el TSLA sigue en 4 a 0.52 → 0.55)');
+  igual([calc({ lotes: [{ n: '4.0', p: '0.52' }] }).n, calc({ lotes: [{ n: 4, p: 0.52 }] }).n], [4, 4], '«4.0» es un entero: vale');
+  const todo = JSON.stringify(calc({ lotes: [{ n: '0.00001', p: '1' }, { n: '1', p: '0.52' }] }));
+  assert(!/NaN|Infinity|null,"pagado"/.test(todo) && JSON.parse(todo).n === 1, 'la diminuta junto a una buena: n = 1 y nada de NaN ni Infinity', todo);
+  const nueves = '9'.repeat(400);
+  igual([Number(nueves), K.calcNum(nueves), K.calcNum('$' + nueves + '%')], [Infinity, NaN, NaN], 'calcNum: un texto de 400 cifras (Infinity en Number) → NaN');
+  igual([calc({ lotes: [{ n: 1, p: 2.4 }], objetivo: nueves }).limit, calc({ lotes: [{ n: 1, p: nueves }] })], [null, null], 'un objetivo o una prima así: sin limit / sin resultado (nunca «Infinity»)');
+}
 
 // ════════════════ 10. lo que se recuerda en este equipo (mz_calc) ════════════════
 const BASE_CALC = ['calcLimitStop', 'calcArriba', 'calcNum', 'calcEntrada', 'calcPrefsNormalizar', 'calcPrefsLeer', 'calcPrefsGuardar'];
-const VISTA_CALC = ['calcHojaHtml', 'calcLotesHtml', 'calcResumenHtml', 'calcChipsHtml', 'calcObjetivoHtml', 'calcTickHtml', 'calcFeeNota', 'calcFaltaTxt',
+const VISTA_CALC = ['calcHojaHtml', 'calcLotesHtml', 'calcResumenHtml', 'calcLotesPartidos', 'calcChipsHtml', 'calcObjetivoHtml', 'calcTickHtml', 'calcFeeNota', 'calcFaltaTxt',
   'calcCifrasHtml', 'calcLimitHtml', 'calcStopHtml', 'calcFormulaHtml', 'calcTitulo', 'fmtPrima', 'pctEsp'];
 const CONSTS_CALC = ['CALC_TICKS', 'CALC_K', 'CALC_DEF', 'CALC_CHIPS', 'dineroD', 'BROKER_CORTO'];
 {
@@ -178,6 +190,15 @@ const SUCIO = /NaN|undefined|Infinity|\[object/;
     const h = hoja(st({ lotes: l }));
     assert(!SUCIO.test(h) && /<div class="cprecio">—<\/div>/.test(h), 'compras ' + JSON.stringify(l) + ': «—» y sin NaN en pantalla');
   });
+  // rev67: la fracción diminuta del revisor (antes «costo medio Infinity», «LIMIT Infinity», «STOP Infinity») y el aviso
+  [[{ n: '0.00001', p: '1' }], [{ n: '0,00004', p: '1' }]].forEach(l => {
+    const h = hoja(st({ lotes: l }));
+    assert(!SUCIO.test(h) && /<div class="cprecio">—<\/div>/.test(h) && /Los contratos van enteros \(1, 2, 3…\): la compra 1 no cuenta\./.test(h), 'contratos ' + JSON.stringify(l[0].n) + ': «—», sin Infinity en pantalla y dice que la compra 1 no cuenta', h.slice(0, 900));
+  });
+  const hFr = hoja(st({ lotes: [{ n: '1,5', p: '1' }, { n: '4', p: '0.52' }, { n: '0.5', p: '1' }] }));
+  assert(/<b class="mono">4<\/b> contratos · costo medio <b class="mono">0\.52/.test(hFr) && /Los contratos van enteros \(1, 2, 3…\): las compras 1, 3 no cuentan\./.test(hFr), '«1,5» y «0.5» entre buenas: el resumen de las buenas y el aviso de las dos que no cuentan');
+  assert(!/van enteros/.test(hoja(st({ lotes: [{ n: '4', p: '0.52' }, { n: '', p: '' }, { n: '0', p: '1' }] }))), 'una compra vacía o a 0 no lleva aviso (ya se ve que no cuenta)');
+  igual([V.calcLotesPartidos([{ n: '1.5' }, { n: '2' }, { n: 'x' }, null, { n: '-0.5' }, { n: '0,25' }]), V.calcLotesPartidos(null)], [[1, 6], []], 'calcLotesPartidos: solo los positivos no enteros, numerados desde 1');
   ['', '-1', 'abc'].forEach(o => assert(!SUCIO.test(hoja(st({ lotes: [{ n: '1', p: '2.40' }], pct: o }))) && /Pon cuánto quieres ganar/.test(hoja(st({ lotes: [{ n: '1', p: '2.40' }], pct: o }))), 'objetivo ' + JSON.stringify(o) + ': sin limit, dice qué falta, sin NaN'));
   const hFee = hoja(st({ lotes: [{ n: '1', p: '2.40' }], fee: '' }));
   assert(!SUCIO.test(hFee) && (hFee.match(/Pon la comisión \(0 si tu bróker no cobra\)/g) || []).length === 2 && /Pon la comisión por contrato, en prima/.test(hFee), 'sin comisión: limit y stop piden la comisión y la nota también');
@@ -585,6 +606,26 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
       igual([H.M.calcPonerEnOrden(), H.foto(), envio.llamadas], [false, antes, []], nombre + ': un toque forzado no toca la orden ni envía nada');
     });
     {
+      // rev67 · contratos «0.00001» con la orden abierta: antes «Poner en la orden» escribía «Infinity» en el input
+      // type=number (que lo deja VACÍO); ahora no hay limit y no se escribe nada
+      const H = armarOrden();
+      H.M.abrirCalc({ contrato: TSLA_C, lotes: [{ n: '0.00001', p: '1' }] });
+      const antes = H.foto();
+      igual([H.M.calcPonerEnOrden(), H.foto(), H.reg.toasts.pop()], [false, antes, 'Todavía no hay limit calculado.'], 'contratos 0.00001: «Poner en la orden» no escribe nada en la orden y lo dice');
+      await H.M.calcCopiar('limit');
+      igual([H.reg.copias, H.reg.toasts.pop()], [[], 'Todavía no hay precio que copiar.'], 'ni «Copiar» copia nada');
+      // y si algún día el cálculo devolviera un precio no finito, el toque tampoco lo escribe (ni lo copia)
+      const D = domFalso(), reg = { toasts: [], copias: [] };
+      const F = construir(['calcPonerEnOrden', 'calcCopiar', 'estadoOrdenCalc', 'claveContrato'], {
+        $: D.$, toast: (t) => reg.toasts.push(t), navigator: { clipboard: { writeText: async (v) => { reg.copias.push(v); } } },
+        calcResultado: () => ({ n: 4, limit: { precio: Infinity }, stop: { precio: NaN } }), ordenParaCalc: () => { throw new Error('no debería mirar la orden'); },
+        ajustarFormOrden: () => {}, pintarAvisosOrden: () => {}, pintarTotalOrden: () => {}, pintarCalcRes: () => {}, cerrarCalc: () => {} },
+        { prefijo: 'let _calc = { contrato: null, ordVista: null };', consts: ['BROKER_CORTO'] });
+      igual([F.calcPonerEnOrden(), reg.toasts.pop()], [false, 'Todavía no hay limit calculado.'], 'limit Infinity: no se pone en la orden');
+      await F.calcCopiar('limit'); await F.calcCopiar('stop');
+      igual([reg.copias, reg.toasts], [[], ['Todavía no hay precio que copiar.', 'Todavía no hay precio que copiar.']], 'ni se copia (limit Infinity, stop NaN)');
+    }
+    {
       // rev67 · el BRÓKER también: el mismo contrato y la misma cantidad en otra cuenta no es «este contrato» (claveContrato no
       // lo lleva, y el limit saldría del costo de OTRA cuenta sin ningún aviso)
       const H = armarOrden();   // la venta Límite ×4 es de E*TRADE
@@ -692,7 +733,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     }
     {
       // doctrina en el fuente: el camino de la calculadora no arma ni envía órdenes
-      const nombres = ['calcLimitStop', 'calcArriba', 'calcNum', 'calcPrefsNormalizar', 'calcPrefsLeer', 'calcPrefsGuardar', 'calcEntrada', 'calcTitulo', 'calcLotesHtml', 'calcResumenHtml', 'calcChipsHtml',
+      const nombres = ['calcLimitStop', 'calcArriba', 'calcNum', 'calcPrefsNormalizar', 'calcPrefsLeer', 'calcPrefsGuardar', 'calcEntrada', 'calcTitulo', 'calcLotesHtml', 'calcResumenHtml', 'calcLotesPartidos', 'calcChipsHtml',
         'calcObjetivoHtml', 'calcTickHtml', 'calcFeeNota', 'calcFaltaTxt', 'calcCifrasHtml', 'calcLimitHtml', 'calcStopHtml', 'calcFormulaHtml', 'calcHojaHtml', 'calcResultado', 'calcDestino', 'pintarCalcRes',
         'abrirCalc', 'cerrarCalc', 'calcTecla', 'calcManualAnotar', 'calcInput', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar', 'calcContrato', 'calcLote',
         'calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'calcHayOtroCuadro', 'calcDesdeLaPagina', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto', 'ordenParaCalc', 'estadoOrdenCalc', 'calcPonerEnOrden', 'calcDeOrden'];

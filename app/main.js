@@ -9024,12 +9024,14 @@ window.MZ = Object.assign(window.MZ || {}, {
 const CALC_TICKS = [0.01, 0.05];   // el incremento del precio: 1¢ por defecto; 5¢ para las opciones que cotizan de 5 en 5
 
 // Número de un campo de la calculadora: acepta coma decimal (el teclado del iPhone en español la pone), «$» y «%»;
-// vacío o basura → NaN (y NaN nunca pasa los filtros `> 0` / `>= 0` de abajo). PURA.
+// vacío o basura → NaN (y NaN nunca pasa los filtros `> 0` / `>= 0` de abajo). Un texto de cientos de cifras da
+// Infinity en Number(): también NaN, que Infinity sí pasaría esos filtros y saldría en pantalla. PURA.
 function calcNum(v) {
   if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
   const s = String(v == null ? '' : v).trim().replace(/[$%\s]/g, '').replace(',', '.');
   if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(s)) return NaN;
-  return Number(s);
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
 }
 // Redondeo HACIA ARRIBA al incremento, sin el ruido de la coma flotante: 0.52 + 0.01 + 0.02 da 0.5500000000000001 en
 // JavaScript y un Math.ceil directo saltaría a 0.56 (le pediría a Andrés un centavo de más por contrato). Se cuentan los
@@ -9042,7 +9044,9 @@ function calcArriba(x, tick) {
 // El cálculo. Entrada (números o el texto de los campos): { lotes: [{ n, p }], fee, tick, modo: 'pct' | 'usd', objetivo,
 // stopPct }.
 //   · lotes: contratos y prima pagada de cada compra (0.52, no $52). Si promedió, una por compra: costo medio = Σ(n·p) / Σn.
-//     Las que no tienen contratos > 0 y prima > 0 (vacías, 0, negativas, basura) no cuentan; sin ninguna → null.
+//     Las que no tienen contratos ENTEROS ≥ 1 y prima > 0 (vacías, 0, negativas, fracciones, basura) no cuentan; sin
+//     ninguna → null. Entero porque un contrato de opciones no se parte, y porque «0.00001» pasaba `> 0` pero la suma
+//     redondeada a 4 decimales daba n = 0: medio = prima / 0 = Infinity en el costo medio, el LIMIT y el STOP.
 //   · fee: comisión de compra + venta POR CONTRATO, en prima (0.02 = $1 al comprar + $1 al vender). 0 vale (sin comisión);
 //     vacía o negativa no: sin ella no hay limit ni stop (falta 'comision').
 //   · objetivo: la ganancia NETA (después de comisiones) en % sobre lo pagado, o en $ de TODOS los contratos. 0 vale: sale
@@ -9057,7 +9061,7 @@ function calcLimitStop(e) {
   e = e || {};
   const r2 = (x) => Math.round(x * 100) / 100;
   const lotes = (Array.isArray(e.lotes) ? e.lotes : []).map(l => ({ n: calcNum(l && l.n), p: calcNum(l && l.p) }))
-    .filter(l => l.n > 0 && l.p > 0);
+    .filter(l => Number.isInteger(l.n) && l.n >= 1 && l.p > 0);
   if (!lotes.length) return null;
   const n = Math.round(lotes.reduce((s, l) => s + l.n, 0) * 1e4) / 1e4;
   const prima = lotes.reduce((s, l) => s + l.n * l.p, 0);          // Σ n·p, en prima
@@ -9143,9 +9147,17 @@ function calcLotesHtml(lotes) {
       + `<input id="cP${i}" data-c="p" data-i="${i}" type="text" inputmode="decimal" autocomplete="off" value="${esc(l && l.p)}" placeholder="0.52" aria-label="Prima pagada en la compra ${i + 1}">`
       + `<button type="button" class="cquitar" onclick="MZ.calcLoteQuitar(${i})" aria-label="Quitar la compra ${i + 1}"${L.length < 2 ? ' disabled' : ''}>×</button></div>`).join('');
 }
-function calcResumenHtml(r) {
-  if (!r) return '<span class="fresco">Pon al menos una compra con contratos y prima.</span>';
-  return `<b class="mono">${esc(r.n)}</b> contrato${r.n === 1 ? '' : 's'} · costo medio <b class="mono">${esc(fmtPrima(r.medio))}</b> (${dineroD(r.medio * 100)} por contrato) · pagaste <b class="mono">${dineroD(r.pagado)}</b>`;
+// Las compras (1, 2, 3…) cuyos contratos son un número positivo pero NO entero («1.5», «1,5», «0,00004»): calcLimitStop no
+// las cuenta, y quitarlas en silencio sería peor que el Infinity de antes. Se dice cuáles. PURA.
+function calcLotesPartidos(lotes) {
+  return (Array.isArray(lotes) ? lotes : []).map((l, i) => ({ i, n: calcNum(l && l.n) }))
+    .filter(x => x.n > 0 && !Number.isInteger(x.n)).map(x => x.i + 1);
+}
+function calcResumenHtml(r, lotes) {
+  const p = calcLotesPartidos(lotes);
+  const aviso = p.length ? `<span class="fresco" style="display:block;color:var(--oro)">Los contratos van enteros (1, 2, 3…): ${p.length === 1 ? `la compra ${p[0]} no cuenta` : `las compras ${p.join(', ')} no cuentan`}.</span>` : '';
+  if (!r) return '<span class="fresco">Pon al menos una compra con contratos y prima.</span>' + aviso;
+  return `<b class="mono">${esc(r.n)}</b> contrato${r.n === 1 ? '' : 's'} · costo medio <b class="mono">${esc(fmtPrima(r.medio))}</b> (${dineroD(r.medio * 100)} por contrato) · pagaste <b class="mono">${dineroD(r.pagado)}</b>` + aviso;
 }
 function calcChipsHtml(st) {
   const usd = st && st.modo === 'usd', actual = calcNum(st && (usd ? st.usd : st.pct));
@@ -9230,7 +9242,7 @@ function calcHojaHtml(st, r, dest) {
     <div class="sec" style="margin-top:8px">COMPRAS <span class="fresco" style="letter-spacing:0;font-weight:500">prima por contrato: 0.52 = $52</span></div>
     <div class="clotes" id="cLotes">${calcLotesHtml(st && st.lotes)}</div>
     <button type="button" class="btnsec" style="flex:none;margin-top:4px" onclick="MZ.calcLoteMas()">+ Añadir compra</button>
-    <div class="mut" id="cResumen" style="margin-top:4px">${calcResumenHtml(r)}</div>
+    <div class="mut" id="cResumen" style="margin-top:4px">${calcResumenHtml(r, st && st.lotes)}</div>
     <div class="sec" style="margin-top:12px">LO QUE QUIERES GANAR</div>
     <div id="cObjBox">${calcObjetivoHtml(st)}</div>
     <div class="dos">
@@ -9262,7 +9274,7 @@ function pintarCalcRes() {
   if (!_calc || !$('#modalCalc')) return;
   const r = calcResultado(), d = calcDestino();
   const poner = (id, h) => { const el = $('#' + id); if (el) el.innerHTML = h; };
-  poner('cResumen', calcResumenHtml(r));
+  poner('cResumen', calcResumenHtml(r, _calc.lotes));
   poner('cChips', calcChipsHtml(_calc));
   poner('cFeeNota', calcFeeNota(_calc.fee));
   poner('cResLimit', calcLimitHtml(r, d));
@@ -9342,7 +9354,7 @@ function calcChip(v) {
 }
 async function calcCopiar(que) {
   const r = calcResultado(), x = r && r[que === 'stop' ? 'stop' : 'limit'];
-  if (!x) { toast('Todavía no hay precio que copiar.'); return; }
+  if (!x || !Number.isFinite(x.precio)) { toast('Todavía no hay precio que copiar.'); return; }   // nunca «Infinity» al portapapeles
   const v = x.precio.toFixed(2);
   try { await navigator.clipboard.writeText(v); toast((que === 'stop' ? 'Stop ' : 'Limit ') + v + ' copiado'); }
   catch (_) { toast('Copia manual: ' + v); }
@@ -9461,7 +9473,8 @@ function estadoOrdenCalc(contrato, orden) {
 function calcPonerEnOrden() {
   if (!_calc) return false;
   const r = calcResultado();
-  if (!r || !r.limit) { toast('Todavía no hay limit calculado.'); return false; }
+  // un precio que no es un número finito no se escribe: «Infinity» en el input type=number lo deja VACÍO (y la orden sin límite)
+  if (!r || !r.limit || !Number.isFinite(r.limit.precio)) { toast('Todavía no hay limit calculado.'); return false; }
   const visto = _calc.ordVista;
   const o = ordenParaCalc(), d = estadoOrdenCalc(_calc.contrato, o);
   if (d.estado !== 'ok' || !o || !visto || o.ord !== visto) {
