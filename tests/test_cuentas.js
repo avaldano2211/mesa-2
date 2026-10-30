@@ -37,8 +37,8 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin',
   // v65 rev6: el instante de un vencimiento (16:30 ET del día de la expiración, con el horario de NY de ese día)
   'instanteVencimiento',
-  // v65 rev7: la venta a $0 que moomoo anota tras el vencimiento es su vencimiento (el FIFO del libro la lee así)
-  'vencimientoMoomoo'];
+  // v65 rev7: la venta a $0 que moomoo anota tras el vencimiento es su vencimiento (el FIFO del libro y Cuentas la leen así)
+  'vencimientoMoomoo', 'filasMoomooVencimiento'];
 const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'BROKERS_CON_COMISION', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
   'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA'];
 function cuentas(op) {
@@ -1010,6 +1010,107 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
   igual([dS.vencioEnParte, dS.presunta, K.salidaOpCuentas(opS, dS, false), K.salidaOpCuentas(opS, dS, true)],
     [true, true, '<span style="color:var(--oro)">venció en parte</span> <span class="fresco">(presunto)</span> · $1.00', '<span style="color:var(--oro)">venció</span><span class="csub">en parte · presunto · $1.00</span>'],
     '(v65 rev6) Schwab vendida en parte y el resto vencido presunto: «venció en parte (presunto)»');
+}
+// v65 rev7 · moomoo NO manda un lado «vencimiento»: OpenD anota la liquidación de una opción vencida como una VENTA a $0 de
+// madrugada del día SIGUIENTE, y el worker la empareja (moomoo_cuenta.emparejar) como un cierre más: fila con prima_salida 0
+// y cerrada_at a esa hora. Cuentas la lee (filasMoomooVencimiento, en unirOperaciones) como el vencimiento que es: a las
+// 16:30 ET del día de la expiración, «expiró» / «venció en parte», sin hora; el Diario (emparejarFillsFIFO) igual. Del MISMO
+// libro de fills salen el Diario y las filas «como las escribe el worker»; los 5 casos del libro real con su FORMA (símbolos,
+// strikes, primas y contratos inventados) y uno que vence el lunes 31-ago y se anota el martes 1-sep (cambio de mes).
+{
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const FM = (clave, sym, exp, lado, n, precio, at, extra) => ({ broker: 'moomoo', clave_ext: clave, symbol: sym, direccion: (extra && extra.direccion) || 'CALL', strike: 500, expiracion: exp, lado,
+    contratos: n, precio, comision: 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: 'worker', ...(extra || {}) });
+  // las filas de broker_trades COMO LAS ESCRIBE EL WORKER (moomoo_cuenta.emparejar): FIFO por contrato, una fila por compra
+  // consumida, cerrada_at = el instante de la venta (también la de $0), fees 0, clave osi|abierta|cerrada|n|abre>cierra
+  const filasWorker = (fills) => {
+    const lotes = {}, out = [];
+    for (const f of fills.slice().sort((a, b) => (a.ejecutado_at < b.ejecutado_at ? -1 : a.ejecutado_at > b.ejecutado_at ? 1 : 0))) {
+      const osi = `${f.symbol}|${f.direccion}|${f.strike}|${f.expiracion}`;
+      if (f.lado === 'compra') { (lotes[osi] = lotes[osi] || []).push({ qty: f.contratos, precio: f.precio, ts: f.ejecutado_at, id: f.clave_ext }); continue; }
+      let rest = f.contratos; const cola = lotes[osi] || [];
+      while (rest > 1e-9 && cola.length) {
+        const ap = cola[0], usa = Math.min(rest, ap.qty);
+        out.push({ broker: 'moomoo', symbol: f.symbol, osi, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion, contratos: usa, prima_fill: ap.precio, prima_salida: f.precio,
+          abierta_at: ap.ts, cerrada_at: f.ejecutado_at, resultado_usd: r2((f.precio - ap.precio) * usa * 100), fees: 0, clave_ext: `${osi}|${ap.ts}|${f.ejecutado_at}|${usa}|${ap.id}>${f.clave_ext}`,
+          raw: { fuente: 'moomoo OpenD history_deal_list_query', fees: 'no disponibles' } });
+        ap.qty -= usa; rest -= usa; if (ap.qty <= 1e-9) cola.shift();
+      }
+    }
+    return out;
+  };
+  const porDia = (pares) => pares.reduce((m, [d, n, usd]) => { const x = m[d] || (m[d] = [0, 0]); x[0] += n; x[1] = r2(x[1] + usd); return m; }, {});
+  const CASOS = [
+    // la operación de Cuentas es por día de APERTURA: la ida y vuelta del jueves y el lote del jueves 10:09 que venció son UNA
+    // operación que cierra con su última fila (el vencimiento del viernes, antes el sábado); el Diario la parte en dos viajes
+    { nombre: 'PUT del viernes, a $0 el sábado 00:35', exp: '2026-08-28', iv: '2026-08-28T20:30:00.000Z', anot: '2026-08-29', grupo: { '2026-08-28': [21, -795] }, fills: [
+      FM('a1', 'IWM', '2026-08-28', 'compra', 3, 1.10, '2026-08-27T14:04:10+00:00', { direccion: 'PUT' }), FM('a3', 'IWM', '2026-08-28', 'venta', 3, 1.25, '2026-08-27T14:07:20+00:00', { direccion: 'PUT' }),
+      FM('a5', 'IWM', '2026-08-28', 'compra', 2, 1.20, '2026-08-27T14:09:30+00:00', { direccion: 'PUT' }), FM('a6', 'IWM', '2026-08-28', 'compra', 8, 0.40, '2026-08-28T13:31:05+00:00', { direccion: 'PUT' }),
+      FM('a8', 'IWM', '2026-08-28', 'compra', 8, 0.35, '2026-08-28T13:33:40+00:00', { direccion: 'PUT' }), FM('a0', 'IWM', '2026-08-28', 'venta', 18, 0, '2026-08-29T04:35:00+00:00', { direccion: 'PUT' })] },
+    { nombre: '0DTE del lunes, a $0 el martes 01:20', exp: '2026-09-28', iv: '2026-09-28T20:30:00.000Z', anot: '2026-09-29', fills: [
+      FM('b1', 'SPY', '2026-09-28', 'compra', 5, 0.90, '2026-09-28T13:33:00+00:00'), FM('b3', 'SPY', '2026-09-28', 'compra', 5, 0.60, '2026-09-28T14:05:00+00:00'), FM('b0', 'SPY', '2026-09-28', 'venta', 10, 0, '2026-09-29T05:20:00+00:00')] },
+    { nombre: 'CALL del viernes que vence el lunes, a $0 el martes 01:24', exp: '2026-10-05', iv: '2026-10-05T20:30:00.000Z', anot: '2026-10-06', fills: [
+      FM('c1', 'DIA', '2026-10-05', 'compra', 10, 2.40, '2026-10-02T18:52:00+00:00'), FM('c0', 'DIA', '2026-10-05', 'venta', 10, 0, '2026-10-06T05:24:00+00:00')] },
+    { nombre: 'CALL de la víspera, a $0 el jueves 01:12', exp: '2026-10-07', iv: '2026-10-07T20:30:00.000Z', anot: '2026-10-08', fills: [
+      FM('d1', 'XLF', '2026-10-07', 'compra', 10, 1.50, '2026-10-06T13:31:00+00:00'), FM('d3', 'XLF', '2026-10-07', 'compra', 10, 1.30, '2026-10-06T13:38:00+00:00'), FM('d0', 'XLF', '2026-10-07', 'venta', 20, 0, '2026-10-08T05:12:00+00:00')] },
+    { nombre: '0DTE del viernes, a $0 el sábado 01:22', exp: '2026-10-16', iv: '2026-10-16T20:30:00.000Z', anot: '2026-10-17', fills: [
+      FM('e1', 'XLE', '2026-10-16', 'compra', 2, 3.10, '2026-10-16T13:43:00+00:00', { spot: 61.2, spot_fuente: 'm1' }), FM('e0', 'XLE', '2026-10-16', 'venta', 2, 0, '2026-10-17T05:22:00+00:00', { spot: 63.9, spot_fuente: 'dia' })] },
+    { nombre: 'CALL que vence el lunes 31-ago, a $0 el martes 1-sep 01:20 (otro mes)', exp: '2026-08-31', iv: '2026-08-31T20:30:00.000Z', anot: '2026-09-01', fills: [
+      FM('f1', 'XLK', '2026-08-31', 'compra', 4, 1.00, '2026-08-31T14:00:00+00:00'), FM('f2', 'XLK', '2026-08-31', 'venta', 1, 1.40, '2026-08-31T18:00:00+00:00'), FM('f0', 'XLK', '2026-08-31', 'venta', 3, 0, '2026-09-01T05:20:00+00:00')] },
+  ];
+  const HOY7 = '2026-10-22';
+  for (const k of CASOS) {
+    const filas = filasWorker(k.fills), copia = JSON.stringify(filas);
+    const diario = K.emparejarFillsFIFO(K.fillsEtradeVigentes(k.fills), HOY7);
+    const vig = K.filasMoomooVencimiento(filas), ops = K.unirOperaciones([], filas, k.fills).ops, opsSin = K.unirOperaciones([], filas, null).ops;
+    const dD = porDia(diario.cerradas.map(c => [c.fecha_ny, c.contratos, c.pnl]));
+    const dF = porDia(vig.map(t => [ymdNY(t.cerrada_at), t.contratos, t.resultado_usd]));
+    const dO = porDia(ops.map(o => [ymdNY(o.cerrada_at), o.contratos, o.resultado_usd])), dS = porDia(opsSin.map(o => [ymdNY(o.cerrada_at), o.contratos, o.resultado_usd]));
+    igual([dF, dO, dS], [dD, k.grupo || dD, k.grupo || dD], `(v65 rev7) ${k.nombre}: Cuentas (filas leídas, operaciones con libro y sin libro) = Diario, día por día: ${JSON.stringify(dD)}${k.grupo ? ' (las operaciones, por día de apertura: ' + JSON.stringify(k.grupo) + ')' : ''}`);
+    assert(!(k.anot in dD) && !(k.anot in dO) && k.exp in dO, `(v65 rev7) ${k.nombre}: nada el día de la anotación (${k.anot}); la pérdida, el día de la expiración (${k.exp})`);
+    const ceros = vig.filter(t => Number(t.prima_salida) === 0);
+    igual([ceros.length > 0, ceros.every(t => t.cerrada_at === k.iv && K.filaVencioCuentas(t) && !K.filaPresuntaCuentas(t) && t.raw.cierra === 'vencimiento' && ymdNY(t.raw.moomoo_anotada_at) === k.anot && t.raw.fuente === 'moomoo OpenD history_deal_list_query'), JSON.stringify(filas) === copia],
+      [true, true, true], `(v65 rev7) ${k.nombre}: cada fila a $0 se lee a las 16:30 ET (${k.iv}), cerró por vencimiento (no presunto), guarda el instante que anotó moomoo y la fila original no se toca`);
+    const op = ops.find(o => o._partes_filas.some(t => Number(t.prima_salida) === 0 && t.cerrada_at === k.iv)) || ops[ops.length - 1];   // sin la regla, la última (falla abajo, sin reventar)
+    const d = K.detalleOpCuentas(op, { fills: k.fills, senales: [] });
+    const enParte = op._partes_filas.some(t => Number(t.prima_salida) > 0);
+    igual([d.expirada, d.vencioEnParte, d.presunta], [!enParte, enParte, false], `(v65 rev7) ${k.nombre}: ${enParte ? '«venció en parte» (hubo una venta real en el grupo)' : '«expiró»'} y no es presunta (moomoo lo reportó)`);
+    const tA = K.tarjetaHistorial(op, {}), fA = K.filaHistorialCuentas(op, {}), sal = K.salidaOpCuentas(op, d, false);
+    assert((enParte ? /venció en parte/.test(sal) : /expiró/.test(sal)) && /venció el mismo día|\d+ d hasta vencer/.test(K.duracionOpCuentas(op, d))
+      && !/00:35|01:20|01:24|01:12|01:22|16:30|20:30/.test(tA + fA + sal), `(v65 rev7) ${k.nombre}: salida «${sal.replace(/<[^>]*>/g, '')}», duró «${K.duracionOpCuentas(op, d)}» y ninguna hora (ni la de madrugada ni las 16:30) en la tarjeta ni en la fila de la tabla`);
+  }
+  // el 0DTE del sábado: la acción de salida NO es el spot que el worker le puso a la venta a $0 (el cierre del día de la
+  // anotación): el vencimiento no tiene instante, como el de E*TRADE
+  {
+    const k = CASOS[4], ops = K.unirOperaciones([], filasWorker(k.fills), k.fills).ops, sp = K.spotDeOperacion(ops[0], k.fills);
+    igual([sp.entrada, sp.salida, sp.n_fills], [61.2, null, 1], '(v65 rev7) la acción: la entrada con su spot y la salida sin el de la venta a $0 del sábado (no se ancla a las 16:30 ET)');
+  }
+  // cambio de mes: el vencimiento del lunes 31-ago anotado el martes 1-sep cuenta en AGOSTO (la semana del 31 es la misma)
+  {
+    const k = CASOS[5], ops = K.unirOperaciones([], filasWorker(k.fills), k.fills).ops;
+    igual([K.cerradasDesde(ops, '2026-09-01').length, K.cerradasDesde(ops, '2026-08-31').length, K.resumenPeriodo(ops, '2026-09-01').util || 0], [0, 1, 0], '(v65 rev7) el vencimiento del lunes 31-ago anotado el martes 1-sep ya no cae en septiembre (Cuentas: semana y mes)');
+  }
+  // lo que NO se toca: otra cosa que una fila de moomoo a $0 cerrada DESPUÉS del vencimiento
+  const base = filasWorker(CASOS[4].fills)[0];
+  const noToca = [
+    ['venta real a 0.00 a las 15:59 ET del día de la expiración', { ...base, cerrada_at: '2026-10-16T19:59:00+00:00' }],
+    ['venta real a 0.00 a las 16:14 ET del día de la expiración', { ...base, cerrada_at: '2026-10-16T20:14:00+00:00' }],
+    ['venta a $0.01 de madrugada del día siguiente', { ...base, prima_salida: 0.01 }],
+    ['sin prima de salida (null)', { ...base, prima_salida: null }],
+    ['prima de salida vacía', { ...base, prima_salida: '' }],
+    ['tasty a $0 de madrugada del día siguiente', { ...base, broker: 'tasty' }],
+    ['expiración que no es fecha', { ...base, expiracion: '2026-02-30' }],
+  ];
+  for (const [nombre, t] of noToca) {
+    const arr = [t];
+    assert(K.filasMoomooVencimiento(arr) === arr && K.unirOperaciones([], arr).ops[0].cerrada_at === t.cerrada_at, `(v65 rev7) Cuentas NO toca: ${nombre} (el MISMO arreglo y su cierre de siempre)`);
+  }
+  const yaLeida = K.filasMoomooVencimiento([base]);
+  igual([yaLeida[0].cerrada_at, K.filasMoomooVencimiento(yaLeida) === yaLeida, base.cerrada_at, base.raw.cierra], ['2026-10-16T20:30:00.000Z', true, '2026-10-17T05:22:00+00:00', undefined],
+    '(v65 rev7) leer dos veces no cambia nada (el cierre ya no es posterior al vencimiento) y la fila original no se muta');
+  igual([K.filasMoomooVencimiento(null), K.filasMoomooVencimiento(undefined), K.filasMoomooVencimiento([null, {}]).length], [null, undefined, 2], '(v65 rev7) sin filas o con basura, no revienta');
+  igual(K.unirOperaciones([], [{ ...base, raw: null }]).ops[0]._partes_filas[0].raw, { cierra: 'vencimiento', moomoo_anotada_at: '2026-10-17T05:22:00+00:00' }, '(v65 rev7) una fila sin raw recibe la marca igual');
+  assert(/trades = filasMoomooVencimiento\(filasEtradeVigentes\(trades, fills \|\| null\)\);/.test(extraer('unirOperaciones')), '(v65 rev7) unirOperaciones lee SIEMPRE las filas de moomoo con filasMoomooVencimiento (con libro y sin él): Cuentas, Disciplina, los cupos y la comprobación del Diario cuentan lo mismo');
 }
 // v62 rev4: TODAS las pantallas que suman operaciones pasan el libro (mismas cifras en Cuentas, Disciplina y los cupos)
 {
