@@ -437,6 +437,14 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     assert(/\.calc \.cprecio\{[^}]*var\(--mono\)[^}]*font-variant-numeric:tabular-nums/.test(css) && /\.calc input\{[^}]*font-variant-numeric:tabular-nums;font-size:16px/.test(css), 'CSS: el precio y los campos en mono tabular, los campos a 16 px (iOS no amplía)');
     assert(/\.calc \.cstop \.cprecio\{color:var\(--rojo\)\}/.test(css) && /\.calc \.cseg button\.on\{background:var\(--oro\)/.test(css), 'CSS: el stop en rojo y lo elegido en oro (los colores del tema: claro y oscuro)');
     assert(/\.calc \.clote\{display:grid;grid-template-columns:18px minmax\(0,1fr\) minmax\(0,1\.4fr\) 40px/.test(css), 'CSS: cada compra en una fila que cabe a 375 px (columnas con minmax(0,…))');
+    // rev67 · la cabecera a 375 px con el mercado cerrado: medida en el navegador con la cabecera REAL (rev67/cabecera), «Cuentas
+    // y diario» + «mercado cerrado» pasaba de 62 a 97 px (la fecha partida en «VIERNES, 30 OCT ·» / «NY» y el título en dos)
+    assert(/header\.top \.fecha\{[^}]*white-space:nowrap;overflow:hidden;text-overflow:ellipsis\}/.test(css), 'CSS: la fecha no se parte (y, si de verdad no cabe, se recorta con «…» en vez de montarse sobre la píldora)');
+    assert(/header\.top\{gap:8px\}/.test(css) && /header\.top>div:first-child\{min-width:0\}/.test(css), 'CSS: el bloque del título cede (min-width:0) y nunca queda pegado a la píldora (gap)');
+    assert(/@media\(max-width:400px\)\{#estadoWorker\.b-vivo,#estadoWorker\.b-cerrado\{font-size:0;gap:0;padding:6px\}\}/.test(css), 'CSS: en pantallas estrechas «en vivo» y «mercado cerrado» se quedan en su punto');
+    assert(!/@media\(max-width:400px\)\{[^}]*b-caido/.test(css), 'CSS: «worker caído» y «sin latido» conservan sus palabras (una alarma se lee)');
+    const ew = C.extraer('estadoWorker');
+    assert(/dot\('var\(--tx2\)'\) \+ 'mercado cerrado'/.test(ew) && /dot\('var\(--verde\)'\) \+ 'en vivo'/.test(ew), '(el texto sigue en la píldora: solo se oculta a la vista, el lector de pantalla lo lee)');
   }
 
   // ════════════════ 14. ya llena desde una posición (libro, bróker, libro de fills) ════════════════

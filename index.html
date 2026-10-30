@@ -50,7 +50,16 @@
   header.top{padding:calc(env(safe-area-inset-top) + 16px) 20px 10px;display:flex;
     align-items:center;justify-content:space-between}
   header.top .t{font-family:'Newsreader',Georgia,serif;font-size:23px;font-weight:500}
-  header.top .fecha{font-size:10.5px;font-weight:700;letter-spacing:.13em;color:var(--tx2)}
+  header.top .fecha{font-size:10.5px;font-weight:700;letter-spacing:.13em;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* rev67: con el botón de la calculadora y la píldora sin partir, a 375 px la fecha se partía («VIERNES, 30 OCT ·» / «NY»)
+     y el título bajaba a 2–3 líneas: la cabecera pasaba de 62 a 97 px con el mercado cerrado. Ahora el bloque del título
+     cede (min-width:0: si no cabe, se parte el título, no la fecha) y, en pantallas estrechas, la píldora de «en vivo» y
+     «mercado cerrado» se queda en su punto (verde / gris: el texto sigue ahí para el lector de pantalla). La de «worker
+     caído» y «sin latido» conserva sus palabras: una alarma se lee, no se adivina por un color; con ella, a 320 px (o a 375
+     con un «MIÉRCOLES, 30 SEPT»), la fecha se recorta con «…» en vez de partirse o montarse sobre la píldora. */
+  header.top{gap:8px}   /* y nunca pegado a la píldora: un título largo (El informe de la mañana) se parte antes de tocarla */
+  header.top>div:first-child{min-width:0}
+  @media(max-width:400px){#estadoWorker.b-vivo,#estadoWorker.b-cerrado{font-size:0;gap:0;padding:6px}}
   .badge{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
     font-size:11px;font-weight:700;letter-spacing:.02em;white-space:nowrap}   /* v65: con la calculadora en la cabecera, la píldora no se parte en dos («sin / latido»): cede el título */
   .dot{width:7px;height:7px;border-radius:99px;flex:none}
