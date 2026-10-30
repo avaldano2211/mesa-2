@@ -8990,6 +8990,78 @@ window.MZ = Object.assign(window.MZ || {}, {
   armar: async () => { if (armadoHasta()) desarmar(); else await pedirPin(); pintarOrdenesCuenta(); },
 });
 
+// ============================================================================
+// v65 · CALCULADORA DE LIMIT Y STOP (Andrés, 2026-10-30, con dos fotos de sus hojas de Excel: «una parte en el programa
+// donde yo pueda poner el costo del contrato, el valor que quiero ganar o el porcentaje que quiero ganar, más 2 centavos
+// automáticamente de costo de compra y venta por contrato, para que me calcule el limit price que tengo que colocar y sea
+// más rápido»). Sus hojas: Ask 2.40 · Fee 1.00 · Limit 2.70 (12 %) · Stop 1.92 (−20 %); y TSLA 420: 1 a $121 + 3 a $29 →
+// 4 a $52 ($208), vender 4 a $55 ($220), fee 8, neto $4.00.
+// Aquí, primero, el CÁLCULO: puro y probado contra esas dos hojas (tests/test_calc_limit.js). Nada de esto arma ni envía
+// órdenes: solo calcula un precio.
+// ============================================================================
+const CALC_TICKS = [0.01, 0.05];   // el incremento del precio: 1¢ por defecto; 5¢ para las opciones que cotizan de 5 en 5
+
+// Número de un campo de la calculadora: acepta coma decimal (el teclado del iPhone en español la pone), «$» y «%»;
+// vacío o basura → NaN (y NaN nunca pasa los filtros `> 0` / `>= 0` de abajo). PURA.
+function calcNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  const s = String(v == null ? '' : v).trim().replace(/[$%\s]/g, '').replace(',', '.');
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(s)) return NaN;
+  return Number(s);
+}
+// Redondeo HACIA ARRIBA al incremento, sin el ruido de la coma flotante: 0.52 + 0.01 + 0.02 da 0.5500000000000001 en
+// JavaScript y un Math.ceil directo saltaría a 0.56 (le pediría a Andrés un centavo de más por contrato). Se cuentan los
+// incrementos con 6 decimales (el ruido se va) y solo entonces se sube al siguiente entero. PURA.
+function calcArriba(x, tick) {
+  const t = CALC_TICKS.includes(tick) ? tick : 0.01;
+  const k = Math.round(x / t * 1e6) / 1e6;
+  return Math.round(Math.ceil(k) * t * 1e6) / 1e6;
+}
+// El cálculo. Entrada (números o el texto de los campos): { lotes: [{ n, p }], fee, tick, modo: 'pct' | 'usd', objetivo,
+// stopPct }.
+//   · lotes: contratos y prima pagada de cada compra (0.52, no $52). Si promedió, una por compra: costo medio = Σ(n·p) / Σn.
+//     Las que no tienen contratos > 0 y prima > 0 (vacías, 0, negativas, basura) no cuentan; sin ninguna → null.
+//   · fee: comisión de compra + venta POR CONTRATO, en prima (0.02 = $1 al comprar + $1 al vender). 0 vale (sin comisión);
+//     vacía o negativa no: sin ella no hay limit ni stop (falta 'comision').
+//   · objetivo: la ganancia NETA (después de comisiones) en % sobre lo pagado, o en $ de TODOS los contratos. 0 vale: sale
+//     a la par, comisiones cubiertas.
+//   · LIMIT = medio + (medio·%  ó  $/(100·n)) + fee, redondeado HACIA ARRIBA al incremento: nunca por debajo de lo pedido.
+//   · STOP  = medio·(1 − %stop), redondeado HACIA ARRIBA: la caída de la prima nunca pasa del % (0 ≤ % < 100). Las
+//     comisiones no entran en el precio del stop; se dicen en su pérdida neta.
+// Salida: null sin compras válidas; si no { n, pagado, medio, tick, fee, modo, objetivo, stopPct, sube, comisiones, limit,
+// stop, falta } con limit / stop = { precio, crudo, venta, neta, netaPct } o null (`falta` dice qué campo lo impide:
+// 'comision', 'objetivo', 'stop'). Dinero en $ a 2 decimales; medio y crudo sin redondear (la pantalla decide). PURA.
+function calcLimitStop(e) {
+  e = e || {};
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const lotes = (Array.isArray(e.lotes) ? e.lotes : []).map(l => ({ n: calcNum(l && l.n), p: calcNum(l && l.p) }))
+    .filter(l => l.n > 0 && l.p > 0);
+  if (!lotes.length) return null;
+  const n = Math.round(lotes.reduce((s, l) => s + l.n, 0) * 1e4) / 1e4;
+  const prima = lotes.reduce((s, l) => s + l.n * l.p, 0);          // Σ n·p, en prima
+  const medio = prima / n, pagado = r2(prima * 100);
+  const tick = CALC_TICKS.includes(Number(e.tick)) ? Number(e.tick) : 0.01;
+  const modo = e.modo === 'usd' ? 'usd' : 'pct';
+  const fee = calcNum(e.fee), obj = calcNum(e.objetivo), sp = calcNum(e.stopPct);
+  const feeOk = fee >= 0, objOk = obj >= 0, stopOk = sp >= 0 && sp < 100;
+  const comisiones = feeOk ? r2(fee * 100 * n) : null;
+  const falta = [];
+  if (!feeOk) falta.push('comision');
+  if (!objOk) falta.push('objetivo');
+  if (!stopOk) falta.push('stop');
+  // lo que se cobra al vender TODO a `precio` y lo que queda tras pagar la compra y las comisiones de ida y vuelta
+  const salida = (precio, crudo) => {
+    const venta = r2(precio * 100 * n), neta = r2(venta - pagado - comisiones);
+    return { precio, crudo, venta, neta, netaPct: pagado > 0 ? neta / pagado * 100 : null };
+  };
+  const sube = objOk ? (modo === 'pct' ? medio * obj / 100 : obj / (100 * n)) : null;
+  const limit = (feeOk && objOk) ? salida(calcArriba(medio + sube + fee, tick), medio + sube + fee) : null;
+  const crudoStop = medio * (1 - sp / 100);
+  const stop = (feeOk && stopOk) ? salida(calcArriba(crudoStop, tick), crudoStop) : null;
+  return { n, pagado, medio, tick, fee: feeOk ? fee : null, modo, objetivo: objOk ? obj : null, stopPct: stopOk ? sp : null,
+    sube, comisiones, limit, stop, falta };
+}
+
 // ---------- Disciplina ----------
 function nombreMesNY() {
   return new Intl.DateTimeFormat('es', { timeZone: 'America/New_York', month: 'long' }).format(new Date());
