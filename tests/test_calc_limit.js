@@ -248,6 +248,7 @@ function domFalso() {
       const dentro = cuerpo.find(n => String(n.innerHTML).includes('id="' + m[1] + '"'));
       return dentro ? (nodos[m[1]] || (nodos[m[1]] = C.nodo({ id: m[1] }))) : null;
     },
+    querySelectorAll: (s) => s === '.modal' ? cuerpo.filter(n => /(^| )modal( |$)/.test(n.className)) : [],
   };
   return { doc, cuerpo, nodos, escuchas, $: (s) => doc.querySelector(s), crear };
 }
@@ -499,16 +500,21 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
 
   // ════════════════ 15. «Poner en la orden»: SOLO el precio, nada se envía ════════════════
   {
+    // rev67: el MISMO contrato TSLA 420 ×4 en otra cuenta (una línea de moomoo) y en el libro de fills
+    const MOO_T = { broker: 'moomoo', symbol: 'TSLA', direccion: 'CALL', strike: 420, expiracion: '2026-11-20', contratos: 4, prima_fill: 0.80, clave: 'moomoo|TSLA|CALL|420|2026-11-20' };
+    const ABIERTOS_T = [{ broker: 'etrade', contrato: 'TSLA|CALL|420|2026-11-20', symbol: 'TSLA', direccion: 'CALL', strike: 420, expiracion: '2026-11-20', contratos: 4, prima: 0.52 }];
     const CAMPOS = { oSym: 'TSLA', oTipo: 'CALL', oAcc: 'venta', oStrike: '420', oExp: '2026-11-20', oQty: '4', oTerm: 'GTC', oPt: 'LIMIT', oPrecio: '0.34', oBroker: 'etrade', oGtcAuto: '' };
     const envio = { llamadas: [] };
     const espia = (n) => (...a) => { envio.llamadas.push(n); return Promise.resolve({}); };
     const repintes = [];
     function armarOrden(E) {
       E = E || {};
-      const H = armarHoja({ mas: ['leerFormOrden', 'calcContrato', 'calcLote', 'calcDatosDePosicion', 'calcDatosDeItem', 'calcDeOrden', 'claveCartera'],
+      const H = armarHoja({ mas: ['leerFormOrden', 'calcContrato', 'calcLote', 'calcDatosDePosicion', 'calcDatosDeItem', 'calcDeOrden', 'claveCartera',
+        'calcDatosDeAbiertos', 'calcHayOtroCuadro', 'calcDesdeLaPagina', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto'],
         prefijo: 'let _ord = null; let _gestor = { filas: [] }; let _cart = {};', sufijo: ' function __setOrd(o) { _ord = o; } function __setGestor(f) { _gestor.filas = f; } function __setCart(c) { _cart = c; }', extras: ['__setOrd', '__setGestor', '__setCart'],
         deps: { ajustarFormOrden: () => repintes.push('ajustar'), pintarAvisosOrden: () => repintes.push('avisos'), pintarTotalOrden: () => repintes.push('total'),
           itemsCartera: (c) => (c && c.etrade && c.etrade.items) || [], BROKER_NOMBRE: C.BROKER_NOMBRE,
+          buscarItemCartera: (k) => [AAPL, MOO_T].find(it => it.clave === k) || null, _diario: { abiertos: ABIERTOS_T },
           ordenPreview: espia('ordenPreview'), ordenPlace: espia('ordenPlace'), ordenPreviewSchwab: espia('ordenPreviewSchwab'), ordenPlaceSchwab: espia('ordenPlaceSchwab'),
           etPost: espia('etPost'), swPost: espia('swPost'), abrirOrden: espia('abrirOrden'), construirOrden: espia('construirOrden'), construirOrdenSchwab: espia('construirOrdenSchwab'),
           sb: { from: espia('sb.from') } } });
@@ -578,6 +584,46 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
       assert(!/MZ\.calcPonerEnOrden/.test(h) && re.test(h) && (apagado ? /class="pri" disabled[^>]*>Poner en la orden/.test(h) : !/Poner en la orden/.test(h)), nombre + ': ' + (apagado ? 'el botón sale APAGADO' : 'sin botón') + ' y se dice por qué', h);
       igual([H.M.calcPonerEnOrden(), H.foto(), envio.llamadas], [false, antes, []], nombre + ': un toque forzado no toca la orden ni envía nada');
     });
+    {
+      // rev67 · el BRÓKER también: el mismo contrato y la misma cantidad en otra cuenta no es «este contrato» (claveContrato no
+      // lo lleva, y el limit saldría del costo de OTRA cuenta sin ningún aviso)
+      const H = armarOrden();   // la venta Límite ×4 es de E*TRADE
+      H.M.abrirCalc({ contrato: Object.assign({}, TSLA_C, { broker: 'moomoo' }), lotes: [{ n: 4, p: 0.80 }], origen: 'costo medio de moomoo' });
+      const h = H.D.cuerpo.find(n => n.id === 'modalCalc').innerHTML, antes = H.foto();
+      igual(H.M.estadoOrdenCalc(H.M.__calc().contrato, H.M.ordenParaCalc()).estado, 'otra', 'una línea de moomoo frente a una venta de E*TRADE del MISMO contrato y cantidad: «otra», no «ok»');
+      assert(!/Poner en la orden/.test(h) && /La orden abierta es de E\*TRADE y este contrato es de moomoo: no se toca\./.test(h) && !/Ojo: la orden es de/.test(h), 'sin botón, sin el aviso de cantidad (es la misma) y dice por qué', h);
+      igual([H.M.__calc().ordVista, H.M.calcPonerEnOrden(), H.foto(), envio.llamadas], [null, false, antes, []], 'no se anota a qué orden se ofreció y un toque forzado no toca la orden ni envía nada');
+      const Ht = armarOrden({ ord: { broker: 'tasty' } });
+      Ht.M.abrirCalc({ contrato: TSLA_C, lotes: [{ n: 4, p: 0.52 }] });
+      const ht = Ht.D.cuerpo.find(n => n.id === 'modalCalc').innerHTML;
+      assert(/La orden abierta es de tasty y este contrato es de E\*TRADE: no se toca\./.test(ht) && !/Poner en la orden/.test(ht), 'y al revés: fichas de E*TRADE frente a una orden de tasty');
+      const Hn = armarOrden({ ord: { broker: undefined } });
+      Hn.M.abrirCalc({ contrato: Object.assign({}, TSLA_C, { broker: null }), lotes: [{ n: 4, p: 0.52 }] });
+      igual(Hn.M.estadoOrdenCalc(Hn.M.__calc().contrato, Hn.M.ordenParaCalc()).estado, 'ok', 'sin bróker en los dos lados es E*TRADE en los dos: «ok»');
+    }
+    {
+      // rev67 · desde la página de DETRÁS no se abre encima de otro cuadro: ningún cuadro es inert y el Tab de la Mac llega al
+      // «Calcular limit» de otra ficha con la hoja de orden abierta (la GTC de la ficha 7, ×1 a 1.21)
+      const H = armarOrden({ campos: { oQty: '1', oPrecio: '1.35' }, ord: { pre: { posicion_id: 7, broker: 'etrade', proposito: 'salida_gtc' } } });
+      H.M.__setGestor([T1, T2]);
+      H.M.calcDePosicion(8);
+      igual([H.M.__calc(), H.D.cuerpo.map(n => n.id)], [null, ['modalOrden']], '«Calcular limit» de la ficha 8 con la orden de la 7 abierta: la hoja NO se abre (ni encima ni con el medio 0.52 de las dos)');
+      igual(H.reg.toasts.pop(), 'Hay otro cuadro abierto: ciérralo y vuelve a tocar «Calcular limit». No se abrió nada.', 'y lo dice');
+      H.M.calcDeBroker(MOO_T.clave); H.M.calcDeAbierto('etrade|TSLA|CALL|420|2026-11-20');
+      igual([H.M.__calc(), H.D.cuerpo.length, H.reg.toasts.length], [null, 1, 2], 'lo mismo desde la línea del bróker y desde el Diario');
+      H.M.calcDeOrden();
+      igual([H.M.__calc() && H.M.__calc().lotes, H.D.cuerpo.map(n => n.id)], [[{ n: '1', p: '1.21' }], ['modalOrden', 'modalCalc']], 'el enlace de la PROPIA orden sí la abre encima (con SU ficha: vende ×1)');
+      assert(/MZ\.calcPonerEnOrden\(\)">Poner en la orden/.test(H.D.cuerpo[1].innerHTML), '(y ahí sí ofrece «Poner en la orden»)');
+      H.M.calcDePosicion(8);
+      igual(H.M.__calc().lotes, [{ n: '1', p: '1.21' }], 'con la calculadora ya abierta encima de la orden, el Tab al botón de detrás tampoco la cambia');
+      H.orden.remove(); H.M.cerrarCalc();
+      H.M.calcDePosicion(8);
+      igual(H.M.__calc().lotes, [{ n: '1', p: '1.21' }, { n: '3', p: '0.29' }], 'sin cuadro abierto, «Calcular limit» abre como siempre (las dos fichas)');
+      H.M.calcDeBroker(MOO_T.clave);
+      igual([H.M.__calc().contrato.broker, H.D.cuerpo.filter(n => n.id === 'modalCalc').length], ['moomoo', 1], 'y con solo la calculadora abierta, otra la sustituye (nunca dos)');
+      H.M.calcDeAbierto('etrade|TSLA|CALL|420|2026-11-20');
+      igual(H.M.__calc().lotes, [{ n: '4', p: '0.52' }], '(también desde el Diario)');
+    }
     {
       // sin hoja de orden: solo Copiar; y una orden cerrada entre el render y el toque
       const H = armarHoja({ deps: { BROKER_NOMBRE: C.BROKER_NOMBRE } });
@@ -649,7 +695,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
       const nombres = ['calcLimitStop', 'calcArriba', 'calcNum', 'calcPrefsNormalizar', 'calcPrefsLeer', 'calcPrefsGuardar', 'calcEntrada', 'calcTitulo', 'calcLotesHtml', 'calcResumenHtml', 'calcChipsHtml',
         'calcObjetivoHtml', 'calcTickHtml', 'calcFeeNota', 'calcFaltaTxt', 'calcCifrasHtml', 'calcLimitHtml', 'calcStopHtml', 'calcFormulaHtml', 'calcHojaHtml', 'calcResultado', 'calcDestino', 'pintarCalcRes',
         'abrirCalc', 'cerrarCalc', 'calcTecla', 'calcManualAnotar', 'calcInput', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar', 'calcContrato', 'calcLote',
-        'calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto', 'ordenParaCalc', 'estadoOrdenCalc', 'calcPonerEnOrden', 'calcDeOrden'];
+        'calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'calcHayOtroCuadro', 'calcDesdeLaPagina', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto', 'ordenParaCalc', 'estadoOrdenCalc', 'calcPonerEnOrden', 'calcDeOrden'];
       const todo = nombres.map(C.extraer).join('\n');
       ['ordenPreview', 'ordenPlace', 'etPost', 'swPost', 'abrirOrden', 'construirOrden', 'preSalida', '/etrade/', '/schwab/', 'cancelarOrden', 'cortarPosicion', 'venderGestor', 'armar(', 'pedirPin', 'unlock']
         .forEach(t => assert(!todo.includes(t), 'la calculadora no toca «' + t + '»: nada arma ni envía órdenes'));

@@ -9388,20 +9388,33 @@ function calcDatosDeAbiertos(clave, abiertos) {
   return { contrato: calcContrato(lista[0]), lotes: lista.map(a => calcLote(a.contratos, a.prima)),
     origen: lista.length > 1 ? `libro de fills: ${lista.length} compras abiertas` : 'libro de fills' };
 }
+// ¿Hay OTRO cuadro abierto (la hoja de orden, el PIN, la cuenta…)? Ningún cuadro de la app es inert: con el teclado de la
+// Mac, el Tab sale de la hoja de orden y llega al «Calcular limit» de otra ficha que queda detrás. Abrir ahí la calculadora
+// la ponía ENCIMA de esa orden con las compras de otra ficha (la GTC de la 7, ×1 a 1.21, con el medio de la 7 y la 8, 0.52)
+// y ofrecía «Poner en la orden» a 0.61: vender con pérdida. Desde la página de detrás no se abre; encima de una orden solo
+// la abre su propio enlace (calcDeOrden). La calculadora misma no cuenta: abrir otra la sustituye, como siempre.
+function calcHayOtroCuadro() {
+  const yo = $('#modalCalc');
+  return Array.from(document.querySelectorAll('.modal') || []).some(m => m && m !== yo);
+}
+function calcDesdeLaPagina(d) {
+  if (calcHayOtroCuadro()) { toast('Hay otro cuadro abierto: ciérralo y vuelve a tocar «Calcular limit». No se abrió nada.'); return; }
+  abrirCalc(d);
+}
 function calcDePosicion(id) {
   const d = calcDatosDePosicion(id, (typeof _gestor === 'object' && _gestor) ? _gestor.filas : []);
   if (!d) { toast('No encuentro esa posición abierta: vuelve a abrir el Copiloto.'); return; }
-  abrirCalc(d);
+  calcDesdeLaPagina(d);
 }
 function calcDeBroker(clave) {
   const d = calcDatosDeItem(buscarItemCartera(clave));
   if (!d) { toast('Esa posición ya no está en la lectura del bróker: vuelve a preguntar.'); return; }
-  abrirCalc(d);
+  calcDesdeLaPagina(d);
 }
 function calcDeAbierto(clave) {
   const d = calcDatosDeAbiertos(clave, (typeof _diario === 'object' && _diario) ? _diario.abiertos : []);
   if (!d) { toast('Ese contrato ya no está abierto en el libro: vuelve a abrir el Diario.'); return; }
-  abrirCalc(d);
+  calcDesdeLaPagina(d);
 }
 
 // ---- «Poner en la orden» ----
@@ -9427,6 +9440,13 @@ function estadoOrdenCalc(contrato, orden) {
   if (!k || k !== kf) {
     const deQue = kf ? kf.split('|').slice(0, 3).join(' ') : (f.symbol ? f.symbol + (f.tipo === 'EQ' ? ' (acción)' : ' (sin strike o vencimiento)') : 'otro contrato');
     return { estado: 'otra', texto: `La orden abierta es de ${deQue}, no de este contrato: no se toca.` };
+  }
+  // claveContrato no lleva el bróker: el mismo contrato en otra cuenta (una línea de moomoo o tasty frente a una orden de
+  // E*TRADE) daba «ok», sin ningún aviso, y el limit salía del costo de OTRA cuenta. Sin bróker, E*TRADE (como en la orden).
+  const bc = (contrato && contrato.broker) || 'etrade', bo = (orden.ord && orden.ord.broker) || 'etrade';
+  if (bc !== bo) {
+    const nb = (b) => BROKER_CORTO[b] || b;
+    return { estado: 'otra', texto: `La orden abierta es de ${nb(bo)} y este contrato es de ${nb(bc)}: no se toca.` };
   }
   if (f.accion !== 'venta') return { estado: 'compra', texto: 'La orden abierta es una compra: el limit de venta no va ahí.' };
   if (orden.bloqueo) return { estado: 'bloqueada', texto: orden.bloqueo };
