@@ -9822,6 +9822,32 @@ function filasMoomooVencimiento(trades) {
     return { ...t, cerrada_at: e, raw: { ...raw, cierra: 'vencimiento', moomoo_anotada_at: t.cerrada_at } };
   });
 }
+// v66 (A3, 2026-10-31) · La fila «>venc» de Schwab (Schwab no emite nada al vencer: la DEDUCE la app en emparejarFillsSchwab,
+// pérdida total presunta) se guardaba hasta la v65 rev6 con cerrada_at = exp + T20:00Z (16:00 ET en verano, 15:00 ET en
+// invierno), y su clave_ext NO lleva la hora: el upsert (ignoreDuplicates) nunca la reescribe, así que las ya guardadas se
+// quedan con las 20:00Z para siempre (en el libro real, una de septiembre). Se arregla AL LEER, como el «Option Expired» de
+// E*TRADE en filasEtradeVigentes: la fila de Schwab con «>venc» en la clave (o raw.cierra 'vencimiento') se lee con
+// cerrada_at = instanteVencimiento(exp), las 16:30 ET de su día con el horario de NY. Por qué importa: las 20:00Z caen
+// ANTES de una venta 0DTE de la última hora del mismo contrato (en invierno, de cualquier venta después de las 15:00 ET),
+// el cierre del grupo se quedaba en la venta, vencioEnParte no casaba y Cuentas enseñaba la hora de la venta en vez de
+// «venció en parte (presunto)», mientras el Diario ya la pone a las 16:30 ET. exp = expiracion de la fila o, si falta, la
+// fecha de la clave (…>vencAAAA-MM-DD). La base no se toca (copias), la marca de vencimiento es la de siempre (la clave y
+// raw.cierra: filaVencioCuentas) y la fila ya leída no cambia. Devuelve el MISMO arreglo si no hay nada que mover. PURA.
+function filasSchwabVencimiento(trades) {
+  if (!Array.isArray(trades)) return trades;
+  const iv = (t) => {
+    if (!t || t.broker !== 'schwab') return null;
+    const m = />venc(\d{4}-\d{2}-\d{2})/.exec(String(t.clave_ext || ''));
+    const raw = (t.raw && typeof t.raw === 'object') ? t.raw : {};
+    if (!m && raw.cierra !== 'vencimiento') return null;
+    const expF = String(t.expiracion || '').slice(0, 10);
+    const e = instanteVencimiento(/^\d{4}-\d{2}-\d{2}$/.test(expF) ? expF : (m ? m[1] : ''));
+    if (!e) return null;
+    return Date.parse(t.cerrada_at || '') === Date.parse(e) ? null : e;   // ya en su instante (en cualquier formato): nada
+  };
+  if (!trades.some(t => iv(t))) return trades;
+  return trades.map(t => { const e = iv(t); return e ? { ...t, cerrada_at: e } : t; });
+}
 // Une las operaciones manuales (posiciones) con los round-trips reales de los
 // brókeres (broker_trades) en UN conjunto sin duplicados, para la Disciplina.
 //  · Los round-trips del bróker se agrupan por contrato + día NY de apertura:
@@ -9840,8 +9866,10 @@ function filasMoomooVencimiento(trades) {
 //    expiración aunque la lectura del libro haya fallado (sin libro no se descarta ninguna fila).
 //  · v65 rev7: y por filasMoomooVencimiento (tampoco depende del libro): la venta a $0 que moomoo anota de madrugada tras
 //    el vencimiento es su vencimiento, a las 16:30 ET del día de la expiración, como en el Diario.
+//  · v66 (A3): y por filasSchwabVencimiento (tampoco depende del libro): la «>venc» de Schwab guardada a las 20:00Z se lee a
+//    las 16:30 ET del día de la expiración, como el «Option Expired» de E*TRADE y el vencimiento deducido del Diario.
 function unirOperaciones(posic, trades, fills) {
-  trades = filasMoomooVencimiento(filasEtradeVigentes(trades, fills || null));
+  trades = filasSchwabVencimiento(filasMoomooVencimiento(filasEtradeVigentes(trades, fills || null)));   // v66 A3: y la «>venc» de Schwab a su instante
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const r2 = (n) => Math.round(n * 100) / 100;
   const tramos = {}, manualesAgrupadas = [];
