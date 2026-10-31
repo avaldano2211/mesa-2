@@ -187,7 +187,7 @@ let _buscandoVersion = false, _versionPendiente = 0;
 // ultima: cuándo contestó la última pregunta · timer: la re-comprobación de 15 s ya programada (una sola) · atascada: la
 // versión por la que ya se recargó hace < 10 min y sigue sin llegar (se pidió al SW que se actualice) · oculta: «vNN|estado»
 // de la franja que Andrés cerró con ✕ (vuelve a salir si cambia la versión o el motivo; la marca de la cabecera se queda)
-const _verEstado = { ultima: 0, timer: 0, atascada: 0, oculta: '' };
+const _verEstado = { ultima: 0, timer: 0, atascada: 0, oculta: '', recargando: 0 };   // rev68: recargando = la recarga de 700 ms ya programada
 async function buscarVersionNueva() {
   if (_buscandoVersion || !VERSION_APP) return;
   if (_verEstado.ultima && Date.now() - _verEstado.ultima < VERSION_MIN_MS) return;   // v66: focus + pageshow + visibilitychange = una
@@ -264,9 +264,20 @@ function recargarSiSePuede() {
     franjaVersion('atascada');
     return;
   }
-  anotarRecarga(_versionPendiente);
+  // v66 rev68 (revisor de A1): la recarga ya decidida VUELVE A MIRAR al dispararse. En esos 700 ms puede empezar algo que
+  // no se puede cortar: en la computadora un clic sobre «Cortar» o «Vender» para volver a la ventana lanza la pregunta
+  // (focus), contesta rápido y llega el clic; el corte confirmado se perdía en su primera espera sin decir que no cortó. Y
+  // la GTC automática se marca en localStorage antes de abrir su formulario: recargar antes de su envío (900 ms) la daba
+  // por hecha para siempre. Si al dispararse hay motivo, no se recarga: se espera como cualquier otra vez (franja y
+  // re-comprobación). La recarga se anota (el freno del bucle) solo cuando de verdad sale; una sola programada a la vez.
+  if (_verEstado.recargando) return;
   toast('Actualizando la Mesa a la versión ' + _versionPendiente + '…');
-  setTimeout(() => location.reload(), 700);
+  _verEstado.recargando = setTimeout(() => {
+    _verEstado.recargando = 0;
+    if (motivoNoRecargar()) { recargarSiSePuede(); return; }
+    anotarRecarga(_versionPendiente);
+    location.reload();
+  }, 700);
 }
 // v66 · La franja discreta de arriba, debajo de la cabecera (no tapa ⚙ ni la calculadora) y encima de un cuadro abierto
 // (z-index sobre .modal), y la marca de la cabecera. estado: un motivoNoRecargar, 'atascada' o '' (la quita). «Actualizar

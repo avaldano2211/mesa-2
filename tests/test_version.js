@@ -10,7 +10,8 @@
    ⚙ Tu cuenta dice la versión (de VERSION_APP) y cuándo se cargó; sw.js v55: navegación e index.html con no-cache y
    sin guardar lo pedido con no-store (se ejecuta sw.js en un contexto de juguete).
    rev68 (revisor de A1): una orden enviada o una cancelación en vuelo frena la recarga aunque el formulario ya se haya
-   cerrado («Cancelar» con el POST en vuelo) o no haya formulario (cancelar desde la lista del Copiloto) — 4b.
+   cerrado («Cancelar» con el POST en vuelo) o no haya formulario (cancelar desde la lista del Copiloto) — 4b; y la
+   recarga ya decidida (700 ms) vuelve a mirar al dispararse: un corte o la GTC automática que empiezan en el hueco — 4c.
    Funciones REALES del fuente con dependencias falsas (casa_pruebas.js).
    Uso: node test_version.js mesa-2-app/app/main.js */
 'use strict';
@@ -327,6 +328,73 @@ function armarBusqueda(E) {
       igual([reg.anotado, M.motivoNoRecargar()], [['error'], ''], '(rev68) un envío que revienta (proxy caído) suelta el freno al terminar (finally): no se queda bloqueada para siempre');
       const r2 = await M.cancelarOrden(7, '123', 'etrade');
       igual([r2, M.motivoNoRecargar()], [false, ''], '(rev68) …y una cancelación que revienta, también');
+    }
+  }
+
+  // ════════════════ 4c. rev68 · la recarga ya decidida (700 ms) vuelve a mirar al dispararse ════════════════
+  // El revisor de A1: un corte, una venta o la GTC automática que empiezan en el hueco de 700 ms se perdían (el corte en su
+  // primera espera; la GTC quedaba marcada como abierta en localStorage y nunca se reintentaba).
+  {
+    const armarHueco = (ls) => {
+      const reg = { reloads: 0, timers: [], franja: [], toasts: [], ordenesAbiertas: 0, sesion: {} };
+      let modal = false;
+      const cancel = C.diferido();
+      const doc = { activeElement: null, querySelector: (s) => (s === '.modal' && modal) ? {} : null };
+      const sb = { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: 5, estado: 'abierta', broker: 'etrade', symbol: 'SPY', direccion: 'PUT', strike: 680, contratos: 2 } }) }) }) }) };
+      const M = construir(['recargarSiSePuede', 'motivoNoRecargar', 'campoConTexto', 'recargaYaIntentada', 'anotarRecarga', 'pedirActualizarSW',
+        'cortarPosicion', 'abrirGtcAutomatico', 'gtcAutoYaAbierto', 'gtcAutoMarcar'], {
+        document: doc, sb, $: () => null, localStorage: ls, toast: (m) => reg.toasts.push(m), alert: () => {}, confirm: () => true, ruta: () => {},
+        BROKER_NOMBRE: { etrade: 'E*TRADE' }, brokersOperables: () => ['etrade'],
+        cancelarVentasVivas: async () => cancel.promesa, bidDeContrato: async () => 1.2, preSalida: () => ({ limitPrice: 1.5 }),
+        abrirOrden: () => { modal = true; reg.ordenesAbiertas++; }, ordenPreview: async () => {}, ordenPlace: async () => {}, gtcAutoEnviaSola: () => ({ enviar: true }),
+        location: { reload: () => reg.reloads++ },
+        setTimeout: (f, ms) => { reg.timers.push({ f, ms }); return reg.timers.length; },
+        sessionStorage: { getItem: (k) => reg.sesion[k] || null, setItem: (k, v) => { reg.sesion[k] = v; } },
+        navigator: {}, franjaVersion: (m) => reg.franja.push(m),
+      }, {
+        consts: ['VERSION_ESPERA_MS', 'VERSION_RECARGA_K', 'VERSION_RECARGA_VENTANA_MS', 'GTC_AUTO_K'].concat(C.existeConst('_escriturasBroker') ? ['_escriturasBroker'] : []),
+        prefijo: "let _ord = null; const _venta = { enCurso: false }; const _corte = { enCurso: false };\n" +
+          "let _versionPendiente = 67; const _verEstado = { ultima: 0, timer: 0, atascada: 0, oculta: '' };",
+        sufijo: 'function __corte() { return _corte; }', extras: ['__corte'],
+      });
+      const ultimo700 = () => reg.timers.filter(t => t.ms === 700).slice(-1)[0];
+      return { M, reg, cancel, ultimo700, cerrarCuadro: () => { modal = false; } };
+    };
+    // (a) el corte que empieza en el hueco
+    {
+      const { M, reg, cancel, ultimo700 } = armarHueco(C.localStorageFalso());
+      M.recargarSiSePuede();
+      igual([reg.toasts[0], !!ultimo700()], ['Actualizando la Mesa a la versión 67…', true], '(rev68) vía libre: «Actualizando la Mesa a la versión 67…» y la recarga a 700 ms');
+      M.recargarSiSePuede();
+      igual([reg.timers.filter(t => t.ms === 700).length, reg.franja.length], [1, 0], '(rev68) otra pregunta dentro de esos 700 ms no programa otra recarga (ni la da por «atascada»)');
+      const corte = M.cortarPosicion(5);
+      await C.respirar(); await C.respirar();
+      igual([M.__corte().enCurso, M.motivoNoRecargar()], [true, 'corte'], '(rev68) en el hueco Andrés toca «Cortar» y confirma: corte en curso');
+      ultimo700().f();
+      igual([reg.reloads, reg.franja.slice(-1)[0], reg.timers.filter(t => t.ms === 15000).length, reg.sesion.mz_recarga_version], [0, 'corte', 1, undefined],
+        '(rev68) al dispararse, la recarga VUELVE A MIRAR: no sale con el corte en curso, la franja lo dice, se re-comprueba en 15 s y no se anota como intentada');
+      cancel.resolver('abortado'); await corte;
+      const dispara = (ms) => { const t = reg.timers.filter(x => x.ms === ms).slice(-1)[0]; if (t) t.f(); };
+      dispara(15000);                                       // a los 15 s, el corte ya terminó
+      dispara(700);
+      assert(reg.reloads === 1 && JSON.parse(reg.sesion.mz_recarga_version || 'null').v === 67, '(rev68) terminado el corte, se actualiza (y entonces sí se anota la recarga)');
+    }
+    // (b) la GTC automática que se abre en el hueco: ni se recarga ni se pierde
+    {
+      const ls = C.localStorageFalso();
+      const { M, reg, ultimo700, cerrarCuadro } = armarHueco(ls);
+      const pos = { id: 41, broker: 'etrade', symbol: 'SPY', direccion: 'PUT', strike: 680, contratos: 2, prima_fill: 1.2, plan_pct: 10 };
+      M.recargarSiSePuede();
+      M.abrirGtcAutomatico([pos]);
+      igual([reg.ordenesAbiertas, M.gtcAutoYaAbierto(41)], [1, true], '(rev68) en el hueco llega el fill y se abre la GTC automática (marcada en localStorage)');
+      ultimo700().f();
+      igual([reg.reloads, reg.franja.slice(-1)[0]], [0, 'cuadro'], '(rev68) la recarga no sale con su formulario abierto: el envío automático (900 ms) llega a salir');
+      const envio = reg.timers.find(t => t.ms === 900);
+      assert(!!envio, '(rev68) …y el envío automático de la GTC sigue programado');
+      cerrarCuadro();
+      const dispara = (ms) => { const t = reg.timers.filter(x => x.ms === ms).slice(-1)[0]; if (t) t.f(); };
+      dispara(15000); dispara(700);
+      igual(reg.reloads, 1, '(rev68) cerrado el cuadro (la GTC ya enviada), se actualiza');
     }
   }
 
