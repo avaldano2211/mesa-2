@@ -11,7 +11,8 @@
    sin guardar lo pedido con no-store (se ejecuta sw.js en un contexto de juguete).
    rev68 (revisor de A1): una orden enviada o una cancelación en vuelo frena la recarga aunque el formulario ya se haya
    cerrado («Cancelar» con el POST en vuelo) o no haya formulario (cancelar desde la lista del Copiloto) — 4b; y la
-   recarga ya decidida (700 ms) vuelve a mirar al dispararse: un corte o la GTC automática que empiezan en el hueco — 4c.
+   recarga ya decidida (700 ms) vuelve a mirar al dispararse: un corte o la GTC automática que empiezan en el hueco — 4c;
+   la franja aparta el cuadro abierto (body.con-vernueva) y no ofrece «Actualizar ahora» sobre el formulario de una orden — 4d.
    Funciones REALES del fuente con dependencias falsas (casa_pruebas.js).
    Uso: node test_version.js mesa-2-app/app/main.js */
 'use strict';
@@ -103,23 +104,27 @@ function armarBusqueda(E) {
 
   // ════════════════ 4. recargarSiSePuede: jamás a mitad de una orden, de una salida, de un cuadro ni de un texto ════════════════
   const RECARGA = ['recargarSiSePuede', 'motivoNoRecargar', 'campoConTexto', 'recargaYaIntentada', 'anotarRecarga', 'pedirActualizarSW', 'franjaVersion', 'pintarVersionCab', 'actualizarAhora', 'textoVersionApp', 'ocultarFranjaVersion'];
+  const RECARGA_REV68 = ['marcarFranjaVersion'].filter(tiene);   // rev68: la franja aparta el cuadro (sin ella, la suite de antes)
   const sesionFalsa = (inicial, rota) => {
     const alm = Object.assign({}, inicial || {});
     return { alm, getItem: (k) => { if (rota) throw new Error('bloqueado'); return k in alm ? alm[k] : null; }, setItem: (k, v) => { if (rota) throw new Error('bloqueado'); alm[k] = String(v); } };
   };
   function armarRecarga(E) {
-    E = Object.assign({ pendiente: 52, version: 51, modal: null, corte: false, venta: false, ord: null, activo: null, sesion: null, sesionRota: false, swUpdate: true, ahora: null }, E || {});
-    const reg = { toasts: [], timers: [], reloads: 0, updates: 0, dom: {}, cab: { texto: '', oculto: true } };
+    E = Object.assign({ pendiente: 52, version: 51, modal: null, corte: false, venta: false, ord: null, activo: null, sesion: null, sesionRota: false, swUpdate: true, ahora: null,
+      altoFranja: 65, formOrden: false }, E || {});
+    const reg = { toasts: [], timers: [], reloads: 0, updates: 0, dom: {}, cab: { texto: '', oculto: true }, body: {}, vars: {} };
+    if (E.formOrden) reg.dom['#modalOrden'] = { id: 'modalOrden' };   // rev68: el formulario de una orden abierto
     const ss = sesionFalsa(E.sesion, E.sesionRota);
     const verCab = { set textContent(t) { reg.cab.texto = t; }, get textContent() { return reg.cab.texto; }, classList: { toggle: (c, on) => { if (c === 'oculto') reg.cab.oculto = !!on; } } };
     const $ = (s) => (s === '#verCab' ? verCab : reg.dom[s] || null);
     const doc = {
       querySelector: (s) => (s === '.modal' ? E.modal : null),
       get activeElement() { return E.activo; },
-      createElement: () => { const n = { innerHTML: '', id: '', className: '', attrs: {}, setAttribute(k, v) { n.attrs[k] = v; }, remove() { delete reg.dom['#' + n.id]; } }; return n; },
-      body: { appendChild: (n) => { reg.dom['#' + n.id] = n; } },
+      createElement: () => { const n = { innerHTML: '', id: '', className: '', attrs: {}, offsetHeight: E.altoFranja, setAttribute(k, v) { n.attrs[k] = v; }, remove() { delete reg.dom['#' + n.id]; } }; return n; },
+      body: { appendChild: (n) => { reg.dom['#' + n.id] = n; }, classList: { toggle: (c, on) => { reg.body[c] = !!on; } } },
+      documentElement: { style: { setProperty: (k, v) => { reg.vars[k] = v; } } },
     };
-    const M = construir(RECARGA, {
+    const M = construir(RECARGA.concat(RECARGA_REV68), {
       document: doc, $, esc: C.esc, VERSION_APP: E.version, VERSION_CARGADA_MS: Date.parse('2026-10-31T14:42:00Z'),
       _corte: { enCurso: E.corte }, _venta: { enCurso: E.venta }, _ord: E.ord, toast: (t) => reg.toasts.push(t),
       setTimeout: (fn, ms) => { reg.timers.push({ fn, ms }); return reg.timers.length; },
@@ -253,6 +258,49 @@ function armarBusqueda(E) {
     { const { M } = armarRecarga({ pendiente: 0, version: 0 }); assert(/^Mesa 2\.0 · versión sin número · /.test(M.textoVersionApp()), '(v66) sin ?v= no se inventa un número'); }
     assert(!/\b6\d\b/.test(C.extraer('textoVersionApp')) && /VERSION_APP/.test(C.extraer('textoVersionApp')), '(v66) el número sale de VERSION_APP: no está escrito a mano');
     assert(/id="cpVersion"[^>]*>\$\{esc\(textoVersionApp\(\)\)\}<\/div>/.test(C.extraer('abrirCuenta')), '(v66) ⚙ Tu cuenta pinta textoVersionApp()');
+  }
+
+  // ════════════════ 4d. rev68 · la franja no tapa la hoja abierta ni ofrece «Actualizar ahora» sobre una orden ════════════════
+  // El revisor de A1: la franja (fija a 64 px bajo la muesca, encima del .modal) tapaba la primera banda de las hojas altas:
+  // a 375×812 el ✕ de la calculadora quedaba bajo el ✕ de la franja y el título del formulario de orden bajo la franja.
+  {
+    {
+      const { M, reg } = armarRecarga({ modal: {}, altoFranja: 65 });
+      M.recargarSiSePuede();
+      igual([reg.body['con-vernueva'], reg.vars['--vernueva-alto']], [true, '65px'], '(rev68) con la franja a la vista, el body lleva .con-vernueva y su alto medido (--vernueva-alto: 65px) para apartar el cuadro');
+      M.ocultarFranjaVersion('cuadro');
+      igual(reg.body['con-vernueva'], false, '(rev68) ✕ la quita y el cuadro vuelve a su sitio');
+      M.__pend(53); M.recargarSiSePuede();
+      igual(reg.body['con-vernueva'], true, '(rev68) con otra versión vuelve a salir (y vuelve a apartar el cuadro)');
+    }
+    {
+      const { M, reg } = armarRecarga({ modal: {} });
+      M.recargarSiSePuede();
+      M.franjaVersion('');                         // quitarla (franjaVersion sin estado)
+      igual([franja(reg), reg.body['con-vernueva']], ['', false], '(rev68) franjaVersion sin estado la quita y el body pierde .con-vernueva');
+    }
+    {
+      const { M, reg } = armarRecarga({ modal: {}, formOrden: true });
+      M.recargarSiSePuede();
+      assert(/se actualiza al cerrar el cuadro/.test(franja(reg)) && !/Actualizar ahora/.test(franja(reg)),
+        '(rev68) con el FORMULARIO DE UNA ORDEN abierto (en un corte, con las ventas vivas ya canceladas) la franja no ofrece «Actualizar ahora»', franja(reg));
+      M.actualizarAhora();
+      assert(reg.reloads === 0 && /Cierra antes el formulario de la orden/.test(reg.toasts.slice(-1)[0] || ''), '(rev68) y «Actualizar ahora» de una franja pintada antes tampoco recarga encima de la orden: lo dice');
+    }
+    {
+      const { M, reg } = armarRecarga({ modal: {} });   // la calculadora u otro cuadro: el botón sigue
+      M.recargarSiSePuede();
+      assert(/Actualizar ahora/.test(franja(reg)), '(rev68) con otro cuadro (la calculadora, ⚙) «Actualizar ahora» sigue');
+    }
+    const raiz = path.resolve(path.dirname(process.argv[2]), '..'), index = path.join(raiz, 'index.html');
+    if (fs.existsSync(index)) {
+      const css = fs.readFileSync(index, 'utf8');
+      const topF = /\.vernueva\{[^}]*top:calc\(env\(safe-area-inset-top\) \+ (\d+)px\)/.exec(css);
+      const padM = /body\.con-vernueva \.modal\{padding-top:calc\(env\(safe-area-inset-top\) \+ (\d+)px \+ var\(--vernueva-alto,\d+px\)\)\}/.exec(css);
+      assert(topF && padM && Number(padM[1]) > Number(topF[1]),
+        '(rev68) index.html: con .con-vernueva el .modal empieza por debajo de la franja (muesca + ' + (padM && padM[1]) + ' px + su alto > muesca + ' + (topF && topF[1]) + ' px + su alto)');
+      assert(/body\.con-vernueva \.modal>\.hoja\{max-height:min\(92dvh,100%\)\}/.test(css), '(rev68) …y la hoja cabe en lo que queda (max-height: min(92dvh, 100%))');
+    }
   }
 
   // ════════════════ 4b. rev68 · una escritura al bróker EN VUELO frena la recarga aunque el formulario ya no esté ════════════════

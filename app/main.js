@@ -285,15 +285,35 @@ function recargarSiSePuede() {
 function franjaVersion(estado) {
   let el = $('#verNueva');
   const v = _versionPendiente;
-  if (!estado || !v || _verEstado.oculta === v + '|' + estado) { if (el) el.remove(); pintarVersionCab(); return; }
+  if (!estado || !v || _verEstado.oculta === v + '|' + estado) { if (el) el.remove(); marcarFranjaVersion(null); pintarVersionCab(); return; }
   const cuando = { cuadro: 'se actualiza al cerrar el cuadro', texto: 'se actualiza al terminar de escribir',
     corte: 'se actualiza al terminar la salida en curso', orden: 'se actualiza cuando el bróker conteste a la orden' }[estado];
   const txt = estado === 'atascada' ? `Cierra y vuelve a abrir la Mesa para la v${v}` : `Hay una versión nueva (v${v}): ${cuando || 'se actualiza en cuanto se pueda'}`;
-  const boton = (estado === 'corte' || estado === 'orden') ? '' : '<button type="button" onclick="MZ.actualizarAhora()">Actualizar ahora</button>';
+  // rev68: tampoco sobre el FORMULARIO DE UNA ORDEN (#modalOrden): en un corte se abre con las ventas vivas ya canceladas
+  // (motivo «cuadro», no «corte») y un toque ahí dejaba la posición sin GTC ni venta al bid; se cierra y se actualiza sola
+  const enOrden = estado === 'cuadro' && !!$('#modalOrden');
+  const boton = (estado === 'corte' || estado === 'orden' || enOrden) ? '' : '<button type="button" onclick="MZ.actualizarAhora()">Actualizar ahora</button>';
   const html = `<span>${esc(txt)}</span>${boton}<button type="button" class="vercerrar" onclick="MZ.ocultarFranjaVersion('${esc(estado)}')" aria-label="Ocultar este aviso">✕</button>`;
   if (!el) { el = document.createElement('div'); el.id = 'verNueva'; el.className = 'vernueva'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
   if (el.innerHTML !== html) el.innerHTML = html;   // cada 15 s llega lo mismo: no se repinta (ni se pierde el foco del botón)
+  marcarFranjaVersion(el);
   pintarVersionCab();
+}
+// v66 rev68 (revisor de A1) · La franja sale justo cuando hay un cuadro abierto y está fija a 64 px bajo la muesca, encima
+// del .modal: tapaba la primera banda de las hojas altas (.hoja llega al 92dvh y empieza en y ≈ 65 px a 375×812): el ✕ de
+// la calculadora quedaba debajo del ✕ de la franja, y el título y el subtítulo del formulario de orden debajo de la
+// franja. Con la franja a la vista, el body lleva .con-vernueva y --vernueva-alto (su alto medido): el CSS baja el borde
+// de arriba del cuadro por debajo de la franja (padding del .modal) y la hoja cabe en lo que queda. el = null la quita.
+function marcarFranjaVersion(el) {
+  try {
+    const b = document.body, r = document.documentElement;
+    if (!b || !b.classList) return;
+    b.classList.toggle('con-vernueva', !!el);
+    if (el && r && r.style && r.style.setProperty) {
+      const alto = Math.ceil(Number(el.offsetHeight) || 0);
+      if (alto > 0) r.style.setProperty('--vernueva-alto', alto + 'px');
+    }
+  } catch (_) {}
 }
 function pintarVersionCab() {
   const el = $('#verCab'); if (!el) return;
@@ -305,12 +325,15 @@ function pintarVersionCab() {
 function ocultarFranjaVersion(estado) {
   _verEstado.oculta = _versionPendiente + '|' + String(estado || '');
   const el = $('#verNueva'); if (el) el.remove();
+  marcarFranjaVersion(null);   // rev68: el cuadro vuelve a su sitio
 }
 // «Actualizar ahora» (la franja): es el toque de Andrés, así que recarga aunque haya un cuadro o un texto (los pierde a
 // sabiendas), pero NUNCA con una salida o una orden esperando al bróker.
 function actualizarAhora() {
   const m = motivoNoRecargar();
   if (m === 'corte' || m === 'orden') { toast('Espera a que termine lo que está esperando al bróker: luego la Mesa se actualiza sola.'); return; }
+  // rev68: ni con el formulario de una orden abierto (la franja ya no ofrece el botón ahí; esto cubre una franja pintada antes)
+  if ($('#modalOrden')) { toast('Cierra antes el formulario de la orden: la Mesa se actualiza sola al cerrarlo.'); return; }
   if (_versionPendiente) anotarRecarga(_versionPendiente);
   location.reload();
 }

@@ -221,6 +221,11 @@
     font:700 12px var(--sans);cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
   .vernueva .vercerrar{background:transparent;color:var(--tx2);padding:7px 6px;font-size:13px}
   .vercab{color:var(--oro);margin-right:6px;letter-spacing:.02em}
+  /* rev68 (revisor de A1): con la franja a la vista (body.con-vernueva, --vernueva-alto = su alto medido), el cuadro abierto
+     empieza DEBAJO de ella: tapaba la primera banda de las hojas altas (el ✕ de la calculadora, el título del formulario de
+     orden). La hoja cabe en lo que queda (max-height 100% del .modal, sin pasar del 92dvh de siempre) */
+  body.con-vernueva .modal{padding-top:calc(env(safe-area-inset-top) + 72px + var(--vernueva-alto,48px))}
+  body.con-vernueva .modal>.hoja{max-height:min(92dvh,100%)}
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
