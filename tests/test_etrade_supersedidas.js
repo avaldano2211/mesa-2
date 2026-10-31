@@ -132,5 +132,221 @@ function libroJuguete(conProvisionales) {
     igual([cuenta.completa, cuenta.txs.length], [false, 130], '[2] menos transacciones distintas que su totalCount: a medias');
   }
 
+  // ════════════════ [3] filasEtradeSupersedidas (PURA) ════════════════
+  if (!existe('filasEtradeSupersedidas')) C.falla('[3] no existe filasEtradeSupersedidas: las filas re-emparejadas y las provisionales ya contabilizadas se quedan para siempre en broker_trades');
+  else {
+    const S = construir(['filasEtradeSupersedidas', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato'], {},
+      { consts: ['ET_SUPERSEDIDA_MARGEN_MS', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL'] });
+    const nuevas = E.emparejarEtrade(TXS_HOY);
+    const pasada = (extra) => ({ completa: true, desdeMs: DESDE_MS, ahoraMs: HOY_MS, fills: E.fillsDeTransaccionesEtrade(TXS_HOY), huerfanas: nuevas.huerfanas, ...(extra || {}) });
+    const J = juncoViejo();
+    igual([ctos(J.todas, 'SPY'), ctos(J.todas, 'META')], [109, 15], '[3] el junco de juguete tiene la forma real: SPY ×109 (50 reales), META ×15 (1 + 7 vencidos ×2)');
+    // (a) con las provisionales en el libro (la v65 las escribe): se retiran las 3 de la SPY y las 3 del vencimiento provisional
+    const libroP = libroJuguete(true);
+    const s = S.filasEtradeSupersedidas(J.todas, nuevas, pasada(), libroP, 'u');
+    const quedan = J.todas.filter(t => !s.borrar.includes(t));
+    igual(s.borrar.map(claveDe).sort(), [...J.prov14, ...J.bogus, ...J.meta17.filter(t => /26260200100007/.test(t.clave_ext))].map(claveDe).sort(),
+      '[3] supersedidas: las 2 provisionales de la SPY, el «41>50 ×9» re-emparejado y las 3 del vencimiento provisional de META');
+    igual([s.recolocadas, s.gemelas, ctos(quedan, 'SPY'), ctos(quedan, 'META')], [1, 5, 50, 8], '[3] 1 re-emparejada y 5 provisionales con su contabilizada; quedan SPY ×50 y META ×8 (1 + 7), como el libro');
+    assert(quedan.every(t => nuevas.some(n => n.clave_ext === t.clave_ext)), '[3] todo lo que queda es lo que la pasada vuelve a escribir (claves estables)');
+    // (b) el libro REAL de hoy no tiene las provisionales del 14 y del 17-sep (el libro empezó el 25-sep): solo la re-emparejada
+    const libroR = libroJuguete(false);
+    const sR = S.filasEtradeSupersedidas(J.todas, nuevas, pasada(), libroR, 'u');
+    igual(sR.borrar.map(claveDe), J.bogus.map(claveDe), '[3] sin las provisionales en el libro (sus IDs no están en ningún sitio: huérfanas, no supersedidas) solo sale la re-emparejada');
+    const quedanR = J.todas.filter(t => !sR.borrar.includes(t));
+    const opsR = K.unirOperaciones([], quedanR, libroR).ops, opsAntes = K.unirOperaciones([], J.todas, libroR).ops;
+    const diario = K.emparejarFillsFIFO(K.fillsEtradeVigentes(libroR), '2026-10-31');
+    const tot = (ops) => [ops.reduce((x, o) => x + o.contratos, 0), r2(ops.reduce((x, o) => x + o.resultado_usd, 0))];
+    igual([tot(opsR), tot(opsAntes)], [tot(diario.cerradas.map(c => ({ contratos: c.contratos, resultado_usd: c.pnl }))), tot(diario.cerradas.map(c => ({ contratos: c.contratos, resultado_usd: c.pnl })))],
+      '[3] Cuentas (con la lectura de siempre de red) = Diario, antes y después de retirar: ' + JSON.stringify(tot(opsR)));
+    igual(diario.huerfanas.length, 0, '[3] y el Diario sin huérfanas');
+    // ── las salvaguardas: ante cualquier duda, no se borra ──
+    const nada = (r) => r.borrar.length;
+    igual(nada(S.filasEtradeSupersedidas(J.todas, nuevas, pasada({ completa: false }), libroP, 'u')), 0, '[3] pasada a medias (completa ≠ true): nada');
+    igual(nada(S.filasEtradeSupersedidas(J.todas, nuevas, pasada(), null, 'u')), 0, '[3] sin libro (lectura fallida): nada');
+    igual(nada(S.filasEtradeSupersedidas(J.todas, [], pasada(), libroP, 'u')), 0, '[3] una pasada sin filas nuevas no supersede nada');
+    igual(nada(S.filasEtradeSupersedidas(J.todas, nuevas, pasada(), libroP, null)), 0, '[3] sin usuario: nada');
+    const ajenas = [{ ...J.bogus[0], user_id: 'otro' }, { ...J.bogus[0], broker: 'schwab' }, { ...J.bogus[0], clave_ext: 'SPY|2026-09-14|PUT|757|1.2' }];
+    igual(nada(S.filasEtradeSupersedidas(ajenas, nuevas, pasada(), libroP, 'u')), 0, '[3] la misma fila de OTRO usuario, de otro bróker o con la clave vieja sin «#»: nunca');
+    igual(nada(S.filasEtradeSupersedidas(J.todas, nuevas, pasada({ desdeMs: Date.parse('2026-09-13T00:00:00Z') }), libroP, 'u')), 0,
+      '[3] fila pegada al BORDE de la ventana leída (a menos de 3 días): se queda (el FIFO puede haber perdido un lote anterior)');
+    const conHuerf = E.emparejarEtrade(TXS_HOY.concat([tx(26259501000399, 'Sold To Close', -2, 1.00, '2026-09-15T15:00:00Z', pMETA)]));
+    const sH = S.filasEtradeSupersedidas(J.todas, conHuerf, pasada({ huerfanas: conHuerf.huerfanas }), libroP, 'u');
+    igual([sH.borrar.filter(t => t.symbol === 'META').length, sH.borrar.filter(t => t.symbol === 'SPY').length], [0, 3], '[3] un contrato con una venta HUÉRFANA en la pasada no se toca (el otro sí)');
+    const libroExtra = libroP.concat(alLibro([tx(26257501000777, 'Bought To Open', 2, 1.30, '2026-09-14T15:00:00Z', pSPY)], '2026-09-25T16:28:00+00:00'));
+    const sX = S.filasEtradeSupersedidas(J.todas, nuevas, pasada(), libroExtra, 'u');
+    igual([sX.borrar.filter(t => t.symbol === 'SPY').length, sX.borrar.filter(t => t.symbol === 'META').length], [0, 3], '[3] el libro tiene de ese contrato algo que E*TRADE no devolvió: el contrato no se toca');
+    const sinGem = J.prov14.map(t => ({ ...t, prima_salida: 1.55 }));
+    igual(nada(S.filasEtradeSupersedidas(sinGem, nuevas, pasada(), libroP, 'u')), 0, '[3] provisional sin gemela exacta en la pasada (otra prima): se queda');
+    // un ID que E*TRADE devolvió pero que ninguna fila nueva usa (lote aún abierto): la fila vieja que lo empareja se queda
+    const B1 = tx(26270501000011, 'Bought To Open', 2, 1.00, '2026-10-05T14:00:00Z', pQQQ), B2 = tx(26270501000012, 'Bought To Open', 2, 1.05, '2026-10-05T14:10:00Z', pQQQ);
+    const S1 = tx(26270501000013, 'Sold To Close', -2, 1.20, '2026-10-05T15:00:00Z', pQQQ);
+    const txQ = TXS_HOY.concat([S1, B2, B1]), nQ = E.emparejarEtrade(txQ);
+    const malQ = aBase(E.emparejarEtrade([S1, B2]), '2026-10-06T00:00:00+00:00');   // «B2>S1» de una lista sin B1
+    const sQ = S.filasEtradeSupersedidas(malQ, nQ, pasada({ fills: E.fillsDeTransaccionesEtrade(txQ), huerfanas: nQ.huerfanas }), libroP.concat(alLibro([B1, B2, S1], '2026-10-05T16:00:00+00:00')), 'u');
+    igual(nada(sQ), 0, '[3] la fila vieja «B2>S1» con B2 aún abierto (ninguna fila nueva usa B2): no se borra (la lectura la descarta)');
+    assert(J.todas.every(t => !nuevas.some(n => n.clave_ext === t.clave_ext) || !s.borrar.includes(t)), '[3] una fila que la pasada vuelve a escribir nunca se borra');
+  }
+
+  // ════════════════ [4] la sincronización REAL contra una base de juguete ════════════════
+  if (!existe('etradeReemplazarSupersedidas')) C.falla('[4] no existe etradeReemplazarSupersedidas: la sincronización nunca retira una fila supersedida');
+  {
+    const mundo = (op) => {
+      op = Object.assign({ txs: TXS_HOY, libroProv: true, modo: 'normal' }, op || {});
+      const W = { T: HOY_MS, logs: [], ops: [] };
+      class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(W.T); } static now() { return W.T; } }
+      const hoyNY = () => ymdNY(new Date(W.T).toISOString());
+      const ls = localStorageFalso({ mz_et_tok: 't', mz_et_sec: 's', mz_et_dia: hoyNY(), mz_et_acct: 'k1' });
+      const etProxy = async (ruta, body) => {
+        if (ruta !== '/etrade/read') return { status: 200, data: {} };
+        if (body.path === '/v1/accounts/list.json') return { status: 200, data: { AccountListResponse: { Accounts: { Account: [{ accountIdKey: 'k1', accountStatus: 'ACTIVE' }] } } } };
+        const q = body.query || {};
+        const sd = String(q.startDate || ''), dias = Math.round((W.T - new Date(Number(sd.slice(4)), Number(sd.slice(0, 2)) - 1, Number(sd.slice(2, 4))).getTime()) / 86400000);
+        if (op.modo === 'falla180' && dias > 100) return { status: 500, data: { error: 'rango demasiado grande' } };
+        const todas = op.txs.slice().sort((a, b) => b.transactionDate - a.transactionDate || b.transactionId - a.transactionId);
+        const ini = q.marker ? Number(q.marker) : 0, n = 4;   // páginas de 4: la lista de juguete ocupa 3
+        if (ini > 0 && op.modo === 'falla') return { status: 500, data: { error: 'E*TRADE 500' } };
+        if (ini > 0 && op.modo === 'cortada') return { status: 200, data: { TransactionListResponse: { moreTransactions: true, totalCount: todas.length, Transaction: [] } } };
+        const arr = todas.slice(ini, ini + n), mas = ini + n < todas.length;
+        const sig = op.modo === 'solapada' ? ini + n - 1 : ini + n;
+        return { status: 200, data: { TransactionListResponse: { moreTransactions: mas, totalCount: todas.length, Transaction: copia(arr),
+          next: mas ? 'https://api.etrade.com/v1/accounts/k1/transactions?marker=' + sig : undefined } } };
+      };
+      const J = juncoViejo();
+      const otras = [{ ...J.bogus[0], id: 900, user_id: 'otro' }, { ...J.bogus[0], id: 901, broker: 'schwab', clave_ext: 'SPY   260914P00757000#x>y#9' },
+        { ...J.bogus[0], id: 902, abierta_at: '2026-01-05T15:00:00+00:00', cerrada_at: '2026-01-05T16:00:00+00:00', clave_ext: 'SPY|2026-01-05|PUT|757#1>2#9', raw: { abre: '1', cierra: '2', tipo: 'Sold To Close' } }];
+      const bt = copia(J.todas.concat(otras)); let idSig = 1000;
+      const fills = libroJuguete(op.libroProv); let idF = 5000;
+      W.bt = bt; W.fills = fills; W.J = J;
+      const filtra = (filas, cadena) => filas.filter(f => cadena.every(([m, a]) => {
+        if (m === 'eq') return String(f[a[0]]) === String(a[1]);
+        if (m === 'in') return a[1].map(String).includes(String(f[a[0]]));
+        if (m === 'gte') return String(f[a[0]]) >= String(a[1]);
+        if (m === 'not') return !(a[1] === 'like' && new RegExp('^' + String(a[2]).replace(/%/g, '.*') + '$').test(String(f[a[0]])));
+        return true;
+      }));
+      const sb = sbFalso((tabla, cadena) => {
+        const opn = cadena.map(c => c[0]).find(m => ['upsert', 'delete', 'insert', 'update'].includes(m)) || 'select';
+        W.ops.push(tabla + ':' + opn);
+        if (tabla === 'fills') {
+          if (opn === 'delete' || opn === 'update') throw new Error('nadie toca el libro');
+          if (opn === 'upsert') {
+            const nuevas = [];
+            for (const f of cadena.find(c => c[0] === 'upsert')[1][0]) {
+              if (fills.some(x => x.user_id === f.user_id && x.broker === f.broker && x.clave_ext === f.clave_ext)) continue;
+              const fila = { ...copia(f), id: idF++, creado_at: new Date(W.T).toISOString() }; fills.push(fila); nuevas.push({ id: fila.id });
+            }
+            return { data: nuevas, error: null };
+          }
+          if (op.libroFalla) return { data: null, error: { message: 'red caída' } };
+          const gt = cadena.find(c => c[0] === 'gt'), rg = cadena.find(c => c[0] === 'range');
+          let d = fills.filter(f => !gt || f.id > Number(gt[1][1])).sort((a, b) => a.id - b.id);
+          if (rg) d = d.slice(rg[1][0], rg[1][1] + 1);
+          return { data: copia(d), error: null };
+        }
+        if (tabla !== 'broker_trades') return { data: [], error: null };
+        if (opn === 'upsert') {
+          if (op.upsertFalla) return { data: null, error: { message: 'upsert falló' } };
+          const nuevas = [];
+          for (const f of cadena.find(c => c[0] === 'upsert')[1][0]) {
+            if (bt.some(x => x.user_id === f.user_id && x.broker === f.broker && x.clave_ext === f.clave_ext)) continue;   // ignoreDuplicates
+            const fila = { ...copia(f), id: idSig++, creado_at: new Date(W.T).toISOString() }; bt.push(fila); nuevas.push({ id: fila.id });
+          }
+          return { data: nuevas, error: null };
+        }
+        if (opn === 'delete') {
+          const fuera = filtra(bt, cadena);
+          fuera.forEach(f => bt.splice(bt.indexOf(f), 1));
+          return { data: fuera.map(f => ({ id: f.id })), error: null };
+        }
+        if (op.selectFalla) return { data: null, error: { message: 'select falló' } };
+        const rg = cadena.find(c => c[0] === 'range');
+        let d = filtra(bt, cadena).sort((a, b) => a.id - b.id);
+        if (rg) d = d.slice(rg[1][0], rg[1][1] + 1);
+        return { data: copia(d), error: null };
+      });
+      const FN = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincronizarLigera', 'pasadaSyncAhora', 'appOcultaSync', 'ultimaPasadaSync', 'tipoPasadaSync', 'syncTtlAhora',
+        'ttlSyncLibro', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro', 'resumenSyncGuardado', 'etradeTransacciones', 'etRead', 'etRenovar', 'etMarcarMuerto', 'etError', 'etCuentaKey',
+        'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
+        'leerFillsTodos', 'libroInvalidar', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro', 'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade',
+        'claveFill', 'claveContrato', 'instanteVencimiento', 'filasEtradeSupersedidas', 'libroCrudoEtrade', 'etradeReemplazarSupersedidas'].filter(existe);
+      const consola = { info: (...a) => W.logs.push(a), log() {}, warn() {}, error() {} };
+      const M = construir(FN, { Date: FakeDate, ymdNY, hoyNY, localStorage: ls, URL, sb, etProxy, sesionActiva: { user: { id: 'u' } }, console: consola,
+        haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), etCreds: () => ({ token: 't', token_secret: 's' }),
+        document: { visibilityState: 'visible' }, libroRepintarPronto: () => {} },
+        { consts: ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SYNC_EXPIRADO_MS', 'LIBRO_TRAS_CIERRE_MS', '_etSyncEnVuelo', '_etRenovando',
+          '_ultimaRegular', '_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'ET_SUPERSEDIDA_MARGEN_MS'].filter(existeConst),
+          prefijo: 'let _hbUltimo = null;' });
+      return { M, W, J, otras };
+    };
+    // las filas de E*TRADE del usuario, sin las tres de control (otro usuario, Schwab y la de enero: ids 900+)
+    const etDe = (W, sym) => W.bt.filter(t => t.broker === 'etrade' && t.user_id === 'u' && !(t.id >= 900 && t.id < 1000) && (!sym || t.symbol === sym));
+    const cuadre = (W) => {
+      const ops = K.unirOperaciones([], W.bt.filter(t => t.user_id === 'u'), W.fills).ops.filter(o => o.broker === 'etrade' && ymdNY(o.cerrada_at) >= '2026-09-01');
+      const D = K.emparejarFillsFIFO(K.fillsEtradeVigentes(W.fills), '2026-10-31');
+      const dc = D.cerradas.filter(c => c.broker === 'etrade' && c.fecha_ny >= '2026-09-01');
+      return { cuentas: [ops.reduce((s, o) => s + o.contratos, 0), r2(ops.reduce((s, o) => s + o.resultado_usd, 0))], diario: [dc.reduce((s, c) => s + c.contratos, 0), r2(dc.reduce((s, c) => s + c.pnl, 0))], huerfanas: D.huerfanas.length };
+    };
+
+    // (a) pasada COMPLETA con el junco: se retiran las 6 supersedidas; lo demás, intacto
+    {
+      const { M, W, otras } = mundo();
+      const antes = cuadre(W), ids0 = W.bt.map(t => t.id);
+      const r = await M.etradeSincronizar(true);
+      igual([r.estado, r.completa, r.repetidas, r.reemplazadas, r.limpieza_err], ['ok', true, 0, 6, undefined], '[4] pasada completa: ok, lista entera, 6 filas supersedidas retiradas y sin error de limpieza');
+      igual([ctos(etDe(W, 'SPY')), ctos(etDe(W, 'META')), etDe(W).length], [50, 8, 6], '[4] en la BASE: SPY ×50 y META ×8 (1 + 7), 6 filas: las que la pasada escribe');
+      assert(otras.every(o => W.bt.some(t => t.id === o.id)), '[4] la fila de OTRO usuario, la de Schwab y la de enero (fuera de la ventana) siguen ahí');
+      igual([r.nuevos, W.bt.filter(t => !ids0.includes(t.id)).length], [0, 0], '[4] nada nuevo que insertar (las claves de hoy ya estaban: claves estables)');
+      const desp = cuadre(W);
+      igual([desp.cuentas, desp.diario, desp.huerfanas], [antes.cuentas, antes.diario, 0], '[4] Cuentas = Diario sigue igual (' + JSON.stringify(desp.cuentas) + ') y sin huérfanas');
+      igual(desp.cuentas, desp.diario, '[4] y Cuentas = Diario');
+      assert(W.logs.length === 1 && /6 fila\(s\) supersedida\(s\) retirada\(s\)/.test(String(W.logs[0][0])) && Array.isArray(W.logs[0][1]) && W.logs[0][1].length === 6,
+        '[4] la consola dice cuántas se retiraron (6: 1 re-emparejada y 5 provisionales) y con qué claves', JSON.stringify(W.logs));
+      assert(!W.ops.includes('fills:delete') && !W.ops.includes('fills:update'), '[4] el libro de fills no se toca');
+      // (b) re-sincronizar: idempotente, nada se escribe ni se borra
+      W.T += 11 * 60000;
+      const n0 = W.bt.length, r2b = await M.etradeSincronizar(true);
+      igual([r2b.estado, r2b.nuevos, r2b.reemplazadas, W.bt.length], ['ok', 0, 0, n0], '[4] re-sincronizar: 0 nuevas, 0 retiradas (la misma pasada escribe las mismas claves)');
+    }
+    // (c) páginas que se SOLAPAN (la transacción repetida): no entra ninguna fila de más
+    {
+      const { M, W } = mundo({ modo: 'solapada' });
+      const r = await M.etradeSincronizar(true);
+      igual([r.estado, r.completa, r.repetidas > 0, ctos(etDe(W, 'SPY')), ctos(etDe(W, 'META'))], ['ok', true, true, 50, 8], '[4] con páginas solapadas: las repetidas fuera, completa, y la base queda en SPY ×50 / META ×8');
+    }
+    // (d) pasadas PARCIALES o FALLIDAS: nada se borra
+    const nadaBorrado = async (op, nombre, extra) => {
+      const { M, W } = mundo(op);
+      const ids0 = W.bt.map(t => t.id);
+      const r = await M.etradeSincronizar(true);
+      const borradas = ids0.filter(id => !W.bt.some(t => t.id === id)).length;
+      igual([borradas, r.reemplazadas || 0, ctos(etDe(W, 'SPY')) >= 109], [0, 0, true], `[4] ${nombre}: nada se borra (estado ${r.estado}${r.completa === false ? ', lista a medias' : ''})`);
+      if (extra) extra(r, W);
+    };
+    await nadaBorrado({ modo: 'cortada' }, 'lista cortada (E*TRADE dice que hay más y no da con qué seguir)', (r) => igual(r.completa, false, '[4] …y el resumen dice completa = false'));
+    await nadaBorrado({ modo: 'falla' }, 'E*TRADE falla en la 2ª página', (r) => igual(r.estado, 'error', '[4] …y la pasada da error'));
+    await nadaBorrado({ modo: 'falla180' }, 'la de 180 días falla y entra la de 60 de respaldo', (r) => igual([r.estado, r.dias], ['ok', 60], '[4] …la de 60 días escribe pero no limpia'));
+    await nadaBorrado({ upsertFalla: true }, 'el upsert de broker_trades falla', (r, W) => assert(!W.ops.includes('broker_trades:select'), '[4] …y ni siquiera se leen las viejas'));
+    await nadaBorrado({ libroFalla: true }, 'el libro de fills no se puede leer');
+    await nadaBorrado({ selectFalla: true }, 'la lectura de broker_trades falla', (r) => assert(/select falló/.test(r.limpieza_err || ''), '[4] …y el resumen lo dice (limpieza_err)'));
+    // (e) el libro de HOY (sin las provisionales de septiembre): solo la re-emparejada; Cuentas = Diario igual
+    {
+      const { M, W } = mundo({ libroProv: false });
+      const antes = cuadre(W);
+      const r = await M.etradeSincronizar(true);
+      const desp = cuadre(W);
+      igual([r.reemplazadas, ctos(etDe(W, 'SPY')), ctos(etDe(W, 'META'))], [1, 100, 15], '[4] con el libro de hoy (las provisionales nunca entraron): sale solo la «41>50 ×9»; las provisionales se quedan y las filtra la lectura');
+      igual([desp.cuentas, desp.diario, desp.huerfanas], [antes.cuentas, antes.cuentas, 0], '[4] …y Cuentas = Diario como antes (' + JSON.stringify(desp.cuentas) + '), sin huérfanas');
+    }
+  }
+
+  // ════════════════ [5] Cuentas lo dice ════════════════
+  if (existe('etradeLineaHistorial')) {
+    const L = construir(['etradeLineaHistorial', 'lineaPasadaLigera'], { esc: C.esc, haceCuanto: C.haceCuanto }, { consts: ['ET_DIAS_LIGERA'] });
+    const base = { estado: 'ok', txs: 9, ops: 9, rts: 6, nuevos: 0, dias: 180, huerfanas: 0, fills: 0, ts: Date.now() };
+    assert(/ · 6 filas repetidas retiradas/.test(L.etradeLineaHistorial({ ...base, reemplazadas: 6 })) && /1 fila repetida retirada/.test(L.etradeLineaHistorial({ ...base, reemplazadas: 1 }))
+      && !/retirad/.test(L.etradeLineaHistorial(base)), '[5] la línea del historial dice «N filas repetidas retiradas» solo si las hubo');
+  }
+
   C.resumen();
 })().catch(e => { C.falla('excepción: ' + (e && e.stack || e)); C.resumen(); });

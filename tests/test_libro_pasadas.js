@@ -68,10 +68,12 @@ const FN_MUNDO = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincroniz
   'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
   'schwabSincronizar', 'schwabSincronizarImpl', 'schwabSincronizarLigera', 'schwabOrdenesHistoricas', 'swMensajeError', 'fillsDeOrdenesSchwab',
   'emparejarFillsSchwab', 'vencidasASobrar', 'fillsDeOrdenesSchwabLibro', 'desOsi', 'instanteVencimiento',
-  'syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'syncFondoResultado', 'sincronizarLibroFondo'];
+  'syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'syncFondoResultado', 'sincronizarLibroFondo',
+  // v66 A4: la limpieza de supersedidas tras la completa (aquí sin libro: libroCrudoEtrade de juguete da null y no se lee nada más)
+  'etradeReemplazarSupersedidas', 'filasEtradeSupersedidas', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato'];
 const CONST_MUNDO = ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SW_DIAS_HIST', 'SW_TRAMO_DIAS',
   'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_DIAS_LIGERA', 'SW_K', 'SYNC_EXPIRADO_MS', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_TRAS_CIERRE_MS', '_syncFondo',
-  '_etSyncEnVuelo', '_etRenovando', '_swSyncEnVuelo', '_ultimaRegular'];
+  '_etSyncEnVuelo', '_etRenovando', '_swSyncEnVuelo', '_ultimaRegular', 'ET_SUPERSEDIDA_MARGEN_MS', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL'];
 
 function armarMundo(op) {
   op = Object.assign({ ses: 'regular', visible: 'visible', T: NY_11, et: true, sw: false, swAcct: true, nOpt: 460, nOtras: 20, nSw: 200, hash: '#/tickers', vista: 'diario' }, op || {});
@@ -140,6 +142,7 @@ function armarMundo(op) {
     document: { get visibilityState() { return W.visible; }, querySelector: () => null },
     location: { get hash() { return W.hash; } },
     vistaDiario: () => { W.reg.diario++; },
+    libroCrudoEtrade: async () => null,   // v66 A4: este mundo no tiene libro que leer
   };
   const fns = FN_MUNDO.filter(existe), consts = CONST_MUNDO.filter(existeConst);
   const M = construir(fns, deps, { consts,
@@ -538,12 +541,14 @@ function armarMundo(op) {
       'ttlSyncLibro', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro', 'resumenSyncGuardado', 'etradeTransacciones', 'etRead', 'etRenovar', 'etMarcarMuerto', 'etError', 'etCuentaKey',
       'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
       'leerFillsTodos', 'libroInvalidar', 'libroParaUnir', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro', 'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade',
-      'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'vencimientoMoomoo'].filter(existe);
+      'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'vencimientoMoomoo',
+      'etradeReemplazarSupersedidas', 'filasEtradeSupersedidas', 'libroCrudoEtrade'].filter(existe);   // v66 A4
     const M = construir(FN, { Date: FakeDate, ymdNY, hoyNY, localStorage: ls, URL, sb, etProxy, sesionActiva: { user: { id: 'u' } },
       haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), etCreds: () => ({ token: 't', token_secret: 's' }),
       document: { visibilityState: 'visible' }, libroRepintarPronto: () => {} },
       { consts: ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SYNC_EXPIRADO_MS', 'LIBRO_TRAS_CIERRE_MS', '_etSyncEnVuelo', '_etRenovando',
-        '_ultimaRegular', '_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst),
+        '_ultimaRegular', '_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT',
+        'ET_SUPERSEDIDA_MARGEN_MS'].filter(existeConst),
         prefijo: 'let _hbUltimo = null; function __hb(h) { _hbUltimo = h; }', extras: ['__hb'] });
     const latir = () => M.__hb({ sesion: 'regular', latido_at: new Date(W.T - 20000).toISOString() });
     const diario = (filas) => { const F = M.emparejarFillsFIFO(filas, hoyNY()); return [F.cerradas.length, F.cerradas.reduce((s, c) => s + c.contratos, 0), Math.round(F.cerradas.reduce((s, c) => s + c.pnl, 0) * 100) / 100]; };

@@ -3640,6 +3640,130 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
   return { expirado: false, txs: todas, dias, desdeMs: desde.getTime(), completa, repetidas };
 }
 
+// v66 (A4, 2026-10-31) · La CAUSA de los duplicados de E*TRADE en broker_trades. La pasada completa empareja FIFO las
+// transacciones de 180 días y sube los round-trips con upsert por clave_ext (contrato#abre>cierra#contratos) e
+// ignoreDuplicates: un emparejado distinto (una transacción repetida entre dos páginas, una lista que vuelve en otro
+// orden, la provisional que E*TRADE contabiliza con otros IDs) da OTRAS claves, entran como filas nuevas y las viejas no
+// se retiraban nunca (la v62-v65 las quitaba AL LEER: filasEtradeVigentes, que se queda como red). Libro real del 22-oct:
+// 31 parejas con 2 o 3 filas, 51 cierres con más contratos en broker_trades que en el libro; la SPY PUT 757 del 14-sep
+// ×109 con 50 reales, la META CALL 690 ×14 con 7. Dos arreglos:
+//   1. claves estables: emparejarEtrade ya no depende de cómo llega la lista (sin repetidas, desempate por ID), y la
+//      misma pasada escribe las mismas claves (el upsert no crea nada);
+//   2. la fila SUPERSEDIDA se retira (filasEtradeSupersedidas + etradeReemplazarSupersedidas), solo con todo esto:
+//      · la pasada fue COMPLETA (lista entera, los 180 días —no la de 60 de respaldo—), sin error, y el upsert de sus
+//        filas salió bien; el libro de fills se pudo leer;
+//      · la fila vieja es de E*TRADE y de ESTE usuario (la RLS ya lo impide; aquí también se filtra), y su apertura y su
+//        cierre caen DENTRO de la ventana leída, a más de ET_SUPERSEDIDA_MARGEN_MS de su borde;
+//      · su contrato está entero en la pasada: sin ventas huérfanas, sin nada en el libro ni en la pasada anterior al
+//        borde, y con cada fill vigente del libro de ese contrato en lo que E*TRADE devolvió;
+//      · TODOS sus IDs (raw.abre y raw.cierra) están cubiertos por otra fila de la pasada: o los devolvió E*TRADE y otra
+//        fila nueva los usa (re-emparejada), o son provisionales que el libro ya da por sustituidas por su contabilizada
+//        (fillsEtradeVigentes) y la pasada trae su gemela (mismo contrato, contratos y primas, a ±15 min o con el mismo
+//        lote de apertura). Un ID que no está ni en la pasada ni en el libro es una huérfana: se queda.
+//   Ante cualquier duda, no se borra: la lectura sigue filtrando lo que quede. Nada de esto toca `fills`.
+const ET_SUPERSEDIDA_MARGEN_MS = 3 * 86400000;
+// PURA: de `viejas` (filas de broker_trades leídas), las supersedidas por `nuevas` (las de esta pasada, emparejarEtrade).
+// `pasada`: { completa, desdeMs, ahoraMs, fills (fillsDeTransaccionesEtrade de lo leído), huerfanas }. `libro`: los fills
+// tal cual (con las provisionales sustituidas; null = no se pudo leer → nada). → { borrar, recolocadas, gemelas, dudas }.
+function filasEtradeSupersedidas(viejas, nuevas, pasada, libro, uid) {
+  const res = { borrar: [], recolocadas: 0, gemelas: 0, dudas: 0 };
+  if (!uid || !Array.isArray(viejas) || !Array.isArray(nuevas) || !nuevas.length || !Array.isArray(libro)) return res;
+  if (!pasada || pasada.completa !== true || !Array.isArray(pasada.fills)) return res;
+  const desde = Number(pasada.desdeMs), ahora = Number(pasada.ahoraMs);
+  if (!Number.isFinite(desde) || !Number.isFinite(ahora) || !(ahora > desde)) return res;
+  const piso = desde + ET_SUPERSEDIDA_MARGEN_MS, techo = ahora + 86400000;
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const ms = (v) => Date.parse(v || '');
+  const raw = (t) => (t && t.raw && typeof t.raw === 'object') ? t.raw : {};
+  // lo que la pasada LEYÓ: sus IDs y, por contrato, su primera ejecución
+  const leidos = new Set(), dudoso = new Set();
+  for (const f of pasada.fills) {
+    if (!f || f.clave_ext == null || f.clave_ext === '') continue;
+    leidos.add(String(f.clave_ext));
+    const t = ms(f.ejecutado_at);
+    if (!Number.isFinite(t) || t < piso) dudoso.add(claveContrato(f) || '?');   // el contrato toca el borde de la ventana
+  }
+  (pasada.huerfanas || []).forEach(h => dudoso.add(claveContrato(h) || '?'));   // una venta sin su compra: el FIFO no es de fiar
+  // el libro: lo sustituido (provisional con su contabilizada, vencimiento anotado dos veces) y lo vigente
+  const libroEt = libro.filter(f => f && f.broker === 'etrade' && f.clave_ext != null && f.clave_ext !== '');
+  const vig = fillsEtradeVigentes(libroEt) || libroEt;
+  const idsVig = new Set(vig.map(f => String(f.clave_ext)));
+  const sustituidos = new Set(libroEt.map(f => String(f.clave_ext)).filter(id => !idsVig.has(id)));
+  for (const f of libroEt) { const t = ms(f.ejecutado_at); if (!Number.isFinite(t) || t < piso) dudoso.add(claveContrato(f) || '?'); }
+  for (const f of vig) if (!leidos.has(String(f.clave_ext))) dudoso.add(claveContrato(f) || '?');   // E*TRADE no devolvió algo que el libro sí tiene
+  const claves = new Set(nuevas.map(t => String(t && t.clave_ext)));
+  const usados = new Set();
+  nuevas.forEach(t => { const r = raw(t); if (r.abre != null) usados.add(String(r.abre)); if (r.cierra != null) usados.add(String(r.cierra)); });
+  const cerca = (a, b) => { const x = ms(a), y = ms(b); return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= ET_PROV_DESPUES_MS; };
+  const gemela = (t) => nuevas.some(o => o && claveContrato(o) === claveContrato(t) && num(o.contratos) === num(t.contratos)
+    && num(o.prima_fill) === num(t.prima_fill) && num(o.prima_salida) === num(t.prima_salida)
+    && ((cerca(o.abierta_at, t.abierta_at) && cerca(o.cerrada_at, t.cerrada_at)) || (raw(t).abre != null && String(raw(o).abre) === String(raw(t).abre))));
+  for (const t of viejas) {
+    if (!t || t.broker !== 'etrade' || t.user_id !== uid) continue;          // nunca de otro bróker ni de otro usuario
+    const k = String(t.clave_ext == null ? '' : t.clave_ext);
+    if (claves.has(k) || !k.includes('#')) continue;                          // la pasada la vuelve a escribir / formato viejo (autolimpieza)
+    const r = raw(t), kc = claveContrato(t), ta = ms(t.abierta_at), tc = ms(t.cerrada_at);
+    if (r.abre == null || r.cierra == null || !kc || !(ta >= piso && ta <= techo) || !(tc >= piso && tc <= techo) || dudoso.has(kc)) { res.dudas++; continue; }
+    let suelta = false, porGemela = false;
+    for (const id of [String(r.abre), String(r.cierra)]) {
+      if (leidos.has(id)) { if (!usados.has(id)) suelta = true; }             // E*TRADE lo devolvió: otra fila nueva debe usarlo
+      else if (sustituidos.has(id)) porGemela = true;                         // provisional ya contabilizada
+      else suelta = true;                                                     // ni en la pasada ni sustituido: huérfana
+    }
+    if (suelta || (porGemela && !gemela(t))) { res.dudas++; continue; }
+    res.borrar.push(t);
+    if (porGemela) res.gemelas++; else res.recolocadas++;
+  }
+  return res;
+}
+// v66 (A4) · El libro de fills TAL CUAL (la caché de leerFillsTodos, con las provisionales y los vencimientos repetidos que
+// la vista vigente quita): la limpieza necesita ver qué IDs están sustituidos. null si no se pudo leer → no se borra nada.
+async function libroCrudoEtrade() {
+  try {
+    const r = await leerFillsTodos();
+    return (r && !r.error && Array.isArray(_libro.filas)) ? _libro.filas : null;
+  } catch (_) { return null; }
+}
+// v66 (A4) · Tras el upsert de una pasada COMPLETA: lee las filas de E*TRADE de este usuario dentro de la ventana, retira
+// por id las supersedidas (filasEtradeSupersedidas) y lo dice en la consola. → { reemplazadas, recolocadas, gemelas,
+// dudas, error? }. Cualquier fallo antes del delete deja todo como estaba.
+async function etradeReemplazarSupersedidas(uid, pasada, nuevas) {
+  const out = { reemplazadas: 0, recolocadas: 0, gemelas: 0, dudas: 0 };
+  if (!uid || !pasada || pasada.completa !== true || !Array.isArray(nuevas) || !nuevas.length) return out;
+  const desde = Number(pasada.desdeMs);
+  if (!Number.isFinite(desde)) return out;
+  const libro = await libroCrudoEtrade();
+  if (!Array.isArray(libro)) return out;   // sin libro no hay con qué saber qué está sustituido: no se toca nada
+  // las viejas de la ventana, paginadas (PostgREST corta en 1000 por petición); una lectura que falla no borra nada
+  const viejas = [], PAG = 1000;
+  for (let v = 0; v < 20; v++) {
+    const { data, error } = await sb.from('broker_trades')
+      .select('id,user_id,broker,clave_ext,raw,symbol,direccion,strike,expiracion,contratos,prima_fill,prima_salida,abierta_at,cerrada_at')
+      .eq('user_id', uid).eq('broker', 'etrade').gte('abierta_at', new Date(desde + ET_SUPERSEDIDA_MARGEN_MS).toISOString())
+      .order('id', { ascending: true }).range(v * PAG, v * PAG + PAG - 1);
+    if (error) return { ...out, error: String(error.message || error).slice(0, 80) };
+    viejas.push(...(data || []));
+    if (!data || data.length < PAG) break;
+  }
+  const s = filasEtradeSupersedidas(viejas, nuevas, { ...pasada, fills: fillsDeTransaccionesEtrade(pasada.txs || []) }, libro, uid);
+  out.dudas = s.dudas;
+  const ids = s.borrar.map(t => t.id).filter(id => id != null);
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data: d, error: e } = await sb.from('broker_trades').delete()
+      .eq('user_id', uid).eq('broker', 'etrade').in('id', ids.slice(i, i + 100)).select('id');
+    if (e) { out.error = String(e.message || e).slice(0, 80); break; }
+    out.reemplazadas += (d || []).length;
+  }
+  out.recolocadas = s.recolocadas; out.gemelas = s.gemelas;
+  if (out.reemplazadas) {
+    try {
+      console.info(`[Mesa] E*TRADE · broker_trades: ${out.reemplazadas} fila(s) supersedida(s) retirada(s) — ${s.recolocadas} re-emparejada(s), ${s.gemelas} provisional(es) ya contabilizada(s); ${s.dudas} dudosa(s) se quedan`,
+        s.borrar.map(t => t.clave_ext));
+    } catch (_) {}
+  }
+  return out;
+}
+
 // Sincroniza (con tope por dispositivo: la COMPLETA cada 10 min y, en sesión, entre dos completas, una LIGERA cada 2 min
 // — pasadaSyncAhora, v65 rev). Devuelve el resumen para la vista y `cambio` = true si escribió algo nuevo (para re-dibujar).
 // Guarda de concurrencia: si ya hay una sincronización en vuelo (la vista se
@@ -3728,7 +3852,7 @@ async function etradeSincronizarImpl(forzar) {
     if (libro.nuevos > 0) libroInvalidar();
     const rts = emparejarEtrade(txs);
     const huerfanas = (rts.huerfanas || []).length;      // A3: ventas sin compra en la ventana leída
-    let nuevos = 0;
+    let nuevos = 0, limpieza = null;
     if (rts.length && uid) {
       // Autolimpieza: filas con la clave vieja (formato con '|', sin IDs) se
       // reemplazan por el conjunto completo con clave por IDs.
@@ -3738,9 +3862,18 @@ async function etradeSincronizarImpl(forzar) {
         .upsert(filas, { onConflict: 'user_id,broker,clave_ext', ignoreDuplicates: true }).select('id');
       if (error) return fin({ estado: 'error', detalle: error.message });
       nuevos = (data || []).length;
+      // v66 (A4): con la pasada COMPLETA de los 180 días, sus filas ya escritas y el libro al día, se retiran las filas
+      // supersedidas (re-emparejadas o provisionales ya contabilizadas). La de 60 días de respaldo, una lista a medias o
+      // un fallo al escribir el libro no borran nada.
+      if (res.completa === true && dias === ET_DIAS_HIST && !libro.error) {
+        try { limpieza = await etradeReemplazarSupersedidas(uid, { txs, desdeMs: res.desdeMs, ahoraMs: Date.now(), huerfanas: rts.huerfanas || [], completa: true }, rts); }
+        catch (e) { limpieza = { reemplazadas: 0, error: String((e && e.message) || e).slice(0, 80) }; }
+      }
     }
-    const resumen = fin({ estado: 'ok', txs: txs.length, ops, rts: rts.length, nuevos, dias, huerfanas, fills: libro.nuevos, fills_err: libro.error });
-    return { ...resumen, cambio: nuevos > 0 || libro.nuevos > 0 };
+    const reemplazadas = (limpieza && limpieza.reemplazadas) || 0;
+    const resumen = fin({ estado: 'ok', txs: txs.length, ops, rts: rts.length, nuevos, dias, huerfanas, fills: libro.nuevos, fills_err: libro.error,
+      completa: res.completa === true, repetidas: res.repetidas || 0, reemplazadas, ...(limpieza && limpieza.error ? { limpieza_err: limpieza.error } : {}) });   // v66 A4: solo contadores
+    return { ...resumen, cambio: nuevos > 0 || libro.nuevos > 0 || reemplazadas > 0 };
   } catch (e) {
     return fin({ estado: 'error', detalle: (e && e.message) || 'fallo' });
   }
@@ -4080,7 +4213,9 @@ function etradeLineaHistorial(s) {
   // v52: las ejecuciones ya no se tiran: van al libro de fills y se ven en Cuentas → Diario.
   const lb = Number(s.fills) > 0 ? ` · ${s.fills} ejecuciones nuevas en el libro` : '';
   const lbe = s.fills_err ? ` · <span style="color:var(--oro)">libro de fills: ${esc(s.fills_err)}</span>` : '';
-  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.txs} transacciones · ${s.ops} de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${hu}${lb}${lbe}${hace ? ' · ' + hace : ''}${lg}${sync} · <a href="#" onclick="MZ.cuentasVista('diario');return false" style="color:var(--oro)">verlas en el Diario</a>`;
+  // v66 (A4): las filas repetidas que la pasada retiró (re-emparejadas o provisionales ya contabilizadas), dichas una vez
+  const rp = Number(s.reemplazadas) > 0 ? ` · ${s.reemplazadas} fila${s.reemplazadas > 1 ? 's' : ''} repetida${s.reemplazadas > 1 ? 's' : ''} retirada${s.reemplazadas > 1 ? 's' : ''}` : '';
+  return `historial ${s.dias ? s.dias + ' d' : ''}: ${s.txs} transacciones · ${s.ops} de opciones · ${s.rts} round-trips${s.nuevos ? ' · ' + s.nuevos + ' nuevos' : ''}${rp}${hu}${lb}${lbe}${hace ? ' · ' + hace : ''}${lg}${sync} · <a href="#" onclick="MZ.cuentasVista('diario');return false" style="color:var(--oro)">verlas en el Diario</a>`;
 }
 async function etSyncAhora() {
   try { localStorage.removeItem(ET_K.sync); } catch (_) {}
