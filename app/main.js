@@ -3692,7 +3692,7 @@ function filasEtradeSupersedidas(viejas, nuevas, pasada, libro, uid) {
   for (const f of libroEt) { const t = ms(f.ejecutado_at); if (!Number.isFinite(t) || t < piso) dudoso.add(claveContrato(f) || '?'); }
   for (const f of vig) if (!leidos.has(String(f.clave_ext))) dudoso.add(claveContrato(f) || '?');   // E*TRADE no devolvió algo que el libro sí tiene
   const claves = new Set(nuevas.map(t => String(t && t.clave_ext)));
-  const usados = new Set();
+  const usados = new Set(), porGem = new Set();
   nuevas.forEach(t => { const r = raw(t); if (r.abre != null) usados.add(String(r.abre)); if (r.cierra != null) usados.add(String(r.cierra)); });
   const cerca = (a, b) => { const x = ms(a), y = ms(b); return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= ET_PROV_DESPUES_MS; };
   const gemela = (t) => nuevas.some(o => o && claveContrato(o) === claveContrato(t) && num(o.contratos) === num(t.contratos)
@@ -3712,8 +3712,40 @@ function filasEtradeSupersedidas(viejas, nuevas, pasada, libro, uid) {
     }
     if (suelta || (porGemela && !gemela(t))) { res.dudas++; continue; }
     res.borrar.push(t);
-    if (porGemela) res.gemelas++; else res.recolocadas++;
+    if (porGemela) porGem.add(t);
   }
+  // v66 rev68 · la PRUEBA DE LA LECTURA (revisor de A4, 2026-10-31). Lo de arriba decide fila por fila y no ve la red que
+  // se queda detrás: filasEtradeVigentes descarta una fila cuyos IDs no están en el libro vigente (provisional ya
+  // sustituida o anterior al libro) SOLO si tiene una gemela entre las filas que sí están. Si la limpieza borra justo esa
+  // gemela (una re-emparejada) y deja la otra por dudosa (su provisional no tiene gemela entre las NUEVAS, que reparten los
+  // contratos de otra manera), la lectura la vuelve a contar y Cuentas suma contratos y dinero que no existen: el
+  // descuadre lo creaba la limpieza (QQQ 600C de juguete con una pasada a medio contabilizar: Cuentas 13 ctos / +$226.10
+  // contra 8 / −$22.60 del Diario; SPY PUT 757 con el «41>50 ×9» y su espejo provisional: 59 / $1,517.79 contra 50 /
+  // $1,293.05). Por eso, antes de borrar, se lee la base como la leería Cuentas, antes y después de quitar lo elegido: en
+  // un contrato donde cambia lo que cuenta (una fila que se queda empieza o deja de contar, o se iba a borrar una que la
+  // lectura contaba) no se borra NADA de ese contrato (pasa a dudas). Así la limpieza solo retira filas que la lectura ya
+  // no contaba y Cuentas queda idéntico por construcción. Si algo cambia fuera de los contratos elegidos, no se borra nada.
+  if (res.borrar.length) {
+    const MARCA = Symbol('fila');                                             // viaja en las copias que hace la lectura ({ ...t })
+    const mias = viejas.filter(t => t && t.broker === 'etrade' && t.user_id === uid);
+    const pos = new Map(mias.map((t, i) => [t, i]));
+    const marcadas = mias.map((t, i) => ({ ...t, [MARCA]: i }));
+    const contadas = (filas) => new Set((filasEtradeVigentes(filas, libro) || []).map(t => t && t[MARCA]));
+    const antes = contadas(marcadas);
+    for (let vuelta = 0; res.borrar.length; vuelta++) {
+      const quitar = new Set(res.borrar.map(t => pos.get(t)));
+      const despues = contadas(marcadas.filter((_, i) => !quitar.has(i)));
+      const malos = new Set();
+      marcadas.forEach((t, i) => { if (quitar.has(i) ? antes.has(i) : antes.has(i) !== despues.has(i)) malos.add(claveContrato(t) || '?'); });
+      if (!malos.size) break;
+      let sigue = res.borrar.filter(t => !malos.has(claveContrato(t) || '?'));
+      if (sigue.length === res.borrar.length || vuelta >= 9) sigue = [];   // sin avance (cambia algo de otro contrato) o sin fin: nada
+      res.dudas += res.borrar.length - sigue.length;
+      res.borrar = sigue;
+    }
+  }
+  res.gemelas = res.borrar.filter(t => porGem.has(t)).length;
+  res.recolocadas = res.borrar.length - res.gemelas;
   return res;
 }
 // v66 (A4) · El libro de fills TAL CUAL (la caché de leerFillsTodos, con las provisionales y los vencimientos repetidos que

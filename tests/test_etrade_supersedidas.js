@@ -58,6 +58,10 @@ const NOMBRES_CTA = ['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigen
 const K = construir(NOMBRES_CTA, { ymdNY, hoyNY: () => '2026-10-31' },
   { consts: ['ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst) });
 const E = construir(['emparejarEtrade', 'instanteVencimiento', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion'], { ymdNY });
+// filasEtradeSupersedidas y lo que usa: desde la rev68 hace la prueba de la lectura (filasEtradeVigentes y su FIFO)
+const NOMBRES_SUP = ['filasEtradeSupersedidas', 'filasEtradeVigentes', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill',
+  'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato'].filter(existe);
+const CONSTS_SUP = ['ET_SUPERSEDIDA_MARGEN_MS', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst);
 const claveDe = (t) => `${t.raw.abre}>${t.raw.cierra} x${t.contratos}`;
 const ctos = (filas, sym) => filas.filter(t => !sym || t.symbol === sym).reduce((s, t) => s + Number(t.contratos), 0);
 
@@ -135,8 +139,8 @@ function libroJuguete(conProvisionales) {
   // ════════════════ [3] filasEtradeSupersedidas (PURA) ════════════════
   if (!existe('filasEtradeSupersedidas')) C.falla('[3] no existe filasEtradeSupersedidas: las filas re-emparejadas y las provisionales ya contabilizadas se quedan para siempre en broker_trades');
   else {
-    const S = construir(['filasEtradeSupersedidas', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato'], {},
-      { consts: ['ET_SUPERSEDIDA_MARGEN_MS', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL'] });
+    // rev68: filasEtradeSupersedidas lee la base como Cuentas (filasEtradeVigentes, con su FIFO) antes de borrar
+    const S = construir(NOMBRES_SUP, { ymdNY }, { consts: CONSTS_SUP });
     const nuevas = E.emparejarEtrade(TXS_HOY);
     const pasada = (extra) => ({ completa: true, desdeMs: DESDE_MS, ahoraMs: HOY_MS, fills: E.fillsDeTransaccionesEtrade(TXS_HOY), huerfanas: nuevas.huerfanas, ...(extra || {}) });
     const J = juncoViejo();
@@ -186,6 +190,70 @@ function libroJuguete(conProvisionales) {
     const sQ = S.filasEtradeSupersedidas(malQ, nQ, pasada({ fills: E.fillsDeTransaccionesEtrade(txQ), huerfanas: nQ.huerfanas }), libroP.concat(alLibro([B1, B2, S1], '2026-10-05T16:00:00+00:00')), 'u');
     igual(nada(sQ), 0, '[3] la fila vieja «B2>S1» con B2 aún abierto (ninguna fila nueva usa B2): no se borra (la lectura la descarta)');
     assert(J.todas.every(t => !nuevas.some(n => n.clave_ext === t.clave_ext) || !s.borrar.includes(t)), '[3] una fila que la pasada vuelve a escribir nunca se borra');
+  }
+
+  // ════════════════ [3b] rev68 · la limpieza no DESENMASCARA nada: Cuentas lee igual antes y después ════════════════
+  // El revisor de A4: filasEtradeVigentes descarta una fila con un ID fuera del libro vigente solo si tiene su gemela entre
+  // las filas del libro. Si la limpieza borra justo esa gemela y deja la otra por dudosa, la lectura la vuelve a contar.
+  if (existe('filasEtradeSupersedidas')) {
+    const S = construir(NOMBRES_SUP, { ymdNY }, { consts: CONSTS_SUP });
+    const nomDe = {};
+    const et = (t) => `${nomDe[t.raw.abre] || t.raw.abre}>${nomDe[t.raw.cierra] || t.raw.cierra}×${t.contratos}`;
+    const totC = (filas, libro) => { const o = K.unirOperaciones([], filas, libro).ops; return [o.reduce((x, y) => x + y.contratos, 0), r2(o.reduce((x, y) => x + y.resultado_usd, 0))]; };
+    const totD = (libro) => { const c = K.emparejarFillsFIFO(K.fillsEtradeVigentes(libro), '2026-10-31').cerradas; return [c.reduce((x, y) => x + y.contratos, 0), r2(c.reduce((x, y) => x + y.pnl, 0))]; };
+    const lee = (filas, libro) => K.filasEtradeVigentes(filas, libro).map(et).sort();
+    // (a) QQQ 600C con una pasada a MEDIO contabilizar: compras CB0 ×3 a 0.90 y CB1 ×5 a 1.00, venta CS ×5 a 1.50, vencen 3;
+    //     las provisionales (PB0, PB1, PS) ~2 min después. La base guarda cuatro pasadas: todo provisional; CB1 contabilizada
+    //     con la venta aún provisional («CB1>PS ×5»); CB1 y CS contabilizadas con CB0 aún provisional («CB1>CS ×5»); la final.
+    {
+      const pQ = { symbol: 'QQQ', securityType: 'OPTN', callPut: 'CALL', strikePrice: 600, expiryYear: 26, expiryMonth: 10, expiryDay: 9 };
+      const CB0 = tx(26282501000001, 'Bought To Open', 3, 0.90, '2026-10-08T13:59:00Z', pQ), PB0 = tx(26282200000001, 'Bought', 3, 0.90, '2026-10-08T14:01:06Z', pQ);
+      const CB1 = tx(26282501000002, 'Bought To Open', 5, 1.00, '2026-10-08T14:00:00Z', pQ), PB1 = tx(26282200000002, 'Bought', 5, 1.00, '2026-10-08T14:02:06Z', pQ);
+      const CS = tx(26282501000003, 'Sold To Close', -5, 1.50, '2026-10-08T14:30:00Z', pQ), PS = tx(26282200000003, 'Sold', -5, 1.50, '2026-10-08T14:32:06Z', pQ);
+      const CV = tx(26283501000004, 'Option Expired', 3, 0, '2026-10-10T07:00:00Z', pQ);
+      Object.assign(nomDe, { [CB0.transactionId]: 'CB0', [CB1.transactionId]: 'CB1', [CS.transactionId]: 'CS', [CV.transactionId]: 'CV', [PB0.transactionId]: 'PB0', [PB1.transactionId]: 'PB1', [PS.transactionId]: 'PS' });
+      idBT = 1; idFill = 1;
+      const fin = E.emparejarEtrade([CV, CS, CB1, CB0]);
+      const base = [].concat(aBase(E.emparejarEtrade([PS, PB1, PB0]), '2026-10-08T14:40:00Z'), aBase(E.emparejarEtrade([PS, PB0, CB1]), '2026-10-08T18:00:00Z'),
+        aBase(E.emparejarEtrade([CS, PB0, CB1]), '2026-10-09T13:00:00Z'), aBase(fin, '2026-10-12T13:00:00Z'));
+      const libro = alLibro([PB0, PB1, PS], '2026-10-08T14:40:00Z').concat(alLibro([CB1], '2026-10-08T18:00:00Z'), alLibro([CS], '2026-10-09T13:00:00Z'),
+        alLibro([CB0], '2026-10-12T13:00:00Z'), alLibro([CV], '2026-10-12T13:00:00Z'));
+      igual(base.map(et).sort(), ['CB0>CS×3', 'CB1>CS×2', 'CB1>CS×5', 'CB1>CV×3', 'CB1>PS×5', 'PB0>PS×3', 'PB1>PS×2'], '[3b] la base de juguete del revisor: siete filas de cuatro pasadas');
+      const TXS = [CV, CS, CB1, CB0];
+      const s = S.filasEtradeSupersedidas(base, fin, { completa: true, desdeMs: HOY_MS - 180 * 864e5, ahoraMs: HOY_MS, fills: E.fillsDeTransaccionesEtrade(TXS), huerfanas: fin.huerfanas }, libro, 'u');
+      const despues = base.filter(t => !s.borrar.includes(t));
+      igual(lee(despues, libro), lee(base, libro), '[3b] QQQ a medio contabilizar: la lectura cuenta las MISMAS filas después de la limpieza (antes de la rev68 «CB1>PS ×5» volvía a contar)');
+      igual([totC(despues, libro), totC(base, libro)], [totD(libro), totD(libro)], '[3b] …y Cuentas = Diario = ' + JSON.stringify(totD(libro)) + ' antes y después (antes de la rev68, tras limpiar: 13 ctos y +$226.75)');
+      igual([s.borrar.length, s.dudas, s.recolocadas + s.gemelas], [0, 4, 0], '[3b] en ese contrato no se borra nada: lo elegido pasa a dudas (la lectura sigue filtrándolo) y los contadores cuadran');
+    }
+    // (b) SPY PUT 757 con lotes a precios DISTINTOS (9 a 1.20 y 41 a 1.25), venta de 50: el «41>50 ×9» re-emparejado con IDs
+    //     contabilizados y su espejo con IDs provisionales anteriores al libro (el libro empezó el 25-sep)
+    {
+      const P0 = tx(26257501000109, 'Bought To Open', 9, 1.20, '2026-09-14T14:23:10Z', pSPY), P1b = tx(26257501000141, 'Bought To Open', 41, 1.25, '2026-09-14T14:23:10Z', pSPY);
+      const Q5b = tx(26257200300109, 'Bought', 9, 1.20, '2026-09-14T14:25:15Z', pSPY), Q3b = tx(26257200300141, 'Bought', 41, 1.25, '2026-09-14T14:25:15Z', pSPY);
+      idBT = 1; idFill = 1;
+      const cont = aBase(E.emparejarEtrade([P2, P1b, P0]), '2026-09-17T15:55:00+00:00');
+      const prov = aBase(E.emparejarEtrade([Q4, Q3b, Q5b]), '2026-09-14T14:43:00+00:00');
+      const bog = (t, creado) => aBase([{ ...t, contratos: 9, resultado_usd: r2(t.resultado_usd * 9 / 41), fees: r2(t.fees * 9 / 41), clave_ext: t.clave_ext.replace(/#41$/, '#9') }]
+        .map(({ id, user_id, creado_at, ...r }) => r), creado);
+      const base = [].concat(cont, prov, bog(cont.find(t => t.contratos === 41), '2026-10-09T14:26:00+00:00'), bog(prov.find(t => t.contratos === 41), '2026-09-14T15:10:00+00:00'));
+      const libro = alLibro([P0, P1b, P2], '2026-09-25T16:27:00+00:00');
+      const TXS = [P2, P1b, P0], nuevas = E.emparejarEtrade(TXS);
+      const s = S.filasEtradeSupersedidas(base, nuevas, { completa: true, desdeMs: DESDE_MS, ahoraMs: HOY_MS, fills: E.fillsDeTransaccionesEtrade(TXS), huerfanas: nuevas.huerfanas }, libro, 'u');
+      const despues = base.filter(t => !s.borrar.includes(t));
+      igual([totC(despues, libro), totC(base, libro)], [totD(libro), totD(libro)], '[3b] SPY PUT 757 con el espejo provisional: Cuentas = Diario = ' + JSON.stringify(totD(libro)) + ' antes y después (antes de la rev68: 59 / $1,517.79 tras limpiar)');
+      igual(lee(despues, libro), lee(base, libro), '[3b] …la lectura cuenta las mismas filas');
+      igual(s.borrar.length, 0, '[3b] …y la re-emparejada se queda (su espejo provisional solo se descarta gracias a ella)');
+    }
+    // (c) la prueba de la lectura no estorba lo que sí se puede limpiar: el junco de siempre sigue saliendo y Cuentas no cambia
+    {
+      const J = juncoViejo(), libroP = libroJuguete(true), nuevas = E.emparejarEtrade(TXS_HOY);
+      const s = S.filasEtradeSupersedidas(J.todas, nuevas, { completa: true, desdeMs: DESDE_MS, ahoraMs: HOY_MS, fills: E.fillsDeTransaccionesEtrade(TXS_HOY), huerfanas: nuevas.huerfanas }, libroP, 'u');
+      const despues = J.todas.filter(t => !s.borrar.includes(t));
+      igual([s.borrar.length, lee(despues, libroP).length === lee(J.todas, libroP).length, totC(despues, libroP)], [6, true, totC(J.todas, libroP)],
+        '[3b] el junco SPY/META de [3]: siguen saliendo las 6 supersedidas y Cuentas lee lo mismo');
+      assert(/filasEtradeVigentes\(filas, libro\)/.test(C.extraer('filasEtradeSupersedidas')), '[3b] filasEtradeSupersedidas lee la base con la MISMA lectura de Cuentas (filasEtradeVigentes) antes de borrar');
+    }
   }
 
   // ════════════════ [4] la sincronización REAL contra una base de juguete ════════════════
@@ -269,13 +337,15 @@ function libroJuguete(conProvisionales) {
         'ttlSyncLibro', 'sesionNY', 'sesionNYLibro', 'ritmoSyncLibro', 'resumenSyncGuardado', 'etradeTransacciones', 'etRead', 'etRenovar', 'etMarcarMuerto', 'etError', 'etCuentaKey',
         'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
         'leerFillsTodos', 'libroInvalidar', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro', 'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade',
-        'claveFill', 'claveContrato', 'instanteVencimiento', 'filasEtradeSupersedidas', 'libroCrudoEtrade', 'etradeReemplazarSupersedidas'].filter(existe);
+        'claveFill', 'claveContrato', 'instanteVencimiento', 'filasEtradeSupersedidas', 'libroCrudoEtrade', 'etradeReemplazarSupersedidas',
+        'filasEtradeVigentes', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'].filter(existe);
       const consola = { info: (...a) => W.logs.push(a), log() {}, warn() {}, error() {} };
       const M = construir(FN, { Date: FakeDate, ymdNY, hoyNY, localStorage: ls, URL, sb, etProxy, sesionActiva: { user: { id: 'u' } }, console: consola,
         haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), etCreds: () => ({ token: 't', token_secret: 's' }),
         document: { visibilityState: 'visible' }, libroRepintarPronto: () => {} },
         { consts: ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SYNC_EXPIRADO_MS', 'LIBRO_TRAS_CIERRE_MS', '_etSyncEnVuelo', '_etRenovando',
-          '_ultimaRegular', '_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'ET_SUPERSEDIDA_MARGEN_MS'].filter(existeConst),
+          '_ultimaRegular', '_libro', 'LIBRO_TTL_MS', 'LIBRO_COMPLETA_MS', 'LIBRO_RT_MAX', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'ET_SUPERSEDIDA_MARGEN_MS',
+          'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst),
           prefijo: 'let _hbUltimo = null;' });
       return { M, W, J, otras };
     };

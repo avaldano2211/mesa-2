@@ -70,7 +70,7 @@ const FN_MUNDO = ['etradeSincronizar', 'etradeSincronizarImpl', 'etradeSincroniz
   'emparejarFillsSchwab', 'vencidasASobrar', 'fillsDeOrdenesSchwabLibro', 'desOsi', 'instanteVencimiento',
   'syncBrokersFondo', 'cadenciaSyncLibro', 'ultimaSyncBroker', 'syncFondoResultado', 'sincronizarLibroFondo',
   // v66 A4: la limpieza de supersedidas tras la completa (aquí sin libro: libroCrudoEtrade de juguete da null y no se lee nada más)
-  'etradeReemplazarSupersedidas', 'filasEtradeSupersedidas', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato'];
+  'etradeReemplazarSupersedidas', 'filasEtradeSupersedidas', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato', 'filasEtradeVigentes'];
 const CONST_MUNDO = ['ET_K', 'ET_SYNC_TTL', 'ET_SYNC_TTL_SESION', 'ET_DIAS_HIST', 'ET_DIAS_LIGERA', 'ET_TOPE_MS', 'SW_DIAS_HIST', 'SW_TRAMO_DIAS',
   'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_DIAS_LIGERA', 'SW_K', 'SYNC_EXPIRADO_MS', 'LIBRO_SYNC_SESION_MS', 'LIBRO_SYNC_FUERA_MS', 'LIBRO_TRAS_CIERRE_MS', '_syncFondo',
   '_etSyncEnVuelo', '_etRenovando', '_swSyncEnVuelo', '_ultimaRegular', 'ET_SUPERSEDIDA_MARGEN_MS', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL'];
@@ -542,7 +542,7 @@ function armarMundo(op) {
       'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
       'leerFillsTodos', 'libroInvalidar', 'libroParaUnir', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro', 'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade',
       'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'vencimientoMoomoo',
-      'etradeReemplazarSupersedidas', 'filasEtradeSupersedidas', 'libroCrudoEtrade'].filter(existe);   // v66 A4
+      'etradeReemplazarSupersedidas', 'filasEtradeSupersedidas', 'libroCrudoEtrade', 'filasEtradeVigentes'].filter(existe);   // v66 A4 (rev68: y la prueba de la lectura)
     const M = construir(FN, { Date: FakeDate, ymdNY, hoyNY, localStorage: ls, URL, sb, etProxy, sesionActiva: { user: { id: 'u' } },
       haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), etCreds: () => ({ token: 't', token_secret: 's' }),
       document: { visibilityState: 'visible' }, libroRepintarPronto: () => {} },
