@@ -9,6 +9,8 @@
    (sessionStorage) y a la segunda se pide al SW que se actualice («Cierra y vuelve a abrir la Mesa para la vNN»);
    ⚙ Tu cuenta dice la versión (de VERSION_APP) y cuándo se cargó; sw.js v55: navegación e index.html con no-cache y
    sin guardar lo pedido con no-store (se ejecuta sw.js en un contexto de juguete).
+   rev68 (revisor de A1): una orden enviada o una cancelación en vuelo frena la recarga aunque el formulario ya se haya
+   cerrado («Cancelar» con el POST en vuelo) o no haya formulario (cancelar desde la lista del Copiloto) — 4b.
    Funciones REALES del fuente con dependencias falsas (casa_pruebas.js).
    Uso: node test_version.js mesa-2-app/app/main.js */
 'use strict';
@@ -250,6 +252,82 @@ function armarBusqueda(E) {
     { const { M } = armarRecarga({ pendiente: 0, version: 0 }); assert(/^Mesa 2\.0 · versión sin número · /.test(M.textoVersionApp()), '(v66) sin ?v= no se inventa un número'); }
     assert(!/\b6\d\b/.test(C.extraer('textoVersionApp')) && /VERSION_APP/.test(C.extraer('textoVersionApp')), '(v66) el número sale de VERSION_APP: no está escrito a mano');
     assert(/id="cpVersion"[^>]*>\$\{esc\(textoVersionApp\(\)\)\}<\/div>/.test(C.extraer('abrirCuenta')), '(v66) ⚙ Tu cuenta pinta textoVersionApp()');
+  }
+
+  // ════════════════ 4b. rev68 · una escritura al bróker EN VUELO frena la recarga aunque el formulario ya no esté ════════════════
+  // El revisor de A1: «Cancelar» sigue activo con el POST de la orden en vuelo (no tiene tope) y cerrarOrden pone _ord = null;
+  // motivoNoRecargar solo miraba _ord, así que la re-comprobación de 15 s recargaba con la orden en el aire: la fila se
+  // quedaba en «preview» y no salía el «Verifica en E*TRADE». Igual al cancelar desde la lista del Copiloto (sin cuadro).
+  {
+    const NOMB = ['ordenPlace', 'ordenPlaceSchwab', 'cerrarOrden', 'expirarPreviewHuerfana', 'cancelarOrden', 'cancelarOrdenSchwab', 'motivoNoRecargar', 'campoConTexto',
+      'recargarSiSePuede', 'recargaYaIntentada', 'anotarRecarga', 'pedirActualizarSW'];
+    const hayContador = C.existeConst('_escriturasBroker');
+    const armarEnvio = (op) => {
+      op = Object.assign({ falla: false, modal: true }, op || {});
+      const reg = { reloads: 0, timers: [], franja: [], anotado: [], alerts: [], toasts: [], posts: [] };
+      let modal = op.modal;
+      const err = nodo(), btn = nodo();
+      const doc = { activeElement: null, querySelector: (s) => (s === '.modal' && modal) ? nodo() : null };
+      const $ = (s) => s === '#oErr' ? err : s === '#oBtnPlace' ? btn : s === '#modalOrden' ? (modal ? { remove() { modal = false; } } : null) : null;
+      const pend = { '/etrade/orden/place': C.diferido(), '/etrade/orden/cancel': C.diferido(), '/schwab/orden/place': C.diferido(), '/schwab/orden/cancel': C.diferido() };
+      const sb = { from: () => ({ update: (o) => ({ eq: async () => { reg.anotado.push(o.estado); return { error: null }; } }) }) };
+      const post = async (ruta) => { reg.posts.push(ruta); if (op.falla) throw new Error('No pude contactar el proxy (¿Funnel activo?).'); return pend[ruta].promesa; };
+      const M = construir(NOMB, {
+        $, document: doc, sb, armadoHasta: () => Date.now() + 60000, pedirPin: async () => true, etCreds: () => ({ t: 'x' }),
+        etPost: (cr, ruta) => post(ruta), swPost: (ruta) => post(ruta),
+        mensajeError: () => null, swMensajeError: () => null, recortarJson: (o) => o, etDiaVencido: () => false, etCuentaKey: async () => 'k1',
+        swCreds: () => ({ token: 't' }), swVencido: () => false, swCuenta: async () => 'HASH', confirm: () => true, texto401Ordenes: (m) => m,
+        marcarCancelando: async () => {}, fueraMarcarCancelando: () => {}, ordenesActualizar: () => {},
+        toast: (m) => reg.toasts.push(m), ruta: () => {}, alert: (m) => reg.alerts.push(m),
+        location: { reload: () => reg.reloads++ },
+        setTimeout: (f, ms) => { reg.timers.push({ f, ms }); return reg.timers.length; }, clearTimeout: () => {}, clearInterval: () => {},
+        sessionStorage: { getItem: () => null, setItem: () => {} }, navigator: {}, franjaVersion: (m) => reg.franja.push(m),
+      }, { consts: ['VERSION_ESPERA_MS', 'VERSION_RECARGA_K', 'VERSION_RECARGA_VENTANA_MS'].concat(hayContador ? ['_escriturasBroker'] : []),
+        prefijo: "let _ord = null; const _corte = { enCurso: false }; const _venta = { enCurso: false };\n" +
+          "let _versionPendiente = 67; const _verEstado = { ultima: 0, timer: 0, atascada: 0, oculta: '' };",
+        sufijo: 'function __set(o) { _ord = o; } function __ord() { return _ord; }', extras: ['__set', '__ord'] });
+      const form = (broker) => ({ orden: { x: 1 }, previewIds: [1], caduca: Date.now() + 120000, filaId: 9, estadoFila: 'preview', accountIdKey: 'k1', timer: null, broker });
+      const recarga = () => reg.timers.find(t => t.ms === 700);
+      return { M, reg, pend, form, recarga };
+    };
+    for (const broker of ['etrade', 'schwab']) {
+      const nombre = broker === 'etrade' ? 'E*TRADE' : 'Schwab';
+      const { M, reg, pend, form, recarga } = armarEnvio();
+      M.__set(form(broker));
+      igual(M.motivoNoRecargar(), 'cuadro', `(rev68) ${nombre}: con el formulario de orden abierto, el motivo es «cuadro»`);
+      const envio = M.ordenPlace();
+      await C.respirar();
+      igual([reg.posts, M.motivoNoRecargar()], [[`/${broker}/orden/place`], 'orden'], `(rev68) ${nombre}: tras «Enviar», el POST sale y el motivo es «orden»`);
+      M.cerrarOrden();                                  // «Cancelar» sigue activo durante el envío
+      igual([M.__ord(), M.motivoNoRecargar()], [null, 'orden'], `(rev68) ${nombre}: «Cancelar» con el POST en vuelo cierra el formulario, pero la recarga sigue frenada («orden»)`);
+      M.recargarSiSePuede();
+      igual([reg.reloads, !!recarga(), reg.franja.slice(-1)[0], reg.timers.filter(t => t.ms === 15000).length], [0, false, 'orden', 1],
+        `(rev68) ${nombre}: la re-comprobación NO recarga: la franja dice que espera al bróker y vuelve a mirar en 15 s`);
+      pend[`/${broker}/orden/place`].resolver({ status: 502, data: {} });   // el proxy contesta tarde y sin forma: indeterminada
+      await envio;
+      igual([reg.anotado, reg.alerts.length, M.motivoNoRecargar()], [['error'], 1, ''], `(rev68) ${nombre}: la respuesta llega y se anota («error» + «Verifica…»); entonces sí se puede recargar`);
+      M.recargarSiSePuede(); recarga().f();
+      igual(reg.reloads, 1, `(rev68) ${nombre}: y la Mesa se actualiza con la orden ya anotada`);
+    }
+    for (const [broker, fn] of [['etrade', 'cancelarOrden'], ['schwab', 'cancelarOrdenSchwab']]) {
+      const { M, reg, pend, recarga } = armarEnvio({ modal: false });   // la lista de órdenes del Copiloto: sin cuadro
+      const c = broker === 'etrade' ? M.cancelarOrden(7, '123', 'etrade') : M.cancelarOrdenSchwab(7, '123');
+      await C.respirar(); await C.respirar();
+      igual([reg.posts, M.motivoNoRecargar()], [[`/${broker}/orden/cancel`], 'orden'], `(rev68) ${fn} desde la lista del Copiloto (sin cuadro): con la cancelación en vuelo el motivo es «orden»`);
+      M.recargarSiSePuede();
+      assert(reg.reloads === 0 && !recarga(), `(rev68) ${fn}: la recarga espera a que el bróker conteste la cancelación`);
+      pend[`/${broker}/orden/cancel`].resolver({ status: 200, data: {} });
+      igual([await c, M.motivoNoRecargar()], [true, ''], `(rev68) ${fn}: contestada la cancelación, el freno se suelta`);
+    }
+    {
+      const { M, reg, form } = armarEnvio({ falla: true });
+      M.__set(form('etrade'));
+      await M.ordenPlace();
+      M.cerrarOrden();
+      igual([reg.anotado, M.motivoNoRecargar()], [['error'], ''], '(rev68) un envío que revienta (proxy caído) suelta el freno al terminar (finally): no se queda bloqueada para siempre');
+      const r2 = await M.cancelarOrden(7, '123', 'etrade');
+      igual([r2, M.motivoNoRecargar()], [false, ''], '(rev68) …y una cancelación que revienta, también');
+    }
   }
 
   // ════════════════ 5. el cableado en el fuente ════════════════

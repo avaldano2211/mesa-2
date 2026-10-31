@@ -218,8 +218,17 @@ function campoConTexto(el) {
 // v66 · Lo que impide recargar SOLA ahora: 'corte' (un corte o una venta con cancelación esperando al bróker), 'orden' (una
 // orden en vuelo o con respuesta indeterminada), 'cuadro' (.modal abierto), 'texto' (campo enfocado con algo escrito) o ''.
 // Los dos primeros tampoco los salta «Actualizar ahora»: la recarga mataría la espera de la cancelación o de la respuesta.
+// v66 rev68 · Las escrituras al bróker EN VUELO (enviar una orden o cancelarla, en E*TRADE o Schwab), hasta que su respuesta
+// queda anotada en `ordenes`. El revisor de A1: motivoNoRecargar solo miraba el formulario global (_ord), pero «Cancelar»
+// sigue activo mientras el POST de la orden está en vuelo (el POST no tiene tope) y cerrarOrden pone _ord = null: la
+// re-comprobación de 15 s recargaba con la orden aún en el aire, la fila se quedaba en «preview» (ni «enviada» ni «error»)
+// y no salía el «Verifica en E*TRADE si esa orden entró». Igual al cancelar una orden desde la lista del Copiloto, que no
+// abre cuadro. Este contador no depende de ningún formulario: lo suben ordenPlace, ordenPlaceSchwab, cancelarOrden y
+// cancelarOrdenSchwab al salir hacia el bróker y lo bajan al terminar (finally), con la anotación ya hecha.
+let _escriturasBroker = 0;
 function motivoNoRecargar() {
   if ((typeof _corte !== 'undefined' && _corte && _corte.enCurso) || (typeof _venta !== 'undefined' && _venta && _venta.enCurso)) return 'corte';
+  if (typeof _escriturasBroker !== 'undefined' && _escriturasBroker > 0) return 'orden';   // v66 rev68: aunque ya no haya formulario
   if (typeof _ord !== 'undefined' && _ord && (_ord.enviando || _ord.indeterminado)) return 'orden';
   if (document.querySelector('.modal')) return 'cuadro';
   if (campoConTexto(document.activeElement)) return 'texto';
@@ -8807,6 +8816,7 @@ async function ordenPlace() {
   // ya se cerró o es OTRO (p. ej. un corte), la respuesta se anota y se avisa sin tocar el ajeno.
   const propio = () => _ord === o0;
   o0.enviando = true;
+  _escriturasBroker++;   // v66 rev68: la recarga sola la espera aunque el formulario se cierre con el POST en vuelo
   b.disabled = true; b.textContent = 'Enviando a E*TRADE…';
   let r = null, indeterminado = false;
   try {
@@ -8849,7 +8859,7 @@ async function ordenPlace() {
     }
     if (propio()) { err.textContent = msg; b.disabled = false; b.textContent = 'Enviar orden'; }
     else toast(msg);
-  } finally { o0.enviando = false; }
+  } finally { o0.enviando = false; _escriturasBroker = Math.max(0, _escriturasBroker - 1); }
 }
 
 // Envío a Schwab: POST directo (201 + id en Location). Misma semántica de
@@ -8865,6 +8875,7 @@ async function ordenPlaceSchwab(err, b, o0) {
   };
   const propio = () => _ord === o0;   // ver ordenPlace
   o0.enviando = true;
+  _escriturasBroker++;   // v66 rev68: ver ordenPlace
   b.disabled = true; b.textContent = 'Enviando a Schwab…';
   let r = null, indeterminado = false;
   try {
@@ -8901,7 +8912,7 @@ async function ordenPlaceSchwab(err, b, o0) {
     }
     if (propio()) { err.textContent = msg; b.disabled = false; b.textContent = 'Enviar orden'; }
     else toast(msg);
-  } finally { o0.enviando = false; }
+  } finally { o0.enviando = false; _escriturasBroker = Math.max(0, _escriturasBroker - 1); }
 }
 
 // ---- Copiloto: ÓRDENES EN TU BRÓKER (E*TRADE y Schwab) ----
@@ -8958,6 +8969,7 @@ async function cancelarOrden(id, orderId, broker, op) {
   if (!cr) { toast('Conecta E*TRADE primero'); return false; }
   if (etDiaVencido()) { toast('Sesión de E*TRADE expirada — reconecta'); return false; }
   toast('Cancelando en E*TRADE…');
+  _escriturasBroker++;   // v66 rev68: la recarga sola espera la respuesta (cancelar desde la lista no abre cuadro)
   try {
     const accountIdKey = await etCuentaKey(cr);
     const r = await etPost(cr, '/etrade/orden/cancel', { accountIdKey, orderId: Number(orderId) });
@@ -8974,6 +8986,7 @@ async function cancelarOrden(id, orderId, broker, op) {
     setTimeout(() => ordenesActualizar({ silencioso: true, forzar: true }), 4000);
     return true;
   } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); return false; }
+  finally { _escriturasBroker = Math.max(0, _escriturasBroker - 1); }
 }
 // Cruza las órdenes 'enviadas' con E*TRADE (abiertas + ejecutadas de los últimos
 // 7 días) y actualiza estados; una ENTRADA ejecutada crea la posición y una
@@ -8984,6 +8997,7 @@ async function cancelarOrdenSchwab(id, orderId, op) {
   if (!swCreds()) { toast('Conecta Schwab primero'); return false; }
   if (swVencido()) { toast('Login semanal de Schwab caducado — reconecta'); return false; }
   toast('Cancelando en Schwab…');
+  _escriturasBroker++;   // v66 rev68: ver cancelarOrden
   try {
     const hash = await swCuenta();
     const r = await swPost('/schwab/orden/cancel', { hash, orderId: String(orderId) });
@@ -8997,6 +9011,7 @@ async function cancelarOrdenSchwab(id, orderId, op) {
     setTimeout(() => ordenesActualizar({ silencioso: true, forzar: true }), 4000);
     return true;
   } catch (e) { toast('No pude cancelar: ' + ((e && e.message) || e)); return false; }
+  finally { _escriturasBroker = Math.max(0, _escriturasBroker - 1); }
 }
 // ---- CORTE (Plan 10%): aviso + salida de UN toque, jamás automática ----
 // Nunca un stop del bróker ni OCO: la API de E*TRADE no tiene OCO y un stop suelto

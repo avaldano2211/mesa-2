@@ -219,7 +219,7 @@ function armarSchwab(E) {
     armadoHasta: () => (E.armado ? Date.now() + 60000 : 0), pedirPin: async () => true, etCreds: () => null, etPost: async () => { throw new Error('no debería ir por E*TRADE'); }, mensajeError: () => null, etError: () => null };
   const M = construir(['ordenPreviewSchwab', 'ordenPlaceSchwab', 'ordenPlace', 'propositoDe', 'construirOrdenSchwab', 'osiDe', 'semaforoRango', 'rangoValido', 'filaOrdenSchwab', 'clientOrderIdNuevo',
     'swMensajeError', 'resumenPreviewSchwab', 'totalOrden', 'recortarJson', 'textoBotonPreview'], deps,
-    { consts: ['PREVIEW_SEG', 'SW_K', 'mascaraCuenta', 'num2'], prefijo: 'let _ord = null; function __setOrd(v) { _ord = v; }', extras: ['__setOrd'] });
+    { consts: ['PREVIEW_SEG', 'SW_K', 'mascaraCuenta', 'num2'], prefijo: 'let _ord = null; let _escriturasBroker = 0; function __setOrd(v) { _ord = v; }', extras: ['__setOrd'] });
   const formulario = (x) => Object.assign({ pre: { proposito: 'entrada' }, broker: 'schwab', ctx: { rangos: { SPY: { lo: 200, hi: 400 } }, plan: null }, avisos: [], orden: null, previewIds: null, filaId: null, caduca: 0 }, x || {});
   return { M, reg, E, formulario };
 }

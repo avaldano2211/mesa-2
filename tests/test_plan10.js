@@ -503,7 +503,7 @@ function armarCorte(E) {
     const deps = { $: (s) => nodos[s] || null, armadoHasta: () => (E.armado ? Date.now() + 60000 : 0), pedirPin: async () => { reg.pins++; if (E.durantePin) E.durantePin(); return E.pin; },
       etCreds: () => E.creds, sb, etPost: async (cr, p, body) => { reg.posts.push([p, body]); if (E.durantePost) E.durantePost(); if (E.excepcion) throw new Error(E.excepcion); return E.respuesta; },
       toast: (t) => reg.toasts.push(t), cerrarOrden: () => reg.cerrados++, ruta: () => reg.rutas++, alert: (t) => reg.alerts.push(t), ordenPlaceSchwab: async (...a) => reg.schwab.push(a) };
-    const M = construir(['ordenPlace', 'mensajeError', 'etError', 'recortarJson'], deps, { prefijo: 'let _ord = null; function __setOrd(v) { _ord = v; }', extras: ['__setOrd'] });
+    const M = construir(['ordenPlace', 'mensajeError', 'etError', 'recortarJson'], deps, { prefijo: 'let _ord = null; let _escriturasBroker = 0; function __setOrd(v) { _ord = v; }', extras: ['__setOrd'] });
     const formulario = (x) => Object.assign({ pre: { proposito: 'salida_gtc' }, broker: 'etrade', orden: { orderType: 'OPTN' }, previewIds: [{ previewId: 77 }], filaId: 101, accountIdKey: 'KEY', caduca: Date.now() + 120000, timer: null, estadoFila: 'preview' }, x || {});
     return { M, reg, E, formulario };
   }
