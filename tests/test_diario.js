@@ -1011,7 +1011,7 @@ function sbGrabador(respuestas) {
   assert(/TICKERS/.test(hTk) && /MZ\.tickerAgregar\(\)/.test(hTk) && /MZ\.tickerActivo\('TSLA', true\)/.test(hTk) && /MZ\.tickerActivo\('SPY', false\)/.test(hTk) && /MZ\.tickerMover\('NVDA', -1\)/.test(hTk) && /2 min/.test(hTk) && /necesita historia/.test(hTk) && /Desactivar NO borra/.test(hTk) && !/MERCADO/.test(hTk.split('Los tickers globales')[0]),
     '⚙ Tu cuenta → Tickers: lista con interruptor activo/inactivo y orden, Agregar ticker, y la explicación del worker (2 min desde el 0.1.8, v58) y de la historia; el global no se toca');
   assert(/RANGOS_TABLA\[sym\] \|\| null/.test(FUENTE) && /RANGOS_TABLA\[f\.symbol\] \|\| null/.test(FUENTE) && /RANGOS_TABLA\[e\.symbol\] \|\| null/.test(FUENTE), 'un ticker sin fila en RANGOS_TABLA no rompe nada (todas las lecturas van con || null)');
-  const TR = construir(['textoRangoOrden', 'bandaDelDia'], { esc, fmtFechaNY, RANGOS_TABLA_ANALISIS: '2026-05-19', DIAS_ES: constante('DIAS_ES') });
+  const TR = construir(['textoRangoOrden', 'bandaDelDia', 'rangoValido'], { esc, fmtFechaNY, RANGOS_TABLA_ANALISIS: '2026-05-19', DIAS_ES: constante('DIAS_ES') });
   assert(/no está en la tabla de rangos/.test(TR.textoRangoOrden('ZZZ', null, null, 1)), 'y el formulario de orden lo dice sin reventar');
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════

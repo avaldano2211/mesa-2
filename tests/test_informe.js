@@ -79,7 +79,7 @@ const HOY_FIJO = '2026-10-12';   // lunes
 
   // ════════════════ 3. B1 · el detalle de una señal ════════════════
   {
-    const D = construir(['detalleSenalInforme', 'estrategiaSenal', 'horaNY'], { esc }, { consts: ['decDe', 'ESTRATEGIA_NOMBRE'] });
+    const D = construir(['detalleSenalInforme', 'estrategiaSenal', 'horaNY', 'rangoValido'], { esc }, { consts: ['decDe', 'ESTRATEGIA_NOMBRE'] });
     const meta = { id: 29, symbol: 'META', estrategia_id: 'E8', direccion: 'CALL', titulo: '🐟 CT15A · COMPRAR CALL · META', spot: 736.8, creado_at: '2026-10-12T13:31:27+00:00',
       rango_vivo: { hi: 104.0, lo: 208.0, exp: '2026-10-12', dte: 0, spot: 736.8 },
       payload: { ticket: { ask: 5.45, exp: '2026-10-12', strike: 737.5, direccion: 'CALL', rango: [208, 104] }, detector: 'E8 CT15A · cambio de tendencia en 15 min al alza' } };

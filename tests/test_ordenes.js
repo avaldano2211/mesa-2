@@ -145,7 +145,7 @@ const f = (x) => Object.assign({ symbol: 'spy ', tipo: 'CALL', accion: 'compra',
 
 // ════════════════ 6. filaOrdenDe, propositoDe, semaforoRango, totales y presupuesto ════════════════
 {
-  const F = construir(['filaOrdenDe', 'construirOrden', 'clientOrderIdNuevo', 'propositoDe', 'semaforoRango', 'totalOrden', 'cantidadPorPresupuesto', 'presupuestoTicket', 'recortarJson', 'mensajeError', 'etError'], { presupuestoPct: () => 35 });
+  const F = construir(['filaOrdenDe', 'construirOrden', 'clientOrderIdNuevo', 'propositoDe', 'semaforoRango', 'rangoValido', 'totalOrden', 'cantidadPorPresupuesto', 'presupuestoTicket', 'recortarJson', 'mensajeError', 'etError'], { presupuestoPct: () => 35 });
   const fila = F.filaOrdenDe(f(), F.construirOrden(f()), { proposito: 'entrada', senal_id: 9 });
   igual(fila, { broker: 'etrade', client_order_id: 'mzprueba1', symbol: 'SPY', security_type: 'OPTN', direccion: 'CALL', strike: 769, expiracion: '2026-09-26', accion: 'BUY_OPEN', cantidad: 2, price_type: 'LIMIT', limit_price: 3.3, stop_price: null, offset_value: null, order_term: 'GOOD_UNTIL_CANCEL', proposito: 'entrada', senal_id: 9 }, 'la fila de la bitácora sale de la orden construida, con lo extra fusionado');
   const filaEq = F.filaOrdenDe(f({ tipo: 'EQ' }), F.construirOrden(f({ tipo: 'EQ' })));
@@ -217,7 +217,7 @@ function armarSchwab(E) {
     swPost: async (p, body) => { reg.posts.push([p, body]); if (E.durante) E.durante(p); if (E.excepcion) throw new Error(E.excepcion); return p.endsWith('preview') ? E.preview : E.place; },
     sb, pintarPreviewOrden: (P) => reg.pintadas.push(P), bloquearFormOrden: (v) => reg.bloqueos.push(v), toast: (t) => reg.toasts.push(t), cerrarOrden: () => reg.cerrados++, ruta: () => reg.rutas++, alert: (t) => reg.alerts.push(t),
     armadoHasta: () => (E.armado ? Date.now() + 60000 : 0), pedirPin: async () => true, etCreds: () => null, etPost: async () => { throw new Error('no debería ir por E*TRADE'); }, mensajeError: () => null, etError: () => null };
-  const M = construir(['ordenPreviewSchwab', 'ordenPlaceSchwab', 'ordenPlace', 'propositoDe', 'construirOrdenSchwab', 'osiDe', 'semaforoRango', 'filaOrdenSchwab', 'clientOrderIdNuevo',
+  const M = construir(['ordenPreviewSchwab', 'ordenPlaceSchwab', 'ordenPlace', 'propositoDe', 'construirOrdenSchwab', 'osiDe', 'semaforoRango', 'rangoValido', 'filaOrdenSchwab', 'clientOrderIdNuevo',
     'swMensajeError', 'resumenPreviewSchwab', 'totalOrden', 'recortarJson', 'textoBotonPreview'], deps,
     { consts: ['PREVIEW_SEG', 'SW_K', 'mascaraCuenta', 'num2'], prefijo: 'let _ord = null; function __setOrd(v) { _ord = v; }', extras: ['__setOrd'] });
   const formulario = (x) => Object.assign({ pre: { proposito: 'entrada' }, broker: 'schwab', ctx: { rangos: { SPY: { lo: 200, hi: 400 } }, plan: null }, avisos: [], orden: null, previewIds: null, filaId: null, caduca: 0 }, x || {});

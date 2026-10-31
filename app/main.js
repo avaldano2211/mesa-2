@@ -668,11 +668,14 @@ function detalleSenalInforme(s) {
   const spot = num(s.spot);
   if (spot != null && spot > 0) it.push(`<span>acción al sonar <b>$${esc(spot.toFixed(dec))}</b></span>`);
   const rv = s.rango_vivo && typeof s.rango_vivo === 'object' ? s.rango_vivo : null;
-  const lo = rv ? num(rv.lo) : null, hi = rv ? num(rv.hi) : null;
-  if (lo != null && hi != null) {
+  // v66 (A2): con rangoValido — un lo/hi presente que no es número, o ≤ 0, también es «rango inválido» (antes no salía nada
+  // con un texto y salía «$-5–$100» con un negativo). Faltar (null / vacío) sigue sin pintar la línea.
+  const hay = (v) => v != null && v !== '';
+  if (rv && hay(rv.lo) && hay(rv.hi)) {
     const exp = rv.exp ? ' · exp ' + esc(String(rv.exp).slice(5)) : '';
-    it.push(lo > hi ? `<span>rango óptimo <b>—</b> rango inválido (mín &gt; máx)</span>`
-      : `<span>rango óptimo <b>$${esc(Math.round(lo))}–$${esc(Math.round(hi))}</b> por contrato · por delta${exp}</span>`);
+    it.push(!rangoValido(rv.lo, rv.hi)
+      ? `<span>rango óptimo <b>—</b> rango inválido${Number(rv.lo) > Number(rv.hi) ? ' (mín &gt; máx)' : ''}</span>`
+      : `<span>rango óptimo <b>$${esc(Math.round(Number(rv.lo)))}–$${esc(Math.round(Number(rv.hi)))}</b> por contrato · por delta${exp}</span>`);
   }
   const tk = (s.payload && s.payload.ticket) || null;
   if (tk && num(tk.strike) != null) {
@@ -831,10 +834,22 @@ function cabeceraTicker(sym, compacto, derecha) {
   return `<div class="fila"><h3>${esc(sym)}</h3>
       <span class="tkder">${derecha}${quitar}</span></div>`;
 }
+// v66 (A2, 2026-10-31) · ¿Se puede PINTAR este rango (lo–hi)? Solo si los dos son números finitos, > 0 y lo ≤ hi. La señal
+// CT15A META del 12-oct traía rango_vivo invertido (lo 208 > hi 104): el Informe decía «rango inválido» pero el Copiloto
+// pintaba «Ticket armado: … rango $208–$104» (textoTicket, que no miraba nada). TODA pintura de un rango óptimo (Informe,
+// tarjetas de ticker, Copiloto, registro del fill, formulario de orden, cadena) y todo juicio contra él (semaforoRango,
+// enRangoCadena) pasa por aquí; si no vale, se dice «rango inválido» y JAMÁS se inventa un orden (ni se intercambian lo y
+// hi: un rango invertido es un dato malo, no uno al revés). Un hueco (null, '') no es un 0, un booleano no es un número. PURA.
+function rangoValido(lo, hi) {
+  const n = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) ? Number(v) : NaN;
+  const a = n(lo), b = n(hi);
+  return Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0 && a <= b;
+}
 // Línea «Rango óptimo del día» de la tarjeta: manda el método de la academia, luego
 // la tabla, luego el rango por delta (componerRango). Un rango con lo > hi (el
 // worker lo calculó con cotizaciones fuera de sesión) se muestra como «—», nunca
 // invertido (2026-09-14: TSLA salía «$108–$56» y NVDA «$7–$10»).
+// v66 (A2): la regla de qué rango se puede pintar es rangoValido (también ≤ 0 es inválido).
 function textoRangoTarjeta(p, sym) {
   p = p || {};
   const r = componerRango(p.rango_vivo || null, p.rango_academia || null, RANGOS_TABLA[sym] || null);
@@ -845,7 +860,7 @@ function textoRangoTarjeta(p, sym) {
   const extra = [];
   if (d && d.exp) extra.push('exp ' + esc(String(d.exp).slice(5)));
   if (d && d.spot != null) extra.push('spot $' + esc(d.spot));
-  if (!(Number.isFinite(lo) && Number.isFinite(hi)) || lo > hi) {
+  if (!rangoValido(r.lo, r.hi)) {
     return `<div class="rango"><span>Rango óptimo del día</span><b class="mono">—</b>
       <span class="fresco">rango inválido (cotizaciones fuera de sesión)</span></div>`;
   }
@@ -1587,7 +1602,9 @@ function hlinesLista(pk, tg, dec) {
   const { techo, piso } = techoPisoProximos(nv, nv.spot);
   let h = '';
   if (tg && tg.target != null) {
-    const ab = (tg.target_bajo != null || tg.target_alto != null) ? ` · ${f(tg.target_bajo)}–${f(tg.target_alto)}` : '';
+    // v66 (A2): con los dos extremos, el bajo–alto solo se pinta si vale (rangoValido); con uno solo, el otro es «—»
+    const ab = (tg.target_bajo != null && tg.target_alto != null && !rangoValido(tg.target_bajo, tg.target_alto)) ? ' · bajo–alto: rango inválido'
+      : (tg.target_bajo != null || tg.target_alto != null) ? ` · ${f(tg.target_bajo)}–${f(tg.target_alto)}` : '';
     h += it('var(--rojo)', `target $${esc(f(tg.target))}`, esc((tg.fuente || 'finviz') + (tg.fecha ? ' · ' + fecha(tg.fecha) : '') + ab));
   }
   // El curso marca POCAS líneas y las recorre al romperse («el gráfico no puede
@@ -1609,7 +1626,10 @@ function hlinesLista(pk, tg, dec) {
   // los swings de DÍA no son H-lines en el curso (las edge lines se marcan en hora)
   if (td) h += it('var(--tx2)', 'referencias de día (no son H-lines)', esc(td));
   if (pd) h += it('var(--tx2)', 'referencias de día (no son H-lines)', esc(pd));
-  if (nv.cierre_ayer != null) h += it('var(--oro)', `cierre de ayer $${esc(f(nv.cierre_ayer))}`, (nv.max_ayer != null || nv.min_ayer != null) ? `ayer ${esc(f(nv.min_ayer))}–${esc(f(nv.max_ayer))}` : '');
+  // v66 (A2): el mínimo–máximo de ayer, con los dos, solo se pinta si vale (rangoValido); jamás invertido
+  const ayerRango = (nv.max_ayer != null && nv.min_ayer != null && !rangoValido(nv.min_ayer, nv.max_ayer)) ? 'ayer: rango inválido'
+    : (nv.max_ayer != null || nv.min_ayer != null) ? `ayer ${esc(f(nv.min_ayer))}–${esc(f(nv.max_ayer))}` : '';
+  if (nv.cierre_ayer != null) h += it('var(--oro)', `cierre de ayer $${esc(f(nv.cierre_ayer))}`, ayerRango);
   if (nv.apertura_hoy != null) h += it('var(--tx3)', `apertura de hoy $${esc(f(nv.apertura_hoy))}`, '');
   const s = nv.salto;
   if (s && s.desde != null && s.hasta != null) h += it('var(--oro)', `salto ${esc(s.lado || '')} $${esc(f(s.desde))} → $${esc(f(s.hasta))}`,
@@ -2137,7 +2157,12 @@ function preOrdenDeSenal(s) {
 function textoTicket(s) {
   const tk = (s.payload && s.payload.ticket) || null;
   if (!tk || tk.strike == null) return '';
-  const rango = (tk.rango && tk.rango[0] != null) ? ` · rango $${Math.round(tk.rango[0])}–$${Math.round(tk.rango[1])}` : '';
+  // v66 (A2): el rango del ticket es el rango_vivo de la señal ([lo, hi] del vigilante). La CT15A META del 12-oct lo traía
+  // invertido y aquí salía «rango $208–$104» mientras el Informe decía «rango inválido»: ahora pasa por rangoValido.
+  const r = Array.isArray(tk.rango) ? tk.rango : null;
+  const hay = (v) => v != null && v !== '';
+  const rango = (r && (hay(r[0]) || hay(r[1])))
+    ? (rangoValido(r[0], r[1]) ? ` · rango $${Math.round(Number(r[0]))}–$${Math.round(Number(r[1]))}` : ' · rango inválido') : '';
   return `<div class="mut mono" style="margin-top:6px">Ticket armado: ${esc(s.symbol)} ${esc(s.direccion || '')} ${esc(tk.strike)} · vence ${esc(tk.exp || '—')}${tk.ask != null ? ' · ask $' + Number(tk.ask).toFixed(2) : ''}${rango}</div>`;
 }
 function tarjetaSenal(s, posic, pl) {
@@ -2582,7 +2607,8 @@ function abrirFill(pre) {
     // Rango invertido (cotizaciones fuera de sesión): NO juzgar. Con lo>hi el
     // borde sale negativo y una prima que está dentro se marcaba «FUERA del
     // rango», y ese veredicto se guardaba en posiciones y contaba en Disciplina.
-    if (!(Number(rango.lo) <= Number(rango.hi))) {
+    // v66 (A2): con rangoValido (también un lo ≤ 0 o que no es número: el borde salía con cualquier cosa)
+    if (!rangoValido(rango.lo, rango.hi)) {
       rh.textContent = 'Rango óptimo: — (rango inválido, cotizaciones fuera de sesión)'; rh.dataset.n = ''; return;
     }
     const lo = Math.round(rango.lo), hi = Math.round(rango.hi);
@@ -7367,7 +7393,7 @@ function construirOrden(f) {
 // registro del fill): 'ok' | 'aviso' (en el borde, 15 %) | 'alto' (FUERA) | null.
 function semaforoRango(prima, rango) {
   if (!rango || rango.lo == null || rango.hi == null || !(prima > 0)) return null;
-  if (!(Number(rango.lo) <= Number(rango.hi))) return null;   // rango invertido: no se juzga
+  if (!rangoValido(rango.lo, rango.hi)) return null;   // rango invertido, ≤ 0 o no numérico: no se juzga (v66 A2: rangoValido)
   const lo = Math.round(rango.lo), hi = Math.round(rango.hi), cent = prima * 100, borde = (hi - lo) * 0.15;
   if (cent < lo - borde || cent > hi + borde) return 'alto';
   if (cent < lo || cent > hi) return 'aviso';
@@ -7489,17 +7515,25 @@ function textoRangoOrden(sym, vivo, tabla, dia) {
   const partes = [];
   const ra = vivo && vivo.academia ? vivo.academia : null;
   const delta = vivo && vivo.delta ? vivo.delta : (vivo && !vivo.academia ? vivo : null);
-  if (ra && ra.lo != null) {
+  // v66 (A2): cada rango que se pinta pasa por rangoValido; el que no vale dice «rango inválido» con su fuente, sin números
+  const invalido = (que) => `<b style="color:var(--oro)">Rango óptimo —</b> ${que} · rango inválido`;
+  if (ra && ra.lo != null && !rangoValido(ra.lo, ra.hi)) {
+    partes.push(invalido('método de la academia'));
+  } else if (ra && ra.lo != null) {
     const fecha = ra.fecha ? esc(fmtFechaNY(String(ra.fecha) + 'T12:00:00Z')) : '';
     const el = Array.isArray(ra.elegidos) ? ra.elegidos.map(e => `${esc(e.strike)} (${d$(e.ask)}, +${esc(Math.round(Number(e.pct) || 0))}%)`).join(' y ') : '';
     const tipo = ra.dia_tipo === 'fuerte' ? ` · día fuerte (${esc(Number(ra.mov_pct) > 0 ? '+' : '')}${esc(ra.mov_pct)}%)` : ra.dia_tipo === 'canonico' ? ' · ejercicio de las 11:45' : '';
     partes.push(`<b style="color:var(--oro)">Rango óptimo ${d$(ra.lo)}–${d$(ra.hi)}</b> por contrato · método de la academia · con ${esc(String(ra.lado || '').toUpperCase())}s${fecha ? ' del ' + fecha : ''}${tipo}${ra.exp ? ' · exp ' + esc(String(ra.exp).slice(5)) : ''}${el ? ' · más valorizados: ' + el : ''}`);
   } else if (vivo && vivo.fuente === 'tabla') {
-    partes.push(`<b style="color:var(--oro)">Rango óptimo ${d$(vivo.lo)}–${d$(vivo.hi)}</b> por contrato · tabla de la academia (el worker hace el ejercicio del curso a las 11:45 ET)`);
+    partes.push(rangoValido(vivo.lo, vivo.hi)
+      ? `<b style="color:var(--oro)">Rango óptimo ${d$(vivo.lo)}–${d$(vivo.hi)}</b> por contrato · tabla de la academia (el worker hace el ejercicio del curso a las 11:45 ET)`
+      : invalido('tabla de la academia'));
   } else {
     partes.push('Rango óptimo (método academia): el worker aún no lo calculó para ' + esc(sym));
   }
-  if (delta && delta.lo != null && delta.hi != null) {
+  if (delta && delta.lo != null && delta.hi != null && !rangoValido(delta.lo, delta.hi)) {
+    partes.push('Referencia por delta 0.15–0.30: rango inválido (cotizaciones fuera de sesión)');
+  } else if (delta && delta.lo != null && delta.hi != null) {
     let extra = delta.exp ? ' · vence ' + esc(String(delta.exp).slice(5)) : '';
     if (delta.strike_put != null && delta.prima_put != null) extra += ` · PUT ${esc(delta.strike_put)} ${d$(delta.prima_put)}`;
     if (delta.strike_call != null && delta.prima_call != null) extra += ` · CALL ${esc(delta.strike_call)} ${d$(delta.prima_call)}`;
@@ -7580,6 +7614,7 @@ function avisosOrden(f, ctx) {
   // ticker: una QQQ/SPX/META abierta antes del cambio de lista se tiene que poder vender
   if (sym && !TICKERS.includes(sym) && !(f.accion === 'venta' && ctx.posicionId)) av.push(`${sym} no está en tus ${TICKERS.length} tickers (${TICKERS.join(', ')})`);
   if (!esEntrada) return av;
+  // semaforoRango ya devuelve null con un rango que no vale (rangoValido): un rango invertido jamás se pinta en el aviso
   if (esOpt && precio > 0 && ctx.rango && ctx.rango.lo != null && semaforoRango(precio, ctx.rango) === 'alto') {
     av.push(`Prima $${(precio * 100).toFixed(0)} FUERA del rango óptimo $${Math.round(ctx.rango.lo)}–$${Math.round(ctx.rango.hi)} — así se perdió en agosto`);
   }
@@ -7951,8 +7986,9 @@ function parsearCadena(resp) {
   return { filas, estado: String(R.quoteType || '').toUpperCase(), near: num2(R.nearPrice), exp };
 }
 // ¿La prima (mid × 100 por contrato) cae en el rango óptimo del ticker?
+// v66 (A2): con un rango que no vale (rangoValido) no se marca nada: con lo ≤ 0 casi toda la cadena salía «en rango».
 function enRangoCadena(o, rango) {
-  if (!o || !rango || rango.lo == null || rango.hi == null) return null;
+  if (!o || !rango || rango.lo == null || rango.hi == null || !rangoValido(rango.lo, rango.hi)) return null;
   const mid = (o.bid != null && o.ask != null) ? (o.bid + o.ask) / 2 : o.last;
   if (mid == null) return null;
   const c = mid * 100;
@@ -8057,7 +8093,9 @@ function pintarCadena() {
   const sel = vs.length ? `<select id="oCadExp" onchange="MZ.cadenaExp(this.value)" style="width:auto;padding:5px 7px;font-size:12px">${
     vs.slice(0, 14).map(v => `<option value="${v.ymd}" ${v.ymd === _ord.cadenaExp ? 'selected' : ''}>${v.ymd.slice(5)}${/WEEK/i.test(v.tipo) ? ' s' : ''}</option>`).join('')}</select>` : '';
   const rango = (_ord.ctx && _ord.ctx.rangos[f.symbol]) || null;
-  const rangoTxt = rango && rango.lo != null ? ` · rango óptimo $${Math.round(rango.lo)}–$${Math.round(rango.hi)}${rango.fuente === 'academia' ? ' (método academia)' : rango.fuente === 'tabla' ? ' (tabla academia)' : ' (delta)'}` : '';
+  // v66 (A2): la leyenda de la cadena tampoco pinta un rango que no vale (rangoValido)
+  const rangoTxt = !(rango && rango.lo != null) ? '' : !rangoValido(rango.lo, rango.hi) ? ' · rango óptimo: rango inválido'
+    : ` · rango óptimo $${Math.round(rango.lo)}–$${Math.round(rango.hi)}${rango.fuente === 'academia' ? ' (método academia)' : rango.fuente === 'tabla' ? ' (tabla academia)' : ' (delta)'}`;
   let h = `<div class="cadena"><div class="fila" style="margin-bottom:4px">
     <span class="mut"><b style="color:var(--tx)">${esc(f.symbol)}</b> ${q.last != null ? '$' + q.last.toFixed(2) : ''} ${(q.bid != null && q.ask != null) ? `<span class="fresco">${q.bid.toFixed(2)}/${q.ask.toFixed(2)}</span>` : ''} ${vivo}</span>
     <span style="display:flex;gap:8px;align-items:center">${sel}<a href="#" onclick="MZ.cadenaRefrescar();return false" style="font-size:13px">↻</a></span></div>`;

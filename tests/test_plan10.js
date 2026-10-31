@@ -139,7 +139,7 @@ const planMod = (sesion, almacen) => construir(['planActivo', 'planFilaCache', '
 
 // ════════════════ 4. avisosOrden por plan ════════════════
 {
-  const A = construir(['avisosOrden', 'semaforoRango', 'requiereOverride'], { usd }, { consts: ['PLANES', 'TICKERS', 'OPS_SEMANA', 'TAMANO_PCT', 'SPREAD_MAX_PCT'] });
+  const A = construir(['avisosOrden', 'semaforoRango', 'rangoValido', 'requiereOverride'], { usd }, { consts: ['PLANES', 'TICKERS', 'OPS_SEMANA', 'TAMANO_PCT', 'SPREAD_MAX_PCT'] });
   const P35 = A.PLANES.PLAN_35, P10 = A.PLANES.PLAN_10;
   const f = (x) => Object.assign({ symbol: 'AAPL', tipo: 'CALL', accion: 'compra', strike: 230, expiracion: '2026-10-02', cantidad: 1, priceType: 'LIMIT', limitPrice: 0.5, orderTerm: 'DAY' }, x || {});
   igual(A.avisosOrden(f(), { plan: P35 }), [], 'una compra normal en un ticker de la lista no avisa nada');
@@ -429,7 +429,7 @@ function armarCorte(E) {
       sesionActiva: E.uid ? { user: { id: E.uid } } : null, pintarArmadoOrden: () => {}, planActivo: () => ({ id: 'PLAN_35', gtcPct: 35, stopPct: null }),
       etCuentaKey: async () => 'KEY', etPost: async (cr, p, body) => { reg.posts.push([p, body]); if (E.durantePost) E.durantePost(); return E.respuesta; },
       texto401Ordenes: (m) => '401: ' + m, sb, pintarPreviewOrden: (P) => reg.pintadas.push(P), bloquearFormOrden: (v) => reg.bloqueos.push(v) };
-    const M = construir(['ordenPreview', 'validarOrden', 'requiereOverride', 'propositoDe', 'construirOrden', 'clientOrderIdNuevo', 'semaforoRango',
+    const M = construir(['ordenPreview', 'validarOrden', 'requiereOverride', 'propositoDe', 'construirOrden', 'clientOrderIdNuevo', 'semaforoRango', 'rangoValido',
       'mensajeError', 'etError', 'filaOrdenDe', 'recortarJson', 'textoBotonPreview'], deps,
       { consts: ['PREVIEW_SEG', 'PRICE_TYPES'], prefijo: 'let _ord = null; function __setOrd(v) { _ord = v; } function __getOrd() { return _ord; }', extras: ['__setOrd', '__getOrd'] });
     const formulario = (x) => Object.assign({ pre: { proposito: 'salida_gtc', posicion_id: 5, broker: 'etrade' }, broker: 'etrade', ctx: { rangos: {}, plan: null }, avisos: E.avisos, orden: null, previewIds: null }, x || {});

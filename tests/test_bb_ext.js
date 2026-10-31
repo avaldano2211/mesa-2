@@ -299,7 +299,7 @@ if (CH63) {
 // la hoja: pintarChart con las preferencias de verdad (localStorage), sus nodos falsos y las funciones reales
 function hoja(almacen, fila) {
   const nodos = {}; ['#chSel', '#chFresco', '#chSvg', '#chLectura', '#chHlines', '#modalChart', '#tgT', '#tgA', '#tgB', '#tgF', '#tgS'].forEach(id => { nodos[id] = nodo(); });
-  const P = construir(['pintarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'serieExtM', 'mediasExtM',
+  const P = construir(['pintarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'rangoValido', 'serieExtM', 'mediasExtM',
     'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
     $: (s) => nodos[s] || null, localStorage: localStorageFalso(almacen), esc, haceCuanto, document: { activeElement: null } },
   { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', '_velas', '_targets'], prefijo: 'let _ch = { sym: "AAPL", gen: 0, timer: null };' });

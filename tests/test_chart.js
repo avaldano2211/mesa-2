@@ -20,7 +20,7 @@ function velas(n, op) {
   }
   return out;
 }
-const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'lecturaChart', 'hlinesLista', 'fmtFechaNY'],
+const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'lecturaChart', 'hlinesLista', 'rangoValido', 'fmtFechaNY'],
   { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
 
 // ════════════════ 1. bollingerApp / smaApp / techoPisoProximos ════════════════
@@ -154,7 +154,7 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'medias
 
 // ════════════════ 5. textoRangoTarjeta: rango inválido (lo > hi) → «—» ════════════════
 {
-  const R = construir(['textoRangoTarjeta', 'componerRango'], { esc }, { consts: ['RANGOS_TABLA'] });
+  const R = construir(['textoRangoTarjeta', 'componerRango', 'rangoValido'], { esc }, { consts: ['RANGOS_TABLA'] });
   igual(R.textoRangoTarjeta({}, 'ZZZZ'), '', 'sin rango de ninguna fuente no sale la línea');
   const a = R.textoRangoTarjeta({ rango_academia: { lo: 40, hi: 80 }, rango_vivo: { lo: 30, hi: 60, exp: '2026-10-02', spot: 231.5 } }, 'AAPL');
   assert(/\$40–\$80/.test(a) && /método academia/.test(a) && /exp 10-02/.test(a) && /spot \$231\.5/.test(a), 'manda el método de la academia; el rango por delta aporta exp y spot', a);
@@ -266,7 +266,7 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'medias
     const pk = { ticker: 'AAPL', tf: 'm15', velas: velas(40), niveles: { spot: 100.4 } };
     let velasResp = { AAPL: { payload: pk, actualizado_at: new Date().toISOString() } }, esperarVelas = null;
     const reg = { cargasVelas: [] };
-    const P = construir(['pintarChart', 'cargarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'serieExtM', 'mediasExtM',
+    const P = construir(['pintarChart', 'cargarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'rangoValido', 'serieExtM', 'mediasExtM',
       'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
       $: (s) => nodos[s] || null, localStorage: localStorageFalso({}), esc, haceCuanto, document: { activeElement: nodos['#tgT'] },
       cargarVelas: async (syms, tf, forzar) => { reg.cargasVelas.push([syms, tf, forzar]); if (esperarVelas) await esperarVelas.promesa; return velasResp; },
