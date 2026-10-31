@@ -209,6 +209,18 @@
   .card.quitada{background:transparent;border-style:dashed}
   .card.quitada .tenue{opacity:.55}
   .card.quitada .btnquitar,.vacio .btnquitar{color:var(--oro);border-color:rgba(231,181,77,.45)}
+  /* v66 (A1): la franja discreta de «versión nueva» (arriba, justo debajo de la cabecera para no tapar ⚙ ni la calculadora, y
+     por encima de un cuadro abierto: .modal es 50-60) con «Actualizar ahora» y ✕, y la marca «v65 → v66» junto a la fecha de
+     la cabecera (solo mientras haya una pendiente) */
+  .vernueva{position:fixed;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top) + 64px);z-index:70;
+    display:flex;align-items:center;gap:10px;width:max-content;max-width:calc(100vw - 32px);box-sizing:border-box;
+    background:var(--card);color:var(--tx);border:1px solid rgba(231,181,77,.45);border-radius:12px;
+    padding:7px 8px 7px 12px;font-size:12px;font-weight:600;line-height:1.35;box-shadow:0 6px 20px rgba(0,0,0,.3)}
+  .vernueva span{flex:1;min-width:0}
+  .vernueva button{flex:none;background:var(--oro);color:#0B0E14;border:0;border-radius:9px;padding:7px 10px;
+    font:700 12px var(--sans);cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+  .vernueva .vercerrar{background:transparent;color:var(--tx2);padding:7px 6px;font-size:13px}
+  .vercab{color:var(--oro);margin-right:6px;letter-spacing:.02em}
   .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:60;
     background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:13px;font-weight:600;
     box-shadow:0 6px 20px rgba(0,0,0,.3);animation:fade .15s ease}
@@ -474,7 +486,7 @@
   <div id="app" class="oculto">
     <header class="top">
       <div>
-        <div class="fecha" id="fecha">—</div>
+        <div class="fecha"><span class="vercab oculto" id="verCab"></span><span id="fecha">—</span></div>
         <div class="t" id="titulo">El informe de la mañana</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
@@ -488,7 +500,7 @@
   </div>
 
   <script src="./vendor/supabase.js"></script>
-  <script src="./config.js?v=65"></script>
-  <script src="./app/main.js?v=65"></script>
+  <script src="./config.js?v=66"></script>
+  <script src="./app/main.js?v=66"></script>
 </body>
 </html>

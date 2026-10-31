@@ -809,8 +809,8 @@ function armarLibro(canon, op) {
   {
     const raiz = path.join(path.dirname(process.argv[2]), '..');
     const html = fs.readFileSync(path.join(raiz, 'index.html'), 'utf8'), sw = fs.readFileSync(path.join(raiz, 'sw.js'), 'utf8');
-    assert(/config\.js\?v=65/.test(html) && /app\/main\.js\?v=65/.test(html), 'index.html carga config.js?v=65 y app/main.js?v=65');
-    assert(/const VER = 'mesa2-v54';/.test(sw), 'sw.js VER mesa2-v54');
+    assert(/config\.js\?v=66/.test(html) && /app\/main\.js\?v=66/.test(html), 'index.html carga config.js?v=66 y app/main.js?v=66');
+    assert(/const VER = 'mesa2-v55';/.test(sw), 'sw.js VER mesa2-v55');
   }
 
   C.resumen();

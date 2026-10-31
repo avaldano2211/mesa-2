@@ -2,7 +2,7 @@
    de la mesa privada: JAMÁS cachear datos de mercado. Toda petición a
    *.supabase.co se deja pasar a la red SIEMPRE — una foto vieja no puede
    disfrazarse del mercado de ahora. Offline: abre el shell y falla honesto. */
-const VER = 'mesa2-v54';
+const VER = 'mesa2-v55';
 const SHELL = [
   './', './index.html', './app/main.js',
   './vendor/supabase.js', './manifest.webmanifest',
@@ -25,9 +25,19 @@ self.addEventListener('fetch', (e) => {
   // la página de retorno del OAuth de Schwab va SIEMPRE a la red: nunca cachear ?code=
   if (url.pathname.endsWith('/oauth-schwab.html')) return;
   // Shell: network-first con respaldo a caché (offline abre la app).
+  // v55 (app v66, A1 «no lo veo publicado»): la navegación, index.html, app/main.js y config.js van a la red con cache
+  // 'no-cache' (se revalidan con el servidor: un 304 si no cambiaron). La caché HTTP del navegador (max-age 10 min en GitHub
+  // Pages) ya no puede devolver un index.html con el ?v= viejo —y la recarga por versión nueva traer otra vez la vieja— ni un
+  // main.js?v=NN de antes de un arreglo publicado con el mismo número. Y lo pedido con cache 'no-store' (la pregunta de
+  // versión, index.html?nv=…) no se guarda: antes cada pregunta dejaba una copia en la caché del shell.
+  const shell = e.request.mode === 'navigate' || /\/(index\.html|app\/main\.js|config\.js)?$/.test(url.pathname);
+  let pet = e.request;
+  if (shell && e.request.method === 'GET' && e.request.cache !== 'no-store') {
+    try { pet = new Request(e.request, { cache: 'no-cache' }); } catch (_) { pet = e.request; }
+  }
   e.respondWith(
-    fetch(e.request).then(r => {
-      if (r.ok && e.request.method === 'GET' && url.origin === location.origin) {
+    fetch(pet).then(r => {
+      if (r.ok && e.request.method === 'GET' && url.origin === location.origin && e.request.cache !== 'no-store') {
         const cp = r.clone(); caches.open(VER).then(c => c.put(e.request, cp));
       }
       return r;

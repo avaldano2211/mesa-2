@@ -24,6 +24,8 @@ const VERSION_APP = (() => {
   try { const m = /[?&]v=(\d+)/.exec((document.currentScript && document.currentScript.src) || ''); return m ? Number(m[1]) : 0; }
   catch (_) { return 0; }
 })();
+// v66 (A1): el instante en que se cargó ESTE código (⚙ Tu cuenta lo dice: una pestaña abierta desde hace días se delata)
+const VERSION_CARGADA_MS = Date.now();
 const TABS = [
   { id: 'informe',    lbl: 'Informe',    icon: 'M4 5h13v14H6a2 2 0 0 1-2-2z M17 8h3v9a2 2 0 0 1-2 2h-1 M7.5 9h6M7.5 12.5h6M7.5 16h6' },
   { id: 'tickers',    lbl: 'Tickers',    icon: 'M6 5.5v13 M12 3.5v15 M18 7.5v11' },
@@ -126,8 +128,9 @@ function arrancar(session) {
     suscribir();
     if (timer) clearInterval(timer);
     timer = setInterval(ruta, 60000); // respaldo por si Realtime cae
-    // versión nueva: al arrancar y cada 10 min (en window para no depender del orden de carga)
-    if (!window._mzTimerVersion) window._mzTimerVersion = setInterval(buscarVersionNueva, 10 * 60000);
+    // versión nueva: al arrancar y cada 5 min CON LA MESA A LA VISTA (v66; antes 10 min). En window para no depender del
+    // orden de carga; oculta no se pregunta (al volver lo hace visibilitychange). Además: focus, online y pageshow (abajo).
+    if (!window._mzTimerVersion) window._mzTimerVersion = setInterval(() => { if (document.visibilityState !== 'hidden') buscarVersionNueva(); }, VERSION_CADA_MS);
     setTimeout(buscarVersionNueva, 5000);
     setTimeout(reanudarLoginEtrade, 400);   // login de E*TRADE a medias (PWA recargada durante el 2FA)
     // v52: catálogo de tickers de la base (respaldo: TICKERS_RESPALDO); si cambia, se redibuja
@@ -159,28 +162,148 @@ window.addEventListener('hashchange', ruta);
 // registró ni una lectura de ticker_velas desde la app). Se compara la versión
 // que corre con la que publica index.html y, si hay una más nueva, se recarga
 // en cuanto no haya ningún cuadro abierto: jamás a mitad de una orden.
+// v66 (A1, «no lo veo publicado», Andrés 2026-10-31: la v65 se publicó el 30-oct y en la computadora seguía la v64). En la
+// computadora la pestaña o la PWA pasa horas o días VISIBLE (no hay visibilitychange) y la recarga podía quedarse esperando
+// sin decir nada. Ahora:
+//   · se pregunta al arrancar (5 s), cada 5 min con la Mesa a la vista, al volver (visibilitychange), en focus, en online y
+//     en pageshow desde el bfcache; un mínimo de 15 s entre preguntas que contestaron (al volver llegan tres eventos juntos)
+//   · nunca se recarga sola con un cuadro abierto (.modal), con una salida en curso (corte o venta con cancelación), con una
+//     orden en vuelo ni con un campo de texto enfocado con algo escrito: entonces una franja discreta lo dice («Hay una
+//     versión nueva (vNN): se actualiza al cerrar el cuadro») con «Actualizar ahora», y la cabecera, junto a la fecha,
+//     «v65 → v66» (solo mientras haya una pendiente). ⚙ Tu cuenta dice siempre qué versión corre y desde cuándo.
+//   · sin bucles: si tras recargar sigue la vieja (caché del navegador o del service worker), como mucho 1 recarga por
+//     versión cada 10 min (sessionStorage); a la segunda se pide al service worker que se actualice y se dice «Cierra y
+//     vuelve a abrir la Mesa para la vNN».
+const VERSION_CADA_MS = 5 * 60000;               // con la Mesa a la vista
+const VERSION_MIN_MS = 15000;                    // entre dos preguntas que contestaron
+const VERSION_ESPERA_MS = 15000;                 // con la recarga bloqueada, se vuelve a mirar cada 15 s
+const VERSION_RECARGA_K = 'mz_recarga_version';  // sessionStorage: { v, ts } de la última recarga por versión nueva
+const VERSION_RECARGA_VENTANA_MS = 10 * 60000;   // como mucho 1 recarga por versión cada 10 min
 function versionPublicada(html) {
   const m = /app\/main\.js\?v=(\d+)/.exec(String(html || ''));
   return m ? Number(m[1]) : 0;
 }
 let _buscandoVersion = false, _versionPendiente = 0;
+// ultima: cuándo contestó la última pregunta · timer: la re-comprobación de 15 s ya programada (una sola) · atascada: la
+// versión por la que ya se recargó hace < 10 min y sigue sin llegar (se pidió al SW que se actualice) · oculta: «vNN|estado»
+// de la franja que Andrés cerró con ✕ (vuelve a salir si cambia la versión o el motivo; la marca de la cabecera se queda)
+const _verEstado = { ultima: 0, timer: 0, atascada: 0, oculta: '' };
 async function buscarVersionNueva() {
   if (_buscandoVersion || !VERSION_APP) return;
+  if (_verEstado.ultima && Date.now() - _verEstado.ultima < VERSION_MIN_MS) return;   // v66: focus + pageshow + visibilitychange = una
   _buscandoVersion = true;
   try {
     const r = await fetch('./index.html?nv=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) return;
     const v = versionPublicada(await r.text());
+    _verEstado.ultima = Date.now();               // solo una respuesta buena cuenta para el mínimo: sin red se reintenta
     if (v > VERSION_APP) { _versionPendiente = v; recargarSiSePuede(); }
   } catch (_) {
     // sin red: se vuelve a mirar en la próxima ocasión
   } finally { _buscandoVersion = false; }
 }
+// v66 · ¿Hay algo escrito en el campo enfocado? Un input de texto (no casillas ni botones), un textarea o un contenteditable
+// con algo que no sea espacio. Recargar ahí se lo come. PURA.
+function campoConTexto(el) {
+  if (!el) return false;
+  const tag = String(el.tagName || '').toUpperCase();
+  if (tag === 'TEXTAREA') return String(el.value == null ? '' : el.value).trim() !== '';
+  if (tag === 'INPUT') {
+    const t = String(el.type || 'text').toLowerCase();
+    if (['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image', 'hidden'].includes(t)) return false;
+    return String(el.value == null ? '' : el.value).trim() !== '';
+  }
+  return !!el.isContentEditable && String(el.textContent || '').trim() !== '';
+}
+// v66 · Lo que impide recargar SOLA ahora: 'corte' (un corte o una venta con cancelación esperando al bróker), 'orden' (una
+// orden en vuelo o con respuesta indeterminada), 'cuadro' (.modal abierto), 'texto' (campo enfocado con algo escrito) o ''.
+// Los dos primeros tampoco los salta «Actualizar ahora»: la recarga mataría la espera de la cancelación o de la respuesta.
+function motivoNoRecargar() {
+  if ((typeof _corte !== 'undefined' && _corte && _corte.enCurso) || (typeof _venta !== 'undefined' && _venta && _venta.enCurso)) return 'corte';
+  if (typeof _ord !== 'undefined' && _ord && (_ord.enviando || _ord.indeterminado)) return 'orden';
+  if (document.querySelector('.modal')) return 'cuadro';
+  if (campoConTexto(document.activeElement)) return 'texto';
+  return '';
+}
+// v66 · El freno del bucle (sessionStorage, por pestaña): ¿ya se recargó por la versión v hace menos de 10 min? Si seguimos
+// en la vieja es que la recarga trajo la vieja (caché): no se insiste. Sin sessionStorage (bloqueado), como antes.
+function recargaYaIntentada(v) {
+  try {
+    const r = JSON.parse(sessionStorage.getItem(VERSION_RECARGA_K) || 'null');
+    const dt = r ? Date.now() - Number(r.ts) : NaN;
+    return !!r && Number(r.v) === Number(v) && dt >= 0 && dt < VERSION_RECARGA_VENTANA_MS;
+  } catch (_) { return false; }
+}
+function anotarRecarga(v) { try { sessionStorage.setItem(VERSION_RECARGA_K, JSON.stringify({ v: Number(v), ts: Date.now() })); } catch (_) {} }
+// v66 · Que el service worker vuelva a mirar sw.js ya (no al día siguiente): con la v55 del SW la navegación va con no-cache.
+function pedirActualizarSW() {
+  try {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistration) return;
+    navigator.serviceWorker.getRegistration().then(r => { if (r && r.update) return r.update(); }).catch(() => {});
+  } catch (_) {}
+}
 function recargarSiSePuede() {
   if (!_versionPendiente) return;
-  if (document.querySelector('.modal') || (typeof _corte !== 'undefined' && _corte.enCurso)) { setTimeout(recargarSiSePuede, 15000); return; }   // cuadro abierto o corte en curso: esperar
+  const motivo = motivoNoRecargar();
+  if (motivo) {                                   // cuadro, salida, orden o texto: esperar (una sola re-comprobación a la vez)
+    franjaVersion(motivo);
+    if (!_verEstado.timer) _verEstado.timer = setTimeout(() => { _verEstado.timer = 0; recargarSiSePuede(); }, VERSION_ESPERA_MS);
+    return;
+  }
+  if (recargaYaIntentada(_versionPendiente)) {    // ya se recargó por ella y sigue la vieja: nada de bucles
+    if (_verEstado.atascada !== _versionPendiente) { _verEstado.atascada = _versionPendiente; pedirActualizarSW(); }
+    franjaVersion('atascada');
+    return;
+  }
+  anotarRecarga(_versionPendiente);
   toast('Actualizando la Mesa a la versión ' + _versionPendiente + '…');
   setTimeout(() => location.reload(), 700);
+}
+// v66 · La franja discreta de arriba, debajo de la cabecera (no tapa ⚙ ni la calculadora) y encima de un cuadro abierto
+// (z-index sobre .modal), y la marca de la cabecera. estado: un motivoNoRecargar, 'atascada' o '' (la quita). «Actualizar
+// ahora» no sale mientras una salida o una orden esperan; ✕ la oculta (ocultarFranjaVersion).
+function franjaVersion(estado) {
+  let el = $('#verNueva');
+  const v = _versionPendiente;
+  if (!estado || !v || _verEstado.oculta === v + '|' + estado) { if (el) el.remove(); pintarVersionCab(); return; }
+  const cuando = { cuadro: 'se actualiza al cerrar el cuadro', texto: 'se actualiza al terminar de escribir',
+    corte: 'se actualiza al terminar la salida en curso', orden: 'se actualiza cuando el bróker conteste a la orden' }[estado];
+  const txt = estado === 'atascada' ? `Cierra y vuelve a abrir la Mesa para la v${v}` : `Hay una versión nueva (v${v}): ${cuando || 'se actualiza en cuanto se pueda'}`;
+  const boton = (estado === 'corte' || estado === 'orden') ? '' : '<button type="button" onclick="MZ.actualizarAhora()">Actualizar ahora</button>';
+  const html = `<span>${esc(txt)}</span>${boton}<button type="button" class="vercerrar" onclick="MZ.ocultarFranjaVersion('${esc(estado)}')" aria-label="Ocultar este aviso">✕</button>`;
+  if (!el) { el = document.createElement('div'); el.id = 'verNueva'; el.className = 'vernueva'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  if (el.innerHTML !== html) el.innerHTML = html;   // cada 15 s llega lo mismo: no se repinta (ni se pierde el foco del botón)
+  pintarVersionCab();
+}
+function pintarVersionCab() {
+  const el = $('#verCab'); if (!el) return;
+  const hay = _versionPendiente > VERSION_APP;
+  el.textContent = hay ? `v${VERSION_APP} → v${_versionPendiente}` : '';
+  el.classList.toggle('oculto', !hay);
+}
+// ✕ de la franja: la oculta para esta versión y este motivo (la marca «vNN → vMM» de la cabecera sigue a la vista).
+function ocultarFranjaVersion(estado) {
+  _verEstado.oculta = _versionPendiente + '|' + String(estado || '');
+  const el = $('#verNueva'); if (el) el.remove();
+}
+// «Actualizar ahora» (la franja): es el toque de Andrés, así que recarga aunque haya un cuadro o un texto (los pierde a
+// sabiendas), pero NUNCA con una salida o una orden esperando al bróker.
+function actualizarAhora() {
+  const m = motivoNoRecargar();
+  if (m === 'corte' || m === 'orden') { toast('Espera a que termine lo que está esperando al bróker: luego la Mesa se actualiza sola.'); return; }
+  if (_versionPendiente) anotarRecarga(_versionPendiente);
+  location.reload();
+}
+// ⚙ Tu cuenta: la versión que corre (el número sale de VERSION_APP, no escrito a mano) y cuándo se cargó, en hora NY.
+function textoVersionApp(ahora) {
+  const t = VERSION_CARGADA_MS;
+  const dia = ymdNY(new Date(t).toISOString()), hoy = ymdNY(new Date(ahora == null ? Date.now() : ahora).toISOString());
+  let s = `Mesa 2.0 · ${VERSION_APP ? 'versión ' + VERSION_APP : 'versión sin número'} · cargada ${dia === hoy ? 'hoy' : 'el ' + fechaCorta(dia)} a las ${horaNY(t)} ET`;
+  if (_versionPendiente > VERSION_APP) {
+    s += _verEstado.atascada === _versionPendiente ? ` · ya está la v${_versionPendiente}: cierra y vuelve a abrir la Mesa`
+      : ` · hay una nueva (v${_versionPendiente}): se actualiza al cerrar este cuadro`;
+  }
+  return s;
 }
 
 let _ocultaDesde = 0;
@@ -197,6 +320,12 @@ document.addEventListener('visibilitychange', () => {
   if (typeof _ord !== 'undefined' && _ord && $('#modalOrden')) cargarCadena(true);
   if (typeof _ch !== 'undefined' && _ch && $('#modalChart')) cargarChart(true);   // hoja del chart abierta: velas frescas
 });
+// v66 (A1): en la computadora la Mesa pasa días a la vista sin un solo visibilitychange: también se pregunta al volver a la
+// ventana (focus), al volver la red (online) y al volver del bfcache (pageshow con persisted). El mínimo de 15 s de
+// buscarVersionNueva junta los que llegan a la vez.
+window.addEventListener('focus', () => { buscarVersionNueva(); });
+window.addEventListener('online', () => { buscarVersionNueva(); });
+window.addEventListener('pageshow', (e) => { if (e && e.persisted) buscarVersionNueva(); });
 
 // Un mark del worker (fila de posiciones) no cambia nada del Diario: con él a la vista no se redibuja
 // (cada redibujo relee el libro y, en sesión, llegaba hasta dos veces por minuto al teléfono; v53).
@@ -2685,7 +2814,7 @@ function toast(t) {
   const el = document.createElement('div'); el.className = 'toast'; el.textContent = t;
   document.body.appendChild(el); setTimeout(() => el.remove(), 2200);
 }
-window.MZ = { abrirFill, cerrarModal, guardarFill, cerrar, copiar };
+window.MZ = { abrirFill, cerrarModal, guardarFill, cerrar, copiar, actualizarAhora, ocultarFranjaVersion };   // v66: la franja de versión nueva
 // Señales quitadas (v49): DESPUÉS de la asignación plana de arriba, que pisaría lo de antes.
 window.MZ = Object.assign(window.MZ, { quitarSenal, quitarSenales, restaurarSenal, verQuitadas });
 
@@ -2726,6 +2855,7 @@ function abrirCuenta() {
       <div class="mut" id="ordArmEstado" style="flex:1">desarmado</div>
       <button class="btnsec oculto" id="ordArmBtn" style="flex:none;padding:8px 14px" onclick="MZ.armar()">Armar</button></div>
     <button class="btnsec" style="width:100%;margin-top:12px" onclick="MZ.salir()">Salir de la Mesa</button>
+    <div class="fresco" id="cpVersion" style="margin-top:10px;text-align:center">${esc(textoVersionApp())}</div>
   </div>`;
   document.body.appendChild(m);
   diagSesion().then(t => { const d = $('#cpDiag'); if (d) d.textContent = t; });
@@ -12014,7 +12144,9 @@ function vistaProx(tab) {
 
 // registrar el service worker (shell-only + avisos push)
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // v66 (A1): sw.js nunca de la caché HTTP (updateViaCache 'none') y, al arrancar, que mire YA si hay uno nuevo (update)
+  navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+    .then(reg => { try { if (reg && reg.update) reg.update().catch(() => {}); } catch (_) {} }).catch(() => {});
   // Mensajes del SW: 'navegar' (al tocar un aviso: enfoca y va a la ruta sin
   // recargar) y 'resuscribir' (el navegador rotó la suscripción push → volver
   // a guardarla en la nube).

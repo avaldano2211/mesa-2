@@ -513,10 +513,12 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     G.abrirGtcAutomatico([{ id: 1, broker: 'etrade' }]);
     igual(pregunto, 0, 'la GTC automática ve la calculadora (.modal) y no abre la orden encima');
     // la versión nueva espera
-    const reg = { timers: [], reloads: 0 };
-    const R = construir(['recargarSiSePuede'], { document: D.doc, _corte: { enCurso: false }, toast: () => {}, setTimeout: (f, ms) => { reg.timers.push(ms); }, location: { reload: () => reg.reloads++ } }, { prefijo: 'let _versionPendiente = 66;' });
+    const reg = { timers: [], reloads: 0, franja: [] };
+    // v66: recargarSiSePuede mira lo que frena la recarga con motivoNoRecargar (cuadro, salida, orden, texto) y lo dice en la franja
+    const R = construir(['recargarSiSePuede', 'motivoNoRecargar', 'campoConTexto', 'recargaYaIntentada', 'anotarRecarga', 'pedirActualizarSW'], { document: D.doc, _corte: { enCurso: false }, toast: () => {}, setTimeout: (f, ms) => { reg.timers.push(ms); }, location: { reload: () => reg.reloads++ }, franjaVersion: (m) => reg.franja.push(m) },
+      { consts: ['VERSION_ESPERA_MS', 'VERSION_RECARGA_K', 'VERSION_RECARGA_VENTANA_MS'], prefijo: 'let _versionPendiente = 66; const _verEstado = { ultima: 0, timer: 0, atascada: 0, oculta: \'\' };' });
     R.recargarSiSePuede();
-    igual([reg.reloads, reg.timers], [0, [15000]], 'una versión nueva NO recarga con la calculadora abierta: espera 15 s');
+    igual([reg.reloads, reg.timers, reg.franja], [0, [15000], ['cuadro']], 'una versión nueva NO recarga con la calculadora abierta: espera 15 s (v66: y la franja dice «se actualiza al cerrar el cuadro»)');
     // el libro (Realtime) no repinta el Diario debajo
     let pinto = 0;
     const L = construir(['repintarVistaLibro'], { document: D.doc, vistaLibroAbierta: () => 'diario', diarioEnUso: () => false, vistaDiario: () => { pinto++; }, vistaCuentas: () => { pinto++; } });
