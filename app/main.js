@@ -3507,10 +3507,31 @@ function emparejarEtrade(txs) {
     const dv = /sold|sell|expir|assign|exercis/.test(tipo), dc = /bought|buy/.test(tipo);
     return (dc || (!dv && num(t.brokerage.quantity) > 0)) ? 0 : 1;
   };
+  // v66 (A4, 2026-10-31) · el emparejado es función del CONJUNTO de transacciones, no de cómo llegó la lista: así una
+  // re-sincronización con las mismas transacciones da las MISMAS filas y las mismas clave_ext (el upsert no crea otra).
+  //   · una transacción repetida (el mismo transactionId dos veces: dos páginas que se solapan cuando entra una operación
+  //     mientras se pagina) cuenta UNA vez. Repetida, el FIFO ve un lote de más: es lo que explica la tercera fila «41>50 ×9»
+  //     que la SPY PUT 757 del 14-sep (compras 9 + 41, venta 50) ganó el 9-oct (en la base, ×109 con 50 reales).
+  //   · empate de hora (dos ejecuciones del mismo instante): primero la compra, luego por transactionId y solo al final
+  //     por la posición en la lista (antes la posición iba antes que el ID, y una lista que vuelve en otro orden repartía
+  //     los lotes de otra manera: otras claves).
+  const cmpId = (x, y) => {
+    const a = String(x == null ? '' : x), b = String(y == null ? '' : y);
+    if (/^\d+$/.test(a) && /^\d+$/.test(b) && a.length !== b.length) return a.length - b.length;   // numéricos sin perder precisión
+    return a < b ? -1 : a > b ? 1 : 0;
+  };
+  const vistos = new Set();
   const ops = (txs || []).map((t, i) => ({ t, i })).filter(x => x.t && x.t.brokerage && x.t.brokerage.product
-    && String(x.t.brokerage.product.securityType || '').toUpperCase() === 'OPTN');
+    && String(x.t.brokerage.product.securityType || '').toUpperCase() === 'OPTN')
+    .filter(x => {
+      const id = x.t.transactionId;
+      if (id == null || id === '') return true;   // sin ID no hay con qué reconocer la repetida: se queda
+      if (vistos.has(String(id))) return false;
+      vistos.add(String(id));
+      return true;
+    });
   ops.sort((a, b) => num(a.t.transactionDate) - num(b.t.transactionDate)
-    || lado(a.t) - lado(b.t) || (b.i - a.i) || num(a.t.transactionId) - num(b.t.transactionId));
+    || lado(a.t) - lado(b.t) || cmpId(a.t.transactionId, b.t.transactionId) || (b.i - a.i));
   // A3 (v50): una venta que no encuentra su compra se descartaba EN SILENCIO (el
   // historial son 180 días: la compra puede ser anterior). Ahora queda constancia
   // en salidas.huerfanas para decirlo en Cuentas — la propiedad viaja en el array
@@ -3574,7 +3595,13 @@ function emparejarEtrade(txs) {
 async function etradeTransacciones(cr, accountIdKey, dias) {
   const fmt = (d) => `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${d.getFullYear()}`;
   const hoy = new Date(), desde = new Date(Date.now() - dias * 86400000);
-  let marker = null, todas = [], vueltas = 0;
+  // v66 (A4, 2026-10-31) · `desdeMs`: dónde empieza la ventana leída (el borde que la limpieza de supersedidas no cruza).
+  // `completa`: la lista llegó ENTERA (E*TRADE dijo que no quedaba nada, sin cortar por falta de marker ni por el tope de
+  // 40 páginas, y con tantas transacciones distintas como su totalCount). `repetidas`: las que llegaron dos veces (dos
+  // páginas que se solapan cuando entra una operación mientras se pagina) y se quedaron fuera: el FIFO las contaba como
+  // lotes de más. Con una lista a medias no se borra nada (etradeReemplazarSupersedidas).
+  const vistas = new Set();
+  let marker = null, todas = [], vueltas = 0, totalMax = 0, cortada = false, repetidas = 0;
   do {
     const query = { startDate: fmt(desde), endDate: fmt(hoy), count: '50', sortOrder: 'DESC' };
     if (marker) query.marker = marker;
@@ -3585,11 +3612,19 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
     if (em || r.status >= 400) return { error: em || ('HTTP ' + r.status), txs: todas };
     const L = (r.data || {}).TransactionListResponse || {};
     const arr = Array.isArray(L.Transaction) ? L.Transaction : (L.Transaction ? [L.Transaction] : []);
-    todas = todas.concat(arr);
+    for (const t of arr) {
+      const id = t && t.transactionId;
+      if (id != null && id !== '') {
+        if (vistas.has(String(id))) { repetidas++; continue; }   // v66 A4: ya llegó en otra página
+        vistas.add(String(id));
+      }
+      todas.push(t);
+    }
     marker = null;
     // E*TRADE puede decir moreTransactions=false aunque totalCount > lo
     // recibido; se pagina mientras falten y haya con qué (next/marker/último id).
     const total = Number(L.totalCount) || 0;
+    if (total > totalMax) totalMax = total;
     const faltan = L.moreTransactions === true || (total > todas.length);
     if (faltan && arr.length) {
       try { marker = L.next ? new URL(L.next, 'https://api.etrade.com').searchParams.get('marker') : null; } catch (_) { marker = null; }
@@ -3597,9 +3632,12 @@ async function etradeTransacciones(cr, accountIdKey, dias) {
       if (!marker) marker = String(arr[arr.length - 1].transactionId || '');
       if (marker === String(query.marker || '')) marker = null;   // sin avance → parar
     }
+    if (faltan && !marker) cortada = true;   // v66 A4: faltaban y no hubo con qué seguir: la lista quedó a medias
     vueltas++;
   } while (marker && vueltas < 40);
-  return { expirado: false, txs: todas, dias };
+  if (marker) cortada = true;                // v66 A4: el tope de 40 páginas con E*TRADE diciendo que hay más
+  const completa = !cortada && !(totalMax > 0 && todas.length < totalMax);
+  return { expirado: false, txs: todas, dias, desdeMs: desde.getTime(), completa, repetidas };
 }
 
 // Sincroniza (con tope por dispositivo: la COMPLETA cada 10 min y, en sesión, entre dos completas, una LIGERA cada 2 min
