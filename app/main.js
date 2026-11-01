@@ -10300,7 +10300,8 @@ function unirOperaciones(posic, trades, fills) {
     g.contratos += c; g._costo += (num(t.prima_fill) || 0) * c; g.resultado_usd += num(t.resultado_usd) || 0;
     // v62: las comisiones del grupo (null si NINGUNA fila las trae: «sin dato» no es $0) y sus filas originales,
     // para el detalle de Cuentas (desglose de tramos y «bruto»). Solo se AÑADEN campos: Disciplina y el Copiloto
-    // leen los de siempre y no cambian.
+    // leen los de siempre y no cambian. v67 (C): cerradasDesde abre estas filas, cada una en el día de su cierre (el
+    // dinero de Cuentas por período y «lo ganado de la semana»); la operación, su tarjeta y su fila siguen agrupadas.
     if (numN(t.fees) != null) g.fees = (g.fees || 0) + numN(t.fees);
     g._partes_filas.push(t);
     if (t.prima_salida != null && num(t.prima_salida) != null) { g._salida += num(t.prima_salida) * c; g._salidaN += c; }
@@ -10339,12 +10340,25 @@ function unirOperaciones(posic, trades, fills) {
 // Filas cerradas (o expiradas) desde `desde` (fecha NY) por fecha de CIERRE, PURA. Una
 // operación agrupada (unirOperaciones) se abre en sus tramos: un cierre parcial cuenta en
 // la semana en que se cerró aunque el resto siga abierto o cierre otra semana.
+// v67 (C, 2026-11-01: «sí, arréglalo y publícalo YA QUE ESTA CERRADO EL MERCADO») · y un grupo del BRÓKER se abre en sus
+// FILAS (_partes_filas, ya leídas: vigentes de E*TRADE, vencimientos de moomoo y de Schwab a su instante), cada una en el
+// día NY de SU cerrada_at, como el Diario pone cada tramo el día de su venta. Hasta la v66 el grupo contaba ENTERO el día
+// de su ÚLTIMO cierre: un CALL ×3 de tasty con dos tramos vendidos el día de la compra y el resto vencido dos días después
+// ponía los tres ese segundo día (y la utilidad de la semana, del mes y «lo ganado de la semana» de Disciplina con él).
+// Una fila de broker_trades es una ida y vuelta CERRADA y no trae `estado`: cuenta salvo que diga lo contrario. Sin
+// cerrada_at no pertenece a ningún período (como cualquier fila).
 function cerradasDesde(ops, desde) {
   const esCerrada = (p) => p.estado === 'cerrada' || p.estado === 'expirada';
   // Sin fecha de cierre no pertenece a NINGÚN período: ymdNY(null) devuelve HOY, así
   // que una fila cerrada sin cerrada_at se colaba en la semana, en el mes y en el año.
   const dia = (p) => (p.cerrada_at ? (ymdNY(p.cerrada_at) || '') : '');
-  return (ops || []).flatMap(p => (p && p._filas) || [p]).filter(p => p && esCerrada(p) && dia(p) >= desde);
+  const filasDe = (p) => {
+    if (!p) return [];
+    if (p._filas) return p._filas.filter(f => f && esCerrada(f));
+    if (Array.isArray(p._partes_filas) && p._partes_filas.length) return p._partes_filas.filter(t => t && (t.estado == null || esCerrada(t)));
+    return esCerrada(p) ? [p] : [];
+  };
+  return (ops || []).flatMap(filasDe).filter(p => dia(p) >= desde);
 }
 
 const TAMANO_PCT = 10;   // doctrina: máximo 10% de la cuenta por operación
@@ -10461,6 +10475,8 @@ async function vistaDisciplina() {
   const semana = ops.filter(p => (p.abierta_fecha_ny || '') >= lun);   // ya viene en orden de apertura
   // Lo ganado de la semana se mide por fecha de CIERRE de cada tramo (igual que Cuentas);
   // el cupo 3/semana sí va por fecha de ENTRADA y cuenta operaciones agrupadas.
+  // v67 (C): y de cada FILA del bróker (cerradasDesde abre también sus grupos): un tramo vendido el viernes y el resto
+  // vencido el lunes ya no se retira entero la semana del lunes. Las reglas rotas siguen juzgando por apertura.
   const cerradasSem = cerradasDesde(ops, lun);
 
   // cupo de la semana (conjunto deduplicado; el excedente = más allá de la 3ª)

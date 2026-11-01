@@ -93,7 +93,7 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     igual(g('TSLA', 'moomoo').fees, 0, 'un bróker que manda 0 deja fees en 0');
     igual([g('META', 'schwab').fees, g('SPY', 'tasty').fees], [null, null], 'sin ninguna fila con fees (null o sin campo): fees null, «sin dato» no es $0');
     assert(u.ops.filter(o => o._fuente === 'manual').every(o => !('_partes_filas' in o)), 'las operaciones a mano no ganan _partes_filas (siguen con su _filas de tramos)');
-    assert(!/(?<![a-z])_filas: g\./.test(extraer('unirOperaciones')) && /_partes_filas: g\._partes_filas\.slice\(\)/.test(extraer('unirOperaciones')), 'las filas del bróker NO se llaman _filas: cerradasDesde las abriría como tramos y cambiaría Disciplina');
+    assert(!/(?<![a-z])_filas: g\./.test(extraer('unirOperaciones')) && /_partes_filas: g\._partes_filas\.slice\(\)/.test(extraer('unirOperaciones')), 'las filas del bróker NO se llaman _filas (v67: cerradasDesde las abre aparte, como filas de broker_trades sin estado)');
   }
 
   // ════════════════ 2. A3 · spotDeOperacion (v62 rev: anclada a las idas y vueltas del PROPIO grupo) ════════════════
@@ -989,7 +989,8 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
   const pV = { symbol: 'QQQ', callPut: 'PUT', strikePrice: 600, expiryYear: 26, expiryMonth: 10, expiryDay: 30 };
   const S = caso('verano 16:10 ET', [txE(8004, 'Option Expired', 3, 0, '2026-11-02T00:00:00Z', pV), txE(8003, 'Sold To Close', -2, 0.80, '2026-10-30T20:10:00Z', pV),
     txE(8002, 'Bought To Open', 3, 1.50, '2026-10-30T20:05:00Z', pV), txE(8001, 'Bought To Open', 2, 1.00, '2026-10-30T19:00:00Z', pV)], '2026-11-03', '2026-10-30', '2026-10-30T20:30:00.000Z');
-  igual([K.cerradasDesde(S.ops, '2026-11-01').length, K.cerradasDesde(S.ops, '2026-10-26').length], [0, 1], '(v65 rev6) verano: cuenta en octubre (la semana del 26), no en noviembre');
+  // v67 (C): cerradasDesde abre el grupo del bróker en sus FILAS (la venta del 30 y el vencimiento del 30), las dos en octubre
+  igual([K.cerradasDesde(S.ops, '2026-11-01').length, K.cerradasDesde(S.ops, '2026-10-26').length], [0, S.ops[0]._partes_filas.length], '(v65 rev6) verano: cuenta en octubre (la semana del 26), no en noviembre (v67: sus 2 filas)');
   // Lo que se VE en Cuentas: la operación vendida en parte y vencida en parte no enseña la hora del vencimiento (16:30 ET no es una
   // ejecución): «venció en parte» con la prima media, y la duración en días hasta el vencimiento (como una expirada y como el Diario)
   const op = W.ops[0], d = K.detalleOpCuentas(op, { fills: [], senales: [] });
@@ -1090,7 +1091,8 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
   // cambio de mes: el vencimiento del lunes 31-ago anotado el martes 1-sep cuenta en AGOSTO (la semana del 31 es la misma)
   {
     const k = CASOS[5], ops = K.unirOperaciones([], filasWorker(k.fills), k.fills).ops;
-    igual([K.cerradasDesde(ops, '2026-09-01').length, K.cerradasDesde(ops, '2026-08-31').length, K.resumenPeriodo(ops, '2026-09-01').util || 0], [0, 1, 0], '(v65 rev7) el vencimiento del lunes 31-ago anotado el martes 1-sep ya no cae en septiembre (Cuentas: semana y mes)');
+    // v67 (C): por FILAS (cerradasDesde abre el grupo del bróker): todas las del grupo caen el 31-ago
+    igual([K.cerradasDesde(ops, '2026-09-01').length, K.cerradasDesde(ops, '2026-08-31').length, K.resumenPeriodo(ops, '2026-09-01').util || 0], [0, ops.reduce((s, o) => s + o._partes_filas.length, 0), 0], '(v65 rev7) el vencimiento del lunes 31-ago anotado el martes 1-sep ya no cae en septiembre (Cuentas: semana y mes)');
   }
   // lo que NO se toca: otra cosa que una fila de moomoo a $0 cerrada DESPUÉS del vencimiento
   const base = filasWorker(CASOS[4].fills)[0];
