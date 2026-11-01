@@ -244,7 +244,8 @@ const HOY_FIJO = '2026-10-12';   // lunes
     assert(/estrategia <b>E8 · CT15A<\/b> cambio de tendencia 15 min/.test(W.html) && /rango inválido/.test(W.html) && /contrato sugerido <b>CALL 737\.5<\/b>/.test(W.html) && /salto &lt;de&gt; apertura/.test(W.html), 'la señal con su detalle B1 y el motivo escapado');
     assert(W.html.indexOf('Tu plan (manda): GTC +10%') > 0 && W.html.indexOf('Tu plan (manda): GTC +10%') < W.html.indexOf('doctrina del curso (Plan 35%)'), 'con el Plan 10: «Tu plan (manda)» antes que la doctrina');
     assert(/<div class="sec">TUS TICKERS<\/div><div class="inftk">/.test(W.html), 'y TUS TICKERS en su rejilla');
-    igual((W.html.match(/viewBox="0 0 380 120"/g) || []).length, 2, 'mini gráfico (chartSvg real, w 380; h 110 → el piso de 120 del propio chartSvg) en AAPL y NVDA, que tienen ≥ 2 velas cerradas de hoy');
+    // v67: 132 de alto (la franja de la leyenda compacta no le quita alto a las velas de hoy: 95 como con los 120 de antes)
+    igual((W.html.match(/viewBox="0 0 380 132"/g) || []).length, 2, 'mini gráfico (chartSvg real, 380 × 132) en AAPL y NVDA, que tienen ≥ 2 velas cerradas de hoy');
     assert(/onclick="MZ\.chartAbrir\('AAPL'\)"/.test(W.html) && /class="chart infchart"/.test(W.html), 'tocar el gráfico abre la hoja (MZ.chartAbrir), como en Tickers');
     assert(!/chartSel|perbtn/.test(W.html), 'sin selectores');
     igual((W.html.match(/Sin velas de hoy todavía/g) || []).length, 3, 'TSLA (sin fila), SPY (solo velas de otra sesión) y META (una sola vela de hoy): «Sin velas de hoy todavía» en vez de un gráfico');

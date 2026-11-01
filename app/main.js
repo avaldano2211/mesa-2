@@ -945,7 +945,9 @@ function miniChartInforme(sym, fila, hoy, cargando) {
   if (!fila && cargando) svg = `<div class="vacio">cargando velas…</div>`;
   else if (i0 < 0 || pk.velas.length - i0 < 2) svg = `<div class="vacio">Sin velas de hoy todavía (el gráfico empieza con dos velas de 15 min cerradas)</div>`;
   else {
-    try { svg = chartSvg(pk, { h: 110, w: 380, tf: 'm15', vista: 'bb', ventana: { start: i0, end: pk.velas.length }, dec: decDe(sym), fondo: 'var(--bg2)' }); }
+    // v67: leyenda COMPACTA (sin «AAPL · 15 min»: la cabecera ya dice «hoy · 15 min» y la tarjeta el ticker) en su franja,
+    // y 132 de alto (antes 110 → el piso de 120) para que la franja no le quite alto a las velas de hoy (95 como antes)
+    try { svg = chartSvg(pk, { h: 132, w: 380, tf: 'm15', vista: 'bb', ventana: { start: i0, end: pk.velas.length }, dec: decDe(sym), leyenda: 'compacta' }); }
     catch (_) { svg = `<div class="vacio">Chart no disponible (datos inválidos)</div>`; }
   }
   return `<div class="chart infchart" role="button" onclick="MZ.chartAbrir('${esc(sym)}')">${cab}${svg}</div>`;
@@ -1307,10 +1309,107 @@ function chartTiempo(t) {
 }
 const fmtVol = (v) => { v = Number(v); if (!Number.isFinite(v) || v <= 0) return '—'; return v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? Math.round(v / 1e3) + 'K' : String(Math.round(v)); };
 
+// v67 (Andrés 2026-11-01, sobre su captura de TSLA «Medias + H-lines · Día»: «aquí deberían de salir las líneas del color
+// correcto y bien identificadas»; y «20= amarillo 40= Rojo 100= Verde 200= fuxia», con SU TC2000 de referencia): la
+// paleta FIJA del gráfico. UNA sola definición que usan chartSvg (lienzo, ejes, velas, medias, Bollinger, H-lines,
+// etiquetas y leyenda), la lista H-LINES de la hoja (hlinesLista, sus muestras) y la leyenda del gestor. Igual en tema
+// claro y oscuro: el LIENZO es oscuro en los dos, como TC2000 (solo así se ven el blanco de las edge lines y el amarillo
+// de la 20; en tema claro la 20 salía marrón y techo/piso negros); el resto de la app sigue con su tema.
+//   La doctrina de colores (Investep): SMA 20 amarilla fina, 40 roja fina, 100 verde gruesa, 200 FUCSIA la más gruesa
+// (Andrés corrige el «morada» de antes); edge lines (techo y piso de HORA) blancas; máx/mín del periodo azules; target de
+// analistas rojo claro discontinuo (alto y bajo finos y punteados); cierre de ayer amarillo punteado («la línea punteada
+// en amarillo… es el precio de cierre del día anterior»); apertura de hoy gris claro punteado tenue; Bollinger con
+// bandas teal, relleno gris translúcido y el punto medio AMARILLO (es la SMA 20). La EMA 9 azul de su TC2000 NO es
+// doctrina y no se dibuja.
+const CHART_COL = {
+  lienzo: '#05070B', rejilla: 'rgba(255,255,255,.08)', eje: '#A9B2C3', ejeFuerte: '#E3E8F0', separador: '#8C96AB',
+  ext: '#8C96AB', tenue: '#7A8496',
+  sma: { '20': '#FFE135', '40': '#FF3B30', '100': '#2BE05A', '200': '#FF2BD6' },
+  smaAncho: { '20': 1.1, '40': 1.1, '100': 2.2, '200': 2.8 },
+  velaSube: '#22E55B', velaBaja: '#FF3030',
+  bbBanda: '#1FB8B0', bbMedio: '#FFE135', bbRelleno: '#9AA3B5',
+  edge: '#FFFFFF', ath: '#4C8DFF', target: '#FF8A80', cierreAyer: '#FFE135', apertura: '#B8C0CC',
+  // strikes del gestor: en el gestor el BLANCO ya es edge line → color propio (verde menta CALL / naranja PUT, distintos
+  // de las velas y del target), trazo raya-punto y su etiqueta
+  strikeCall: '#8CFFB5', strikePut: '#FFA94D', extra: '#D0D6E0',
+};
+// v67: las H-lines del gráfico con su NOMBRE, su color y su trazo, UNA definición para chartSvg (líneas y etiquetas
+// «nombre precio»), la lista H-LINES de la hoja y la leyenda del gestor (mismos nombres, mismas muestras). conHl = las
+// H-lines Sardiñas (máx/mín del periodo, techo y piso de HORA próximos, target de analistas); sin él solo las nativas
+// (cierre de ayer, apertura de hoy), como en la ventana Bollinger. «máx 397 días» (jamás «ATH»/«hist»: no es el
+// all-time del curso). Target alto / bajo: con los dos, solo si el rango vale (rangoValido, la regla v66 A2: jamás un
+// rango invertido); con uno solo, ese. trazo: 'solido' | 'guiones' | 'puntos' | 'rayaPunto' (la muestra de la lista). PURA.
+function nivelesChart(nv, tg, spotRef, conHl) {
+  nv = nv || {};
+  const out = [];
+  const add = (v, o) => { v = Number(v); if (Number.isFinite(v) && v > 0) out.push(Object.assign({ v, w: 1.2, op: .9, dash: '', trazo: 'solido' }, o)); };
+  add(nv.cierre_ayer, { k: 'cierre_ayer', nombre: 'cierre ayer', c: CHART_COL.cierreAyer, dash: '4 3', trazo: 'puntos', w: 1.1 });
+  add(nv.apertura_hoy, { k: 'apertura_hoy', nombre: 'apertura hoy', c: CHART_COL.apertura, dash: '2 3', trazo: 'puntos', w: 1, op: .75 });
+  if (conHl) {
+    const dias = nv.ath_dias != null && Number.isFinite(Number(nv.ath_dias)) ? `${Math.round(Number(nv.ath_dias))} días` : 'del periodo';
+    add(nv.ath, { k: 'ath', nombre: `máx ${dias}`, c: CHART_COL.ath });
+    add(nv.atl, { k: 'atl', nombre: `mín ${dias}`, c: CHART_COL.ath });
+    const { techo, piso } = techoPisoProximos(nv, spotRef);
+    if (techo) add(techo.p, { k: 'techo', nombre: 'techo hora', c: CHART_COL.edge });
+    if (piso) add(piso.p, { k: 'piso', nombre: 'piso hora', c: CHART_COL.edge });
+    if (tg && tg.target != null) {
+      add(tg.target, { k: 'target', nombre: 'target analistas', c: CHART_COL.target, dash: '6 3', trazo: 'guiones', w: 1.4 });
+      if (tg.target_alto == null || tg.target_bajo == null || rangoValido(tg.target_bajo, tg.target_alto)) {
+        add(tg.target_alto, { k: 'target_alto', nombre: 'target alto', c: CHART_COL.target, dash: '2 3', trazo: 'puntos', w: .9, op: .8 });
+        add(tg.target_bajo, { k: 'target_bajo', nombre: 'target bajo', c: CHART_COL.target, dash: '2 3', trazo: 'puntos', w: .9, op: .8 });
+      }
+    }
+  }
+  return out;
+}
+// v67: la muestra de una línea del gráfico FUERA del gráfico (lista H-LINES de la hoja, leyenda del gestor): un trocito
+// del lienzo oscuro con la línea en SU color y SU trazo, para que se lea igual en tema claro (blanco sobre blanco no se ve).
+function muestraLinea(c, trazo) {
+  return `<i class="chsw"${trazo && trazo !== 'solido' ? ` data-trazo="${esc(trazo)}"` : ''} style="color:${esc(c)};background-color:${CHART_COL.lienzo}"></i>`;
+}
+// v67: la leyenda «como TC2000», arriba a la izquierda en su franja del lienzo (encima del área de velas: no las pisa).
+// variantes = listas de partes [{ txt, c, ley, tenue }] de la más completa a la más corta; va la primera que cabe en
+// `ancho` (un carácter mono ≈ 0.61 em, con margen). Cada parte en SU color; una serie sin historia, tenue. PURA.
+function leyendaChartSvg(variantes, x, y, ancho, fs) {
+  const SEP = ' · ';
+  const largo = (v) => v.reduce((s, p, i) => s + (i ? SEP.length : 0) + String(p.txt).length, 0) * fs * 0.61;
+  const vs = (variantes || []).filter(v => Array.isArray(v) && v.length);
+  if (!vs.length) return { svg: '', partes: [] };
+  const v = vs.find(p => largo(p) <= ancho) || vs[vs.length - 1];
+  const svg = `<text data-leyenda="1" x="${x}" y="${y}" style="font-size:${fs}px;white-space:pre" font-weight="700">`
+    + v.map((p, i) => (i ? `<tspan fill="${CHART_COL.tenue}" font-weight="400">${SEP}</tspan>` : '')
+      + `<tspan${p.ley ? ` data-ley="${esc(p.ley)}"` : ''} fill="${p.tenue ? CHART_COL.tenue : p.c}"${p.tenue ? ' font-weight="400"' : ''}>${esc(p.txt)}</tspan>`).join('')
+    + `</text>`;
+  return { svg, partes: v };
+}
+// v67: etiquetas de las H-lines SIN esconder ninguna por solaparse (la v66 se saltaba el texto a menos de 9 px de la
+// anterior: «cierre ayer» y «apertura» desaparecían). Cada etiqueta quiere ir 3 px por encima de su línea (base = y − 3);
+// si chocan se APILAN en el mismo orden que sus líneas (de arriba abajo), separadas `alto`, dentro de [yMin, yMax]
+// (pasada hacia abajo y luego hacia arriba). Si de verdad no caben todas (gráfico mini), se quedan las más importantes
+// por `prioridad` y las demás se devuelven en `sinSitio` (la leyenda lo dice). PURA: [{ y, ...}] → { puestas: [{ ...,
+// base, movida }], sinSitio }.
+function apilarEtiquetas(etqs, alto, yMin, yMax, prioridad) {
+  let lista = (etqs || []).slice();
+  const cabe = yMax >= yMin ? Math.floor((yMax - yMin) / alto) + 1 : 0;
+  let sinSitio = [];
+  if (lista.length > cabe) {
+    const pri = (e) => { const i = (prioridad || []).indexOf(e.k); return i < 0 ? 999 : i; };   // fuera de la lista: al final
+    const orden = lista.slice().sort((a, b) => pri(a) - pri(b));
+    const quedan = new Set(orden.slice(0, cabe));
+    sinSitio = lista.filter(e => !quedan.has(e));
+    lista = lista.filter(e => quedan.has(e));
+  }
+  const p = lista.map(e => Object.assign({}, e, { base: e.y - 3 })).sort((a, b) => a.base - b.base || (b.v || 0) - (a.v || 0));
+  p.forEach((e, i) => { e.pos = Math.max(e.base, yMin, i ? p[i - 1].pos + alto : -Infinity); });
+  for (let i = p.length - 1; i >= 0; i--) { const tope = i < p.length - 1 ? p[i + 1].pos - alto : yMax; if (p[i].pos > tope) p[i].pos = tope; }
+  p.forEach(e => { e.movida = Math.abs(e.pos - e.base) > 1.5; });
+  return { puestas: p, sinSitio };
+}
+
 // chartSvg(pk, op): pk = payload de ticker_velas; op = { vista:'bb'|'hl', h, tf,
-// targets:{target,target_alto,target_bajo,fecha}|null, dec, fondo }. Devuelve un
+// targets:{target,target_alto,target_bajo,fecha}|null, dec, leyenda (v67) }. Devuelve un
 // <svg viewBox="0 0 400 H"> (string). Portado de drawCandles() de la mesa privada,
-// adaptado a móvil y a variables CSS del tema (nada de colores fijos).
+// adaptado a móvil (v67: con la paleta FIJA de TC2000, CHART_COL, en vez de los colores del tema).
 //   v55 (gráfico del gestor): op.w (ancho del viewBox, 400 por defecto), op.ventana {start,end}
 // (tramo de velas a la vista: zoom y arrastre; sin ella, las últimas MAXV), op.extra (líneas
 // más, p. ej. los strikes: {v, c, lb, k, dash, w, op}), op.hlines (las H-lines Sardiñas también
@@ -1335,8 +1434,21 @@ const fmtVol = (v) => { v = Number(v); if (!Number.isFinite(v) || v <= 0) return
 // ninguna vela a la vista que la regular sí tenía—; si no, la regular del worker por tramos, como en la v63 (en Hora
 // la SMA 100/200 enteras y no un trocito). El svg lo marca: data-ind-ext="1" y data-sma-ext="20,40" (las que van con
 // pre/post); el aria-label nombra las regulares dibujadas.
+//   v67 (Andrés 2026-11-01: «aquí deberían de salir las líneas del color correcto y bien identificadas»; «20= amarillo
+// 40= Rojo 100= Verde 200= fuxia»): el gráfico «como TC2000» en todas sus llamadas. (G1) Lienzo oscuro y paleta FIJA
+// (CHART_COL) en los dos temas: medias, velas, Bollinger (bandas teal, relleno gris, medio amarillo), H-lines y el
+// halo de las etiquetas (op.fondo ya no se usa: el halo es el lienzo). Las medias y las líneas de Bollinger van ENCIMA de
+// las velas (como en TC2000: si no, la 20 y la 40 finas se veían a trozos entre los cuerpos); el relleno de la banda,
+// debajo. (G2) Leyenda arriba a la izquierda, en su franja (pad.t: el área de velas empieza debajo, nunca la pisa):
+// «TSLA · Día · Avg 20 · Avg 40 · Avg 100 · Avg 200», cada nombre en su color, con el valor de la última vela dibujada
+// si cabe; una media sin historia, tenue «Avg 200 —»; Bollinger: «Bollinger Bands 20 2 · Moving Average 20 (punto
+// medio)». op.leyenda === 'compacta' (el mini del Informe) quita el prefijo. Cada H-line con NOMBRE y PRECIO («techo
+// hora 401.25», nombres de nivelesChart), a la IZQUIERDA (la derecha es del eje de precios, de la cajita del spot y de
+// las velas más nuevas, las que importan) y apiladas sin esconder ninguna (apilarEtiquetas), con un conector del color
+// de la línea cuando la etiqueta se aparta de ella. El aria-label nombra lo dibujado. Ninguna cuenta cambia: solo el
+// dibujo (mismos data-sma / data-bb / data-nivel / data-ext / data-spot / data-ind-ext / data-sma-ext, clip-path y escala).
 function chartSvg(pk, op) {
-  op = Object.assign({ vista: 'bb', h: 200, tf: null, targets: null, dec: 2, fondo: 'var(--card)', w: 400, ventana: null, extra: null, hlines: false, bb: true, ext: false }, op || {});
+  op = Object.assign({ vista: 'bb', h: 200, tf: null, targets: null, dec: 2, w: 400, ventana: null, extra: null, hlines: false, bb: true, ext: false, leyenda: null }, op || {});
   const vacio = `<div class="vacio">Sin velas todavía para este marco (el worker las publica cada minuto en sesión)</div>`;
   if (!pk || !Array.isArray(pk.velas) || pk.velas.length < 2) return vacio;
   // Una fila mal formada rompería el mapeo Y la alineación con bb/sma: mejor
@@ -1411,7 +1523,7 @@ function chartSvg(pk, op) {
   // (v64: con indicadores con pre/post las bandas no se calculan aquí: mandan las de la serie combinada, más abajo)
   const bbSrc = indExt ? null : (bb20 && alin(pk.bb.medio) && alin(pk.bb.sup) && alin(pk.bb.inf)) ? pk.bb : bollingerApp(cierresAll, 20, 2);
   const bb = indExt ? null : { medio: alin(bbSrc.medio), sup: alin(bbSrc.sup), inf: alin(bbSrc.inf) };
-  const SMAS = [['20', 'var(--oro)', 1], ['40', 'var(--rojo)', 1], ['100', 'var(--verde)', 1.8], ['200', 'var(--morado)', 2.4]];
+  const SMAS = ['20', '40', '100', '200'].map(k => [k, CHART_COL.sma[k], CHART_COL.smaAncho[k]]);   // v67: la paleta de TC2000
   const smaSrc = pk.sma || {};
   const smas = {};
   // las de la sesión regular, siempre (v64 rev: también con pre/post, para las medias que se quedan con la regular)
@@ -1438,7 +1550,9 @@ function chartSvg(pk, op) {
 
   // --- geometría -----------------------------------------------------------
   const W = Math.max(320, Number(op.w) || 400), H = Math.max(120, Number(op.h) || 200);
-  const pad = { l: 6, r: dec === 0 ? 40 : 48, t: 8, b: 18 };
+  // v67: letra de la leyenda y de las etiquetas (la de la rejilla de Tickers en grande) y la franja de la leyenda arriba
+  const fs = W >= 700 ? 10.5 : 9;
+  const pad = { l: 6, r: dec === 0 ? 40 : 48, t: Math.round(fs + 6) + 4, b: 18 };
   const yAxis = H - pad.b, iw = W - pad.l - pad.r, ih = yAxis - pad.t;
   const bw = iw / n;
   const X = (i) => pad.l + i * bw + bw / 2;
@@ -1446,27 +1560,16 @@ function chartSvg(pk, op) {
   const f1 = (x) => Number(x).toFixed(1);
 
   // --- niveles (H-lines): precios del subyacente --------------------------
-  const niv = [];
-  const add = (v, o) => { v = Number(v); if (Number.isFinite(v) && v > 0) niv.push(Object.assign({ v }, o)); };
-  add(nv.cierre_ayer, { c: 'var(--oro)', lb: 'cierre ayer', dash: '4 3', op: .85, w: 1, k: 'cierre_ayer' });
-  add(nv.apertura_hoy, { c: 'var(--tx3)', lb: 'apertura', dash: '2 3', op: .7, w: 1, k: 'apertura_hoy' });
-  if (conHl) {
-    const dias = nv.ath_dias != null ? `${Math.round(Number(nv.ath_dias))} d` : 'del periodo';   // jamás «hist»: no es el all-time del curso
-    add(nv.ath, { c: 'var(--azul)', lb: `máx ${dias}`, op: .9, w: 1.2, k: 'ath' });
-    add(nv.atl, { c: 'var(--azul)', lb: `mín ${dias}`, op: .9, w: 1.2, k: 'atl' });
-    const spotRef = nv.spot != null ? nv.spot : cs[n - 1].c;
-    const { techo, piso } = techoPisoProximos(nv, spotRef);
-    if (techo) add(techo.p, { c: 'var(--tx)', lb: 'techo', op: .9, w: 1.2, k: 'techo' });
-    if (piso) add(piso.p, { c: 'var(--tx)', lb: 'piso', op: .9, w: 1.2, k: 'piso' });
-    const tg = op.targets || null;
-    if (tg && tg.target != null) {
-      add(tg.target, { c: 'var(--rojo)', lb: `target $${fP(tg.target)}`, dash: '6 3', op: .85, w: 1.4, k: 'target' });
-      add(tg.target_alto, { c: 'var(--rojo)', lb: '', dash: '2 3', op: .45, w: .7, k: 'target_alto' });
-      add(tg.target_bajo, { c: 'var(--rojo)', lb: '', dash: '2 3', op: .45, w: .7, k: 'target_bajo' });
-    }
-  }
-  // v55: líneas extra (los strikes de tus posiciones en el gráfico del gestor)
-  (Array.isArray(op.extra) ? op.extra : []).forEach(o => { if (o) add(o.v, Object.assign({ c: 'var(--tx)', lb: '', op: .9, w: 1.4, k: 'extra', dash: '' }, o)); });
+  //   v67: con su nombre y su precio en la etiqueta («techo hora 401.25», «máx 397 días 497.60», «target alto 600.00»);
+  // la definición (nombre, color, trazo) es la de nivelesChart, la misma de la lista H-LINES y de la leyenda del gestor
+  const niv = nivelesChart(nv, op.targets || null, nv.spot != null ? nv.spot : cs[n - 1].c, conHl)
+    .map(o => Object.assign(o, { lb: `${o.nombre} ${fP(o.v)}` }));
+  // v55: líneas extra (los strikes de tus posiciones en el gráfico del gestor); v67: sin color propio, uno legible sobre
+  // el lienzo (nada de var(--tx), que en tema claro es casi negro) y raya-punto (el blanco liso es de las edge lines)
+  (Array.isArray(op.extra) ? op.extra : []).forEach(o => {
+    const v = o ? Number(o.v) : NaN;
+    if (Number.isFinite(v) && v > 0) niv.push(Object.assign({ c: CHART_COL.extra, lb: '', op: .9, w: 1.4, k: 'extra', dash: '9 3 2 3' }, o, { v }));
+  });
 
   // --- escala vertical -----------------------------------------------------
   let lo = Infinity, hi = -Infinity;
@@ -1485,10 +1588,11 @@ function chartSvg(pk, op) {
 
   // v64 rev: con indicadores con pre/post el svg lo marca (data-ind-ext) y dice qué medias van con pre/post
   // (data-sma-ext): chartInline y la lectura de la hoja lo leen de aquí; el aria-label nombra las que siguen regulares
+  //   v67: la cabecera <svg> se arma al FINAL (su aria-label nombra lo que de verdad se dibujó)
   const ariaExt = !nExt ? '' : ' extendido' + (ix ? ' con indicadores de sesión extendida' + (smaRegDib.length ? ` (SMA ${smaRegDib.join('/')} de la sesión regular)` : '') : '');
   const marcaExt = ix ? ' data-ind-ext="1"' + (ix.conExt.length ? ` data-sma-ext="${ix.conExt.join(',')}"` : '') : '';
-  let out = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"${marcaExt} aria-label="${esc((pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger') + ariaExt)}" style="display:block;font-family:var(--mono);font-size:9px">`;
-  out += `<defs><clipPath id="${cp}"><rect x="${pad.l}" y="${pad.t}" width="${f1(iw)}" height="${f1(ih)}"/></clipPath></defs>`;
+  let out = `<defs><clipPath id="${cp}"><rect x="${pad.l}" y="${pad.t}" width="${f1(iw)}" height="${f1(ih)}"/></clipPath></defs>`;
+  out += `<rect class="lienzo" x="0" y="0" width="${W}" height="${H}" fill="${CHART_COL.lienzo}"/>`;   // v67: el lienzo oscuro de TC2000, en los dos temas
 
   // 1) rejilla horizontal + eje de precios en múltiplos redondos --------------
   const PXSTEP = [0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000];
@@ -1496,16 +1600,16 @@ function chartSvg(pk, op) {
   const pstep = PXSTEP.find(x => (hi - lo) / x <= nT) || 1000;
   for (let v = Math.ceil(lo / pstep) * pstep; v <= hi; v += pstep) {
     const y = Y(v); if (y < pad.t || y > yAxis) continue;
-    out += `<line x1="${pad.l}" y1="${f1(y)}" x2="${f1(W - pad.r)}" y2="${f1(y)}" stroke="var(--line)" stroke-width="1"/>`;
-    out += `<text class="ejey" x="${f1(W - pad.r + 4)}" y="${f1(y + 3)}" fill="var(--tx3)">${esc(fP(v))}</text>`;
+    out += `<line x1="${pad.l}" y1="${f1(y)}" x2="${f1(W - pad.r)}" y2="${f1(y)}" stroke="${CHART_COL.rejilla}" stroke-width="1"/>`;
+    out += `<text class="ejey" x="${f1(W - pad.r + 4)}" y="${f1(y + 3)}" fill="${CHART_COL.eje}">${esc(fP(v))}</text>`;
   }
-  out += `<line x1="${pad.l}" y1="${f1(yAxis + .5)}" x2="${f1(W - pad.r)}" y2="${f1(yAxis + .5)}" stroke="var(--line)" stroke-width="1"/>`;
+  out += `<line x1="${pad.l}" y1="${f1(yAxis + .5)}" x2="${f1(W - pad.r)}" y2="${f1(yAxis + .5)}" stroke="${CHART_COL.rejilla}" stroke-width="1"/>`;
 
   // 2) eje de tiempo en hora NY: ranuras de reloj (15m/hora) o fechas (día) ---
   const tt = cs.map(c => chartTiempo(c.t));
   const etiqueta = (x, txt, fuerte) =>
-    `<text class="ejex" x="${f1(x)}" y="${f1(H - 5)}" text-anchor="middle" fill="${fuerte ? 'var(--tx2)' : 'var(--tx3)'}"${fuerte ? ' font-weight="700"' : ''}>${esc(txt)}</text>`;
-  const separador = (i) => `<line x1="${f1(XL(i))}" y1="${pad.t}" x2="${f1(XL(i))}" y2="${f1(yAxis)}" stroke="var(--tx3)" stroke-width="1" opacity=".45"/>`;
+    `<text class="ejex" x="${f1(x)}" y="${f1(H - 5)}" text-anchor="middle" fill="${fuerte ? CHART_COL.ejeFuerte : CHART_COL.eje}"${fuerte ? ' font-weight="700"' : ''}>${esc(txt)}</text>`;
+  const separador = (i) => `<line x1="${f1(XL(i))}" y1="${pad.t}" x2="${f1(XL(i))}" y2="${f1(yAxis)}" stroke="${CHART_COL.separador}" stroke-width="1" opacity=".45"/>`;
   let ultX = -Infinity;
   const cabe = (x) => x > pad.l + 14 && x < W - pad.r - 14 && x - ultX >= 40;
   if (tf === 'dia') {
@@ -1530,25 +1634,31 @@ function chartSvg(pk, op) {
 
   out += `<g clip-path="url(#${cp})">`;
   // 2b) v58: sombreado de cada racha de velas extendidas (debajo de líneas y velas) --
+  //     v67: visible sobre el lienzo oscuro
   if (nExt) {
     for (let i = 0; i < n; i++) {
       if (!cs[i].ext) continue;
       let j = i; while (j + 1 < n && cs[j + 1].ext) j++;
-      out += `<rect data-ext="1" x="${f1(XL(i))}" y="${pad.t}" width="${f1(XL(j + 1) - XL(i))}" height="${f1(ih)}" fill="var(--tx3)" fill-opacity=".09"/>`;
+      out += `<rect data-ext="1" x="${f1(XL(i))}" y="${pad.t}" width="${f1(XL(j + 1) - XL(i))}" height="${f1(ih)}" fill="${CHART_COL.ext}" fill-opacity=".12"/>`;
       i = j;
     }
   }
-  // 3) Bollinger (ventana derecha): banda + sup/inf punteadas + punto medio, por tramo
-  //    de regulares consecutivas (sin extendido es un solo tramo: el dibujo de siempre) --
+  // 3) Bollinger (ventana derecha): banda + sup/inf + punto medio, por tramo de regulares consecutivas (sin extendido es
+  //    un solo tramo: el dibujo de siempre) --
   //    v64: con extendido, UNA banda continua sobre todas las velas cerradas a la vista (serie combinada M)
+  //    v67: como TC2000: sup/inf TEAL, relleno gris translúcido (debajo de las velas) y el punto medio AMARILLO (la SMA
+  //    20); las tres líneas van ENCIMA de las velas
+  let bbFondo = '', bbLineas = '', bbDib = false;
+  const lineaBB = (q, pts) => `<polyline data-bb="${q}" points="${pts}" fill="none" stroke="${q === 'medio' ? CHART_COL.bbMedio : CHART_COL.bbBanda}" stroke-width="1.1" stroke-linejoin="round" opacity=".95"/>`;
   if (conBB && ix) {
     const idx = []; for (let i = 0; i < n; i++) if (ix.bb.sup[i] != null && ix.bb.inf[i] != null) idx.push(i);
     if (idx.length >= 2) {
       const sup = idx.map(i => `${f1(X(i))},${f1(Y(Number(ix.bb.sup[i])))}`);
       const inf = idx.map(i => `${f1(X(i))},${f1(Y(Number(ix.bb.inf[i])))}`).reverse();
-      out += `<polygon data-bb="banda" points="${sup.concat(inf).join(' ')}" fill="var(--azul)" fill-opacity=".08" stroke="none"/>`;
-      const linea = (q, dash) => `<polyline data-bb="${q}" points="${idx.map(i => `${f1(X(i))},${f1(Y(Number(ix.bb[q][i])))}`).join(' ')}" fill="none" stroke="var(--azul)" stroke-width="1"${dash ? ` stroke-dasharray="${dash}"` : ''} opacity=".85"/>`;
-      out += linea('sup', '3 3') + linea('inf', '3 3') + linea('medio', '');
+      bbFondo += `<polygon data-bb="banda" points="${sup.concat(inf).join(' ')}" fill="${CHART_COL.bbRelleno}" fill-opacity=".13" stroke="none"/>`;
+      const pts = (q) => idx.map(i => `${f1(X(i))},${f1(Y(Number(ix.bb[q][i])))}`).join(' ');
+      bbLineas += lineaBB('sup', pts('sup')) + lineaBB('inf', pts('inf')) + lineaBB('medio', pts('medio'));
+      bbDib = true;
     }
   } else if (conBB) {
     tramos.forEach(([a, b]) => {
@@ -1556,64 +1666,113 @@ function chartSvg(pk, op) {
       if (idx.length < 2) return;
       const sup = idx.map(k => `${f1(X(posReg[k]))},${f1(Y(Number(bb.sup[k])))}`);
       const inf = idx.map(k => `${f1(X(posReg[k]))},${f1(Y(Number(bb.inf[k])))}`).reverse();
-      out += `<polygon data-bb="banda" points="${sup.concat(inf).join(' ')}" fill="var(--azul)" fill-opacity=".08" stroke="none"/>`;
-      const linea = (q, dash) => `<polyline data-bb="${q}" points="${idx.map(k => `${f1(X(posReg[k]))},${f1(Y(Number(bb[q][k])))}`).join(' ')}" fill="none" stroke="var(--azul)" stroke-width="1"${dash ? ` stroke-dasharray="${dash}"` : ''} opacity=".85"/>`;
-      out += linea('sup', '3 3') + linea('inf', '3 3') + linea('medio', '');
+      bbFondo += `<polygon data-bb="banda" points="${sup.concat(inf).join(' ')}" fill="${CHART_COL.bbRelleno}" fill-opacity=".13" stroke="none"/>`;
+      const pts = (q) => idx.map(k => `${f1(X(posReg[k]))},${f1(Y(Number(bb[q][k])))}`).join(' ');
+      bbLineas += lineaBB('sup', pts('sup')) + lineaBB('inf', pts('inf')) + lineaBB('medio', pts('medio'));
+      bbDib = true;
     });
   }
+  out += bbFondo;
   // 4) medias simples (ventana izquierda), también por tramo ------------------
   //    v64: con pre/post, cada media continua sobre la serie combinada M; v64 rev: las que se quedan con la regular
   //    (mediasExtM), por tramo como en la v63
+  //    v67: con su color y grosor de TC2000 (CHART_COL), ENCIMA de las velas; smaUlt guarda el valor del último punto
+  //    DIBUJADO de cada una (el de la leyenda)
+  let smaSvg = '';
+  const smaUlt = {};
   if (hl) {
+    const poli = (k, col, w, pts) => `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" opacity=".95"/>`;
     SMAS.forEach(([k, col, w]) => {
       if (ix && ix.sma[k]) {
-        const pts = []; for (let i = 0; i < n; i++) if (ix.sma[k][i] != null) pts.push(`${f1(X(i))},${f1(Y(Number(ix.sma[k][i])))}`);
-        if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
+        const pts = []; let ult = null;
+        for (let i = 0; i < n; i++) if (ix.sma[k][i] != null) { pts.push(`${f1(X(i))},${f1(Y(Number(ix.sma[k][i])))}`); ult = Number(ix.sma[k][i]); }
+        if (pts.length >= 2) { smaSvg += poli(k, col, w, pts); smaUlt[k] = ult; }
         return;
       }
       tramos.forEach(([a, b]) => {
-        const pts = []; for (let q = a; q <= b; q++) if (smas[k][q] != null) pts.push(`${f1(X(posReg[q]))},${f1(Y(Number(smas[k][q])))}`);
-        if (pts.length >= 2) out += `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" opacity=".9"/>`;
+        const pts = []; let ult = null;
+        for (let q = a; q <= b; q++) if (smas[k][q] != null) { pts.push(`${f1(X(posReg[q]))},${f1(Y(Number(smas[k][q])))}`); ult = Number(smas[k][q]); }
+        if (pts.length >= 2) { smaSvg += poli(k, col, w, pts); smaUlt[k] = ult; }
       });
     });
   }
   // 5) velas: verde/roja por apertura-cierre, rellenas, mecha del color de la vela;
   //    la vela viva punteada y translúcida; las extendidas (v58) más tenues ---
+  //    v67: verde vivo / rojo vivo de TC2000
   const body = Math.max(1.2, bw * 0.66);
   cs.forEach((c, i) => {
-    const up = c.c >= c.o, col = up ? 'var(--verde)' : 'var(--rojo)';
+    const up = c.c >= c.o, col = up ? CHART_COL.velaSube : CHART_COL.velaBaja;
     const x = X(i), yo = Y(c.o), yc = Y(c.c), yh = Y(c.h), yl = Y(c.l);
     const top = Math.min(yo, yc), hgt = Math.max(1, Math.abs(yc - yo));
     if (bw >= 2) out += `<line x1="${f1(x)}" y1="${f1(yh)}" x2="${f1(x)}" y2="${f1(yl)}" stroke="${col}" stroke-width="${bw >= 12 ? 1.4 : 1}" opacity="${c.viva ? .55 : c.ext ? .7 : .9}"/>`;
     out += `<rect class="vela${c.ext ? ' ext' : ''}${c.viva ? ' viva' : ''}" x="${f1(x - body / 2)}" y="${f1(top)}" width="${f1(body)}" height="${f1(hgt)}" fill="${col}"`
       + (c.viva ? ` fill-opacity=".45" stroke="${col}" stroke-width="1" stroke-dasharray="2 2"` : c.ext ? ` fill-opacity=".75"` : '') + `/>`;
   });
+  out += bbLineas + smaSvg;
   out += `</g>`;
 
-  // 6) líneas de nivel con etiqueta con halo (nunca fuera de la escala) -------
-  let ultY = -Infinity;
-  niv.slice().sort((a, b) => a.v - b.v).forEach(o => {
-    if (o.v < lo || o.v > hi) return;
-    const y = Y(o.v);
-    out += `<line data-nivel="${o.k}" x1="${pad.l}" y1="${f1(y)}" x2="${f1(W - pad.r)}" y2="${f1(y)}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}"/>`;
-    if (!o.lb || Math.abs(y - ultY) < 9) return;            // línea sí, texto no: solapado parece un fallo
-    ultY = y;
-    // etiqueta a la IZQUIERDA: la derecha es del eje de precios y de la cajita
-    // del spot, y ahí se pisaban «apertura», «cierre ayer» y el precio actual.
-    out += `<text x="${f1(pad.l + 3)}" y="${f1(y - 3)}" text-anchor="start" fill="${o.c}" font-weight="700" stroke="${op.fondo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(o.lb)}</text>`;
+  // 6) líneas de nivel (H-lines) y sus etiquetas «nombre precio» (nunca fuera de la escala) --
+  //    v67: TODAS las etiquetas salen: se apilan en el orden de sus líneas (apilarEtiquetas) y la que se aparta de su
+  //    línea lleva un conector de su color. A la IZQUIERDA, como desde la v45: la derecha es del eje de precios, de la
+  //    cajita del spot y de las velas más nuevas (las que importan); a la izquierda están las más viejas. El halo de la
+  //    letra es el lienzo.
+  const vis = niv.filter(o => o.v >= lo && o.v <= hi).sort((a, b) => b.v - a.v);
+  vis.forEach(o => {
+    out += `<line data-nivel="${o.k}" x1="${pad.l}" y1="${f1(Y(o.v))}" x2="${f1(W - pad.r)}" y2="${f1(Y(o.v))}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}"/>`;
+  });
+  const PRIORIDAD_ETQ = ['strike', 'extra', 'techo', 'piso', 'cierre_ayer', 'apertura_hoy', 'target', 'ath', 'atl', 'target_alto', 'target_bajo'];
+  const xEt = pad.l + 8, xCon = pad.l + 2;
+  const ap = apilarEtiquetas(vis.filter(o => o.lb).map(o => ({ k: o.k, v: o.v, y: Y(o.v), o })), fs + 2, pad.t + fs * 0.8 + 1, yAxis - 3, PRIORIDAD_ETQ);
+  ap.puestas.forEach(e => {
+    const o = e.o, ym = e.pos - fs * 0.32;
+    if (e.movida) out += `<polyline data-conector="${o.k}" points="${f1(xCon)},${f1(e.y)} ${f1(xCon)},${f1(ym)} ${f1(xEt - 2)},${f1(ym)}" fill="none" stroke="${o.c}" stroke-width="1" opacity=".85"/>`;
+    out += `<text data-etq="${o.k}" x="${f1(xEt)}" y="${f1(e.pos)}" text-anchor="start" fill="${o.c}" font-weight="700" style="font-size:${fs}px" stroke="${CHART_COL.lienzo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(o.lb)}</text>`;
   });
 
   // 7) precio actual (spot del worker; si no, cierre de la última vela) --------
   const px = Number(nv.spot != null ? nv.spot : cs[n - 1].c);
   if (px > lo && px < hi) {
-    const u = cs[n - 1], colp = u.c >= u.o ? 'var(--verde)' : 'var(--rojo)';
+    const u = cs[n - 1], colp = u.c >= u.o ? CHART_COL.velaSube : CHART_COL.velaBaja;
     const yp = Y(px), x0 = W - pad.r + 1, w = pad.r - 2, hh = 14;
     out += `<line x1="${pad.l}" y1="${f1(yp)}" x2="${f1(W - pad.r)}" y2="${f1(yp)}" stroke="${colp}" stroke-width="1" stroke-dasharray="2 4" opacity=".4"/>`;
     out += `<path data-spot="1" d="M${x0} ${f1(yp)} l4 -${hh / 2} h${w - 7} a2.5 2.5 0 0 1 2.5 2.5 v${hh - 5} a2.5 2.5 0 0 1 -2.5 2.5 h-${w - 7} Z" fill="${colp}"/>`;
-    out += `<text x="${f1(x0 + 6)}" y="${f1(yp + 3.2)}" fill="var(--bg)" font-weight="700">${esc(fP(px))}</text>`;
+    out += `<text x="${f1(x0 + 6)}" y="${f1(yp + 3.2)}" fill="${CHART_COL.lienzo}" font-weight="700">${esc(fP(px))}</text>`;
   }
-  out += `</svg>`;
-  return out;
+
+  // 8) v67: leyenda «como TC2000» arriba a la izquierda, en su franja (G2). Solo se nombra lo que se DIBUJÓ: una media sin
+  //    historia sale tenue «Avg 200 —»; la Bollinger sin 20 velas, tenue. Las medias con su valor en la última vela
+  //    dibujada si cabe; si no, sin valores; si aún no, sin el prefijo; y, como último recurso, los nombres cortos.
+  //    Las etiquetas que no cupieron (solo en un gráfico mini) se dicen aquí.
+  const pref = { txt: [pk.ticker, nombreTf(tf)].filter(Boolean).join(' · '), c: CHART_COL.ejeFuerte, ley: 'cab' };
+  let ricas = [];
+  if (hl) {
+    const it = (k, col, conV) => smaUlt[k] != null ? { txt: `Avg ${k}${conV ? ' ' + fP(smaUlt[k]) : ''}`, c: col, ley: k } : { txt: `Avg ${k} —`, tenue: true, ley: k };
+    ricas = [SMAS.map(([k, col]) => it(k, col, true)), SMAS.map(([k, col]) => it(k, col, false)),
+      SMAS.map(([k, col]) => smaUlt[k] != null ? { txt: k, c: col, ley: k } : { txt: k + ' —', tenue: true, ley: k })];
+  } else if (conBB) {
+    ricas = bbDib
+      ? [[{ txt: 'Bollinger Bands 20 2', c: CHART_COL.bbBanda, ley: 'bb' }, { txt: 'Moving Average 20 (punto medio)', c: CHART_COL.bbMedio, ley: 'bb-medio' }],
+        [{ txt: 'Bollinger Bands 20 2', c: CHART_COL.bbBanda, ley: 'bb' }, { txt: 'Moving Average 20', c: CHART_COL.bbMedio, ley: 'bb-medio' }],
+        [{ txt: 'BB 20 2', c: CHART_COL.bbBanda, ley: 'bb' }, { txt: 'MA 20', c: CHART_COL.bbMedio, ley: 'bb-medio' }]]
+      : [[{ txt: 'Bollinger Bands 20 2 —', tenue: true, ley: 'bb' }], [{ txt: 'BB 20 2 —', tenue: true, ley: 'bb' }]];
+  }
+  const nSin = ap.sinSitio.length;
+  const nota = nSin ? [{ txt: `+${nSin} ${nSin > 1 ? 'líneas' : 'línea'} sin etiqueta`, tenue: true, ley: 'sin-sitio' }] : [];
+  const conPref = op.leyenda !== 'compacta' && pref.txt ? [pref] : [];
+  const variantes = [];
+  if (conPref.length) ricas.slice(0, 2).forEach(r => variantes.push(conPref.concat(r, nota)));
+  ricas.forEach(r => variantes.push(r.concat(nota)));
+  if (!ricas.length) variantes.push(conPref.concat(nota));
+  const ley = leyendaChartSvg(variantes, pad.l + 2, f1(fs + 3), W - pad.l - 8, fs);
+  out += ley.svg;
+
+  // aria-label (G2): el marco y la vista, y las series y H-lines dibujadas
+  const ariaSeries = hl ? SMAS.map(([k]) => smaUlt[k] != null ? `SMA ${k}` : `SMA ${k} sin historia`).join(', ')
+    : conBB ? (bbDib ? 'Bollinger Bands 20 2 con su punto medio (media de 20)' : 'Bollinger Bands 20 2 sin historia') : '';
+  const ariaLineas = vis.map(o => o.lb || `línea ${fP(o.v)}`).join(', ');
+  const aria = (pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger') + ariaExt
+    + (ariaSeries || ariaLineas ? ': ' + [ariaSeries, ariaLineas].filter(Boolean).join('; ') : '');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"${marcaExt} aria-label="${esc(aria)}" style="display:block;font-family:var(--mono);font-size:9px">` + out + `</svg>`;
 }
 
 // Antigüedad honesta de la última vela: «última vela hace 3 min · en curso». Con
@@ -1656,7 +1815,7 @@ function chartFrescoTxt(fila, tf, ext) {
 // regular: «(medias con pre/post salvo SMA 100/200)», o «(medias de la sesión regular)» si ninguna va con pre/post.
 function chartInline(sym, fila, vista, tf, tg, grande, ext) {
   const pk = fila && fila.payload;
-  const svg = chartSvg(pk, { vista, tf, h: grande ? 320 : 200, w: grande ? 720 : 400, targets: tg, dec: decDe(sym), fondo: 'var(--bg2)', ext: ext === true });   // v57: en grande, viewBox 720×320
+  const svg = chartSvg(pk, { vista, tf, h: grande ? 320 : 200, w: grande ? 720 : 400, targets: tg, dec: decDe(sym), ext: ext === true });   // v57: en grande, viewBox 720×320
   const hayExt = ext === true && /data-ext="1"/.test(svg);
   let ind = '';
   if (hayExt && /data-ind-ext="1"/.test(svg)) {
@@ -1869,7 +2028,7 @@ function pintarChart(fila, tg) {
   $('#chSel').innerHTML = chartSelectores(vista, tf, 'chartSelHoja');
   $('#chFresco').textContent = chartFrescoTxt(fila, tf, ext);
   const grande = anchoVista() >= GESTOR_ANCHO_TABLA;   // v57: la hoja del gráfico también crece en pantallas anchas (#modalChart .hoja 1000 px)
-  const svg = chartSvg(pk, { vista, tf, h: grande ? 380 : 300, w: grande ? 880 : 400, targets: tg, dec, fondo: 'var(--bg2)', ext });
+  const svg = chartSvg(pk, { vista, tf, h: grande ? 380 : 300, w: grande ? 880 : 400, targets: tg, dec, ext });
   $('#chSvg').innerHTML = svg;
   // v64: la lectura con pre/post (y su nota) solo si el gráfico DIBUJÓ extendidas (el criterio de chartInline);
   // v64 rev: y dice lo que ESE gráfico calculó (data-ind-ext / data-sma-ext del svg)
@@ -7580,7 +7739,7 @@ function pintarChartGestor() {
   const W = mac ? Math.max(640, Math.round(Number(el.clientWidth) || 1100)) : 400;
   const v = gchVentana(pk.velas.length, def[2], _gch.rango, _gch.view);
   const niveles = (pk.niveles && Object.keys(pk.niveles).length) ? pk.niveles : (_gch.niveles15 || {});
-  const svg = chartSvg({ ...pk, ticker: pk.ticker || sym, niveles }, { vista: 'bb', bb: _gch.bb, hlines: true, tf, h: H, w: W, ventana: { start: v.start, end: v.end }, extra: lineas, dec, fondo: 'var(--bg2)', targets: _targets.por[sym] || null });
+  const svg = chartSvg({ ...pk, ticker: pk.ticker || sym, niveles }, { vista: 'bb', bb: _gch.bb, hlines: true, tf, h: H, w: W, ventana: { start: v.start, end: v.end }, extra: lineas, dec, targets: _targets.por[sym] || null });
   el.innerHTML = svg;
   if (leg) {
     const nv = niveles || {};
