@@ -5616,23 +5616,42 @@ window.MZ = Object.assign(window.MZ || {}, {
 // semana del último cierre. Una operación sigue siendo UNA (un grupo), aunque cierre
 // en dos tramos. mejor/peor y los aciertos solo miran las que tienen resultado: un
 // null no es una operación de $0.
+// v67 (C) · El DINERO va por FILA del bróker (cerradasDesde abre también los grupos del bróker): la utilidad del día, la
+// semana, el mes y el año es la del Diario. La OPERACIÓN se cuenta como un viaje del Diario: el día en que queda PLANA y
+// con su resultado ENTERO (aportePeriodoCuentas). Así un día puede llevar $ sin operación cerrada (un tramo vendido de
+// una que vence otro día, la GTC llenada a medias), como dice el Diario «bajo el día». `ops` = todas las que aportan algo
+// al período (dinero o cierre: las que mide metricasCuentas); `n` = las que quedaron planas en él.
 function resumenPeriodo(ops, desde) {
   const d0 = String(desde || '');
   const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
-  const enP = [], res = [];
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const enP = [], res = []; let util = 0, n = 0;
   for (const op of (ops || [])) {
     if (!op) continue;
-    const filas = cerradasDesde([op], d0);
-    if (!filas.length) continue;
+    const a = aportePeriodoCuentas(op, d0);
+    if (!a.filas.length && !a.plana) continue;
     enP.push(op);
-    const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
-    if (vs.length) res.push(Math.round(vs.reduce((a, b) => a + b, 0) * 100) / 100);
+    if (a.util != null) util += a.util;
+    if (a.plana) { n++; if (num(op.resultado_usd) != null) res.push(r2(num(op.resultado_usd))); }
   }
-  const util = Math.round(res.reduce((a, b) => a + b, 0) * 100) / 100;
-  const ganadoras = res.filter(n => n > 0).length;
-  return { ops: enP, n: enP.length, util,
+  const ganadoras = res.filter(x => x > 0).length;
+  return { ops: enP, n, util: r2(util),
     ganadoras, winrate: res.length ? Math.round(100 * ganadoras / res.length) : 0,
     mejor: res.length ? Math.max(...res) : null, peor: res.length ? Math.min(...res) : null };
+}
+// v67 (C) · Lo que UNA operación (grupo de unirOperaciones) aporta al período que empieza en `desde` (fecha NY), PURO.
+//   · filas: sus filas del bróker / tramos cerrados EN el período (cerradasDesde), cada uno en el día NY de su cerrada_at;
+//     util = la suma de su resultado (null si ninguna lo trae: sin dato no es $0), redondeada como la de siempre.
+//   · plana: la operación QUEDÓ PLANA en el período —cerrada o expirada, con su cerrada_at (el último cierre del grupo) en
+//     él—. Es cuando cuenta como operación (n, aciertos, mejor/peor, racha) y lo hace con su resultado ENTERO, como un viaje
+//     del Diario. Una abierta con un tramo cobrado (o un grupo sin cerrada_at) aporta su dinero y no cuenta todavía.
+function aportePeriodoCuentas(op, desde) {
+  const d0 = String(desde || '');
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const filas = op ? cerradasDesde([op], d0) : [];
+  const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
+  const plana = !!op && (op.estado === 'cerrada' || op.estado === 'expirada') && !!op.cerrada_at && (ymdNY(op.cerrada_at) || '') >= d0;
+  return { filas, plana, util: vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) * 100) / 100 : null };
 }
 
 // ---------- v62 · CUENTAS CON TODO EL DETALLE Y A PANTALLA COMPLETA (Andrés 2026-10-11, desde el laptop, viendo la
@@ -5868,6 +5887,10 @@ function dteEntrada(op) {
 // v62 rev: las comisiones solo de los brókeres que las MANDAN (comisionDelBroker: E*TRADE y tasty, o fees > 0); los que
 // no (moomoo y Schwab con 0, fichas a mano) van en sin_com_brokers para que el tile diga que su P&L va sin descontarlas
 // en vez de presentar el período entero como «neto» y su 0 «no disponible» como $0.00.
+// v67 (C) · Como resumenPeriodo (aportePeriodoCuentas): utilidad, capital, rentabilidad y comisiones por FILA (cada fila del
+// bróker o tramo en el día NY de su cierre, como el Diario); ops, aciertos, verdes/rojas, medias, factor, mejor/peor y
+// racha por OPERACIÓN, el día en que quedó plana y con su resultado entero (como los viajes del Diario). `sin_cerrar` =
+// las que aportan dinero al período sin quedar planas en él (siguen abiertas o su último cierre cae en otro período).
 function metricasCuentas(ops, desde) {
   const d0 = String(desde || '');
   const r2 = (n) => Math.round(n * 100) / 100;
@@ -5875,21 +5898,21 @@ function metricasCuentas(ops, desde) {
   const xs = [];
   for (const op of (ops || [])) {
     if (!op) continue;
-    const filas = cerradasDesde([op], d0);
-    if (!filas.length) continue;
-    const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
+    const a = aportePeriodoCuentas(op, d0), filas = a.filas;
+    if (!filas.length && !a.plana) continue;
     const fees = filas.map(f => num(f.fees)).filter(v => v != null);
     const fs = fees.length ? fees.reduce((a, b) => a + b, 0) : null;
-    xs.push({ op, res: vs.length ? r2(vs.reduce((a, b) => a + b, 0)) : null,
+    xs.push({ op, plana: a.plana, util: a.util, res: (a.plana && num(op.resultado_usd) != null) ? r2(num(op.resultado_usd)) : null,
       capital: filas.reduce((s, f) => s + (num(f.prima_fill) || 0) * (num(f.contratos) || 0) * 100, 0),
       fees: fs, daCom: comisionDelBroker({ broker: op.broker, fees: fs }),
-      cierre: filas.map(f => f.cerrada_at || '').sort().pop() || '' });
+      cierre: String(op.cerrada_at || '') });
   }
   const agregar = (lista) => {
-    const res = lista.map(x => x.res).filter(v => v != null);
-    const util = r2(res.reduce((a, b) => a + b, 0)), capital = r2(lista.reduce((s, x) => s + x.capital, 0));
+    const planas = lista.filter(x => x.plana);
+    const res = planas.map(x => x.res).filter(v => v != null);
+    const util = r2(lista.reduce((s, x) => s + (x.util != null ? x.util : 0), 0)), capital = r2(lista.reduce((s, x) => s + x.capital, 0));
     const gan = res.filter(v => v > 0), per = res.filter(v => v < 0);
-    return { ops: lista.length, con_resultado: res.length, ganadoras: gan.length, perdedoras: per.length,
+    return { ops: planas.length, con_resultado: res.length, ganadoras: gan.length, perdedoras: per.length,
       aciertos: res.length ? Math.round(100 * gan.length / res.length) : null, utilidad: util, capital,
       rentabilidad: capital > 0 ? Math.round(util / capital * 10000) / 100 : null, res, gan, per };
   };
@@ -5915,6 +5938,7 @@ function metricasCuentas(ops, desde) {
     }).sort((a, b) => (b.utilidad - a.utilidad) || a.clave.localeCompare(b.clave));
   };
   return { util: T.utilidad, n: T.ops, con_resultado: T.con_resultado, ganadoras: T.ganadoras, perdedoras: T.perdedoras,
+    sin_cerrar: xs.filter(x => !x.plana).length,       // v67 (C): con dinero en el período sin quedar planas en él
     winrate: T.aciertos == null ? 0 : T.aciertos,      // como resumenPeriodo: sin resultados, 0 %
     ganancia_bruta: gb, perdida_bruta: pb,
     gan_media: T.ganadoras ? r2(gb / T.ganadoras) : null, perd_media: T.perdedoras ? r2(pb / T.perdedoras) : null,
@@ -6224,9 +6248,13 @@ function tilesCuentasHtml(M, periodo) {
     : noDan ? `${noDan}: P&L sin descontarlas` : 'lo que bajó cada bróker';
   const subCom = con.length ? `ya descontadas del neto · las da${con.length > 1 ? 'n' : ''} ${esc(lista(con))}${sin.length ? ` (${esc(lista(sin))} no)` : ''}`
     : noDan || 'ningún bróker las reportó en el período';
+  // v67 (C): el dinero va por fila y la operación cuenta el día en que queda plana (como el Diario «bajo el día»): si
+  // alguna aportó dinero sin quedar plana en el período, se dice, para que «0 ops» con utilidad no parezca un error
+  const k = Number(M.sin_cerrar) || 0;
+  const sinCerrar = k ? ` · +${k} con dinero aquí que no ${k > 1 ? 'quedaron planas' : 'quedó plana'} en el período` : '';
   return `<div class="dcards">
     ${t(`UTILIDAD · ${tit}`, usd(M.util), subUtil, colUtil(M.util))}
-    ${t('OPERACIONES Y ACIERTOS', `${M.n} ops`, `${M.winrate}% aciertos · ${M.ganadoras} en verde, ${M.perdedoras} en rojo`)}
+    ${t('OPERACIONES Y ACIERTOS', `${M.n} ops`, `${M.winrate}% aciertos · ${M.ganadoras} en verde, ${M.perdedoras} en rojo${sinCerrar}`)}
     ${t('GANANCIA / PÉRDIDA MEDIA', `<span style="color:${colUtil(M.gan_media)}">${usd(M.gan_media)}</span> / <span style="color:${colUtil(M.perd_media)}">${usd(M.perd_media)}</span>`, 'por ganadora · por perdedora', null, true)}
     ${t('FACTOR DE BENEFICIO', M.factor != null ? M.factor.toFixed(2) : '—', M.factor != null ? `ganado ${usd(M.ganancia_bruta)} ÷ perdido ${usd(-M.perdida_bruta)}` : M.ganadoras ? 'sin pérdidas en el período' : 'sin operaciones con resultado', M.factor == null ? null : M.factor >= 1 ? 'var(--verde)' : 'var(--rojo)')}
     ${t('CAPITAL Y RENTABILIDAD', pctD2(M.rentabilidad), `${usd(M.util)} sobre ${usd(M.capital)} de capital usado`, colUtil(M.rentabilidad))}

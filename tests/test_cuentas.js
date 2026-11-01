@@ -22,7 +22,7 @@ const canon = (v) => Array.isArray(v) ? v.map(canon) : (v && typeof v === 'objec
 const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasCuentas', 'sinHoraIso', 'detalleOpCuentas', 'horaOpCuentas',
   'contratoOpCuentas', 'entradaOpCuentas', 'salidaOpCuentas', 'duracionOpCuentas', 'accionOpCuentas', 'senalOpCuentasHtml', 'tramosOpCuentasHtml',
   'tarjetaHistorial', 'filaHistorialCuentas', 'tilesCuentasHtml', 'tablasDesgloseCuentasHtml', 'seccionHistorialCuentas', 'ctaVerMas', 'ctaCambiaFormato',
-  'cuentasAncho', 'unirOperaciones', 'resumenPeriodo', 'cerradasDesde', 'claveContrato', 'spotDeFill', 'peorFuenteSpot', 'distanciaStrike', 'pctEsp',
+  'cuentasAncho', 'unirOperaciones', 'resumenPeriodo', 'cerradasDesde', 'aportePeriodoCuentas', 'claveContrato', 'spotDeFill', 'peorFuenteSpot', 'distanciaStrike', 'pctEsp',
   'usdSigno', 'horaNY', 'fechaCorta', 'durTxt', 'diasEntre', 'gestorFormato',
   // v62 rev
   'diaOpNY', 'diaAperturaOp', 'partesOpCuentas', 'comisionDelBroker', 'filaVencioCuentas', 'filaPresuntaCuentas', 'indiceCuentas', 'accionParteCuentas',
@@ -181,21 +181,24 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const ops = K.unirOperaciones(POS_A1, BT_A1).ops;
     const R = K.resumenPeriodo(ops, '2026-10-01');
     const M = K.metricasCuentas(R.ops, '2026-10-01');
-    igual([M.util, M.n, M.con_resultado, M.ganadoras, M.perdedoras, M.winrate], [-113.2, 8, 8, 5, 3, 63], 'utilidad neta −$113.20, 8 operaciones, 5 en verde y 3 en rojo, 63 % de aciertos');
-    igual([M.ganancia_bruta, M.perdida_bruta, M.gan_media, M.perd_media, M.factor], [751.8, -865, 150.36, -288.33, 0.87], 'ganancia bruta $751.80 y pérdida bruta −$865; media por ganadora $150.36 y por perdedora −$288.33; factor de beneficio 751.8 / 865 = 0.87');
+    // v67 (C): la operación cuenta el día en que queda PLANA (como un viaje del Diario); la SPY PUT 660 a mano sigue ABIERTA
+    // con su tramo de $144 cobrado: su dinero va a la utilidad (por fila) pero no es una operación cerrada todavía
+    igual([M.util, M.n, M.con_resultado, M.ganadoras, M.perdedoras, M.winrate, M.sin_cerrar], [-113.2, 7, 7, 4, 3, 57, 1], 'utilidad neta −$113.20 (con los $144 cobrados de la SPY abierta), 7 operaciones planas, 4 en verde y 3 en rojo, 57 % de aciertos; +1 con dinero sin quedar plana (v67)');
+    igual([M.ganancia_bruta, M.perdida_bruta, M.gan_media, M.perd_media, M.factor], [607.8, -865, 151.95, -288.33, 0.7], 'ganancia bruta $607.80 (las 4 planas en verde) y pérdida bruta −$865; media por ganadora $151.95 y por perdedora −$288.33; factor de beneficio 607.8 / 865 = 0.70');
     igual([M.capital, M.rentabilidad, M.comisiones], [3225, -3.51, 5.2], 'capital usado Σ prima × contratos × 100 = $3,225; rentabilidad −3.51 %; comisiones 2.6 + 2.6 + 0 = $5.20 (las sin dato no suman)');
     igual([M.mejor, M.peor, M.racha], [337.4, -400, { tipo: 'perdedoras', n: 1 }], 'mejor $337.40, peor −$400; racha: la última por fecha de cierre (META −$400) es una perdedora y la anterior ganó');
     igual(M.por_activo.map(x => [x.clave, x.ops, x.aciertos, x.utilidad, x.capital, x.rentabilidad]),
-      [['NVDA', 2, 100, 440.4, 1130, 38.97], ['SPY', 2, 100, 244, 360, 67.78], ['TSLA', 2, 50, -97.6, 1035, -9.43], ['AAPL', 1, 0, -300, 300, -100], ['META', 1, 0, -400, 400, -100]],
-      'por activo: ops, aciertos %, utilidad, capital y rentabilidad, ordenado por utilidad');
+      [['NVDA', 2, 100, 440.4, 1130, 38.97], ['SPY', 1, 100, 244, 360, 67.78], ['TSLA', 2, 50, -97.6, 1035, -9.43], ['AAPL', 1, 0, -300, 300, -100], ['META', 1, 0, -400, 400, -100]],
+      'por activo: ops (planas), aciertos %, utilidad (por fila: SPY suma los $144 de la abierta), capital y rentabilidad, ordenado por utilidad');
     igual(M.por_broker.map(x => [x.clave, x.ops, x.aciertos, x.utilidad, x.rentabilidad]),
-      [['etrade', 3, 100, 548.8, 49], ['tasty', 1, 100, 100, 62.5], ['moomoo', 1, 0, -165, -26.83], ['schwab', 2, 50, -297, -28.83], ['manual', 1, 0, -300, -100]],
+      [['etrade', 2, 100, 548.8, 49], ['tasty', 1, 100, 100, 62.5], ['moomoo', 1, 0, -165, -26.83], ['schwab', 2, 50, -297, -28.83], ['manual', 1, 0, -300, -100]],
       'por bróker (la ficha a mano sin bróker va como «manual»), ordenado por utilidad');
     igual([M.util, M.n, M.winrate, M.mejor, M.peor], [R.util, R.n, R.winrate, R.mejor, R.peor], 'COHERENTE con resumenPeriodo sobre los mismos datos: utilidad, n, % de aciertos, mejor y peor');
     // un corte a mitad de un cierre parcial: cada operación aporta solo lo que cerró EN el período, como resumenPeriodo
     const R2 = K.resumenPeriodo(ops, '2026-10-08'), M2 = K.metricasCuentas(R2.ops, '2026-10-08');
     igual([M2.util, M2.n, M2.winrate, M2.mejor, M2.peor], [R2.util, R2.n, R2.winrate, R2.mejor, R2.peor], 'coherente también cortando a mitad del cierre parcial de NVDA (desde el 8 de octubre)');
-    igual([M2.util, M2.n, M2.capital], [-76, 4, 1180], 'y de NVDA solo cuenta el tramo del 8 ($80 sobre $420 de capital: 420 + 200 + 400 + 160)');
+    igual([M2.util, M2.n, M2.capital, M2.sin_cerrar], [-76, 3, 1180, 1], 'y de NVDA solo cuenta el tramo del 8 en el dinero ($80 sobre $420 de capital: 420 + 200 + 400 + 160); v67: 3 planas (NVDA quedó plana el 8, META y SPY de tasty) y la SPY abierta aporta sus $144 sin contar');
+    igual([M2.mejor, M2.peor], [103, -400], 'v67: NVDA cuenta con su resultado ENTERO ($103) el día en que quedó plana, como un viaje del Diario');
     // un resultado nulo cuenta en n pero no en los aciertos, igual que en resumenPeriodo
     const nulas = [{ estado: 'cerrada', cerrada_at: '2026-10-06T18:00:00Z', resultado_usd: 150, symbol: 'X', prima_fill: 1, contratos: 1 },
       { estado: 'cerrada', cerrada_at: '2026-10-07T18:00:00Z', resultado_usd: null, symbol: 'X', prima_fill: 1, contratos: 1 }];
@@ -275,7 +278,8 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const tl = K.tilesCuentasHtml(M, 'semana');
     igual((tl.match(/class="dcard"/g) || []).length, 8, 'ocho tiles');
     ['UTILIDAD · SEMANA', 'OPERACIONES Y ACIERTOS', 'GANANCIA / PÉRDIDA MEDIA', 'FACTOR DE BENEFICIO', 'CAPITAL Y RENTABILIDAD', 'COMISIONES', 'MEJOR / PEOR', 'RACHA'].forEach(l => assert(tl.includes(l), 'tile ' + l));
-    assert(/-\$113/.test(tl) && /8 ops/.test(tl) && /63% aciertos/.test(tl) && /0\.87/.test(tl) && /-3\.51%/.test(tl) && /\$5\.20/.test(tl) && /\$337/.test(tl) && /-\$400/.test(tl) && />1<\/div><div class="sb">perdedora seguida hasta la última cerrada/.test(tl), 'los tiles dicen utilidad, ops, aciertos, factor, rentabilidad, comisiones, mejor/peor y la racha (en singular)');
+    assert(/-\$113/.test(tl) && /7 ops/.test(tl) && /57% aciertos/.test(tl) && /0\.70/.test(tl) && /-3\.51%/.test(tl) && /\$5\.20/.test(tl) && /\$337/.test(tl) && /-\$400/.test(tl) && />1<\/div><div class="sb">perdedora seguida hasta la última cerrada/.test(tl), 'los tiles dicen utilidad, ops, aciertos, factor, rentabilidad, comisiones, mejor/peor y la racha (en singular)');
+    assert(/57% aciertos · 4 en verde, 3 en rojo · \+1 con dinero aquí que no quedó plana en el período</.test(tl), 'v67 (C): OPERACIONES dice que una aportó dinero sin quedar plana en el período (la SPY abierta con su tramo cobrado)');
     assert(/UTILIDAD · HOY/.test(K.tilesCuentasHtml(M, 'dia')), 'con «Hoy» el tile dice UTILIDAD · HOY');
     const dg = K.tablasDesgloseCuentasHtml(M);
     assert(/<div class="ctados">/.test(dg) && /POR ACTIVO/.test(dg) && /POR BRÓKER/.test(dg) && /<th>Ops<\/th><th>Aciertos<\/th><th>Utilidad<\/th><th>Rentab\.<\/th>/.test(dg) && /<b>NVDA<\/b><\/td><td>2<\/td><td>100%<\/td>/.test(dg) && /<b>E\*TRADE<\/b>/.test(dg) && /<b>a mano<\/b>/.test(dg), 'POR ACTIVO y POR BRÓKER: ops · aciertos · utilidad · rentabilidad');
