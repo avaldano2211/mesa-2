@@ -1154,7 +1154,8 @@ async function vistaTickers(forzar) {
 
 // ---------- Charts: velas + Bollinger + H-lines (como las dos ventanas de TC2000 del curso) ----------
 // Doctrina (Investep / Joel Sardiñas): dos ventanas — izquierda «Medias + H-lines»
-// (SMA 20 amarilla fina, 40 roja fina, 100 verde gruesa, 200 morada más gruesa;
+// (SMA 20 amarilla fina, 40 roja fina, 100 verde gruesa, 200 fucsia más gruesa —v67, Andrés 2026-11-01: «200= fuxia»,
+// antes decía morada—;
 // H-lines: ATH/ATL en azul, techo y piso de HORA más próximos al precio en
 // blanco, target de analistas de Finviz en rojo claro) y derecha «Bollinger»
 // (20, 2σ, con punto medio). Líneas nativas en ambas: cierre de ayer (amarillo

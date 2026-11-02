@@ -265,4 +265,11 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   assert(/value="102\.9"/.test(html) && /value="98\.2"/.test(html), 'los campos siguen rellenos con lo guardado');
 }
 
+// ════════════════ rev69 · arreglos del juez del frente gráfico (cada bloque FALLA sin su arreglo) ════════════════
+// 7. la doctrina escrita en main.js dice la 200 FUCSIA (Andrés corrige el «morada»): una sola doctrina en el archivo
+{
+  const doctrina = (C.FUENTE.match(/\/\/ \(SMA 20 amarilla fina[^\n]*/) || [''])[0];
+  assert(/200 fucsia/.test(doctrina) && !/200 morada/.test(C.FUENTE), 'la doctrina de la cabecera de Charts dice «200 fucsia» y ya no queda ningún «200 morada» en main.js', doctrina);
+}
+
 C.resumen();
