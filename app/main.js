@@ -1379,7 +1379,7 @@ function leyendaChartSvg(variantes, x, y, ancho, fs) {
   const v = vs.find(p => largo(p) <= ancho) || vs[vs.length - 1];
   const svg = `<text data-leyenda="1" x="${x}" y="${y}" style="font-size:${fs}px;white-space:pre" font-weight="700">`
     + v.map((p, i) => (i ? `<tspan fill="${CHART_COL.tenue}" font-weight="400">${SEP}</tspan>` : '')
-      + `<tspan${p.ley ? ` data-ley="${esc(p.ley)}"` : ''} fill="${p.tenue ? CHART_COL.tenue : p.c}"${p.tenue ? ' font-weight="400"' : ''}>${esc(p.txt)}</tspan>`).join('')
+      + `<tspan${p.ley ? ` data-ley="${esc(p.ley)}"` : ''}${p.fuera ? ' data-fuera="1"' : ''} fill="${p.tenue ? CHART_COL.tenue : p.c}"${p.tenue ? ' font-weight="400"' : ''}>${esc(p.txt)}</tspan>`).join('')
     + `</text>`;
   return { svg, partes: v };
 }
@@ -1679,21 +1679,26 @@ function chartSvg(pk, op) {
   //    (mediasExtM), por tramo como en la v63
   //    v67: con su color y grosor de TC2000 (CHART_COL), ENCIMA de las velas; smaUlt guarda el valor del último punto
   //    DIBUJADO de cada una (el de la leyenda)
+  //    v67 rev69 (juez: la leyenda nombraba en fucsia una «Avg 200» que el gráfico no dejaba ver): smaVis = la media tiene
+  //    algún punto DENTRO de la escala [lo, hi]. La escala solo se estira por las medias cercanas (±35 %): una media lejana
+  //    (la 200 de Hora tras una tendencia) se dibuja entera FUERA del clip, y la leyenda no puede nombrarla como si estuviera
   let smaSvg = '';
-  const smaUlt = {};
+  const smaUlt = {}, smaVis = {};
+  const enEscala = (v) => v >= lo && v <= hi;
   if (hl) {
     const poli = (k, col, w, pts) => `<polyline data-sma="${k}" points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" opacity=".95"/>`;
     SMAS.forEach(([k, col, w]) => {
       if (ix && ix.sma[k]) {
         const pts = []; let ult = null;
-        for (let i = 0; i < n; i++) if (ix.sma[k][i] != null) { pts.push(`${f1(X(i))},${f1(Y(Number(ix.sma[k][i])))}`); ult = Number(ix.sma[k][i]); }
-        if (pts.length >= 2) { smaSvg += poli(k, col, w, pts); smaUlt[k] = ult; }
+        let vis = false;
+        for (let i = 0; i < n; i++) if (ix.sma[k][i] != null) { pts.push(`${f1(X(i))},${f1(Y(Number(ix.sma[k][i])))}`); ult = Number(ix.sma[k][i]); if (enEscala(ult)) vis = true; }
+        if (pts.length >= 2) { smaSvg += poli(k, col, w, pts); smaUlt[k] = ult; if (vis) smaVis[k] = true; }
         return;
       }
       tramos.forEach(([a, b]) => {
-        const pts = []; let ult = null;
-        for (let q = a; q <= b; q++) if (smas[k][q] != null) { pts.push(`${f1(X(posReg[q]))},${f1(Y(Number(smas[k][q])))}`); ult = Number(smas[k][q]); }
-        if (pts.length >= 2) { smaSvg += poli(k, col, w, pts); smaUlt[k] = ult; }
+        const pts = []; let ult = null, vis = false;
+        for (let q = a; q <= b; q++) if (smas[k][q] != null) { pts.push(`${f1(X(posReg[q]))},${f1(Y(Number(smas[k][q])))}`); ult = Number(smas[k][q]); if (enEscala(ult)) vis = true; }
+        if (pts.length >= 2) { smaSvg += poli(k, col, w, pts); smaUlt[k] = ult; if (vis) smaVis[k] = true; }
       });
     });
   }
@@ -1753,10 +1758,16 @@ function chartSvg(pk, op) {
   //    Las etiquetas que no cupieron (solo en un gráfico mini) se dicen aquí.
   const pref = { txt: [pk.ticker, nombreTf(tf)].filter(Boolean).join(' · '), c: CHART_COL.ejeFuerte, ley: 'cab' };
   let ricas = [];
+  //    v67 rev69: una media dibujada pero FUERA de la escala (smaVis) sale tenue con su flecha: «Avg 200 231.95 ↓ fuera»
+  //    (por debajo del gráfico) / «Avg 200 ↓ fuera» / «200 ↓»; jamás en su color como si se viera
+  const smaFuera = {};
+  SMAS.forEach(([k]) => { if (smaUlt[k] != null && !smaVis[k]) smaFuera[k] = smaUlt[k] > hi ? '↑' : '↓'; });
   if (hl) {
-    const it = (k, col, conV) => smaUlt[k] != null ? { txt: `Avg ${k}${conV ? ' ' + fP(smaUlt[k]) : ''}`, c: col, ley: k } : { txt: `Avg ${k} —`, tenue: true, ley: k };
+    const it = (k, col, conV) => smaFuera[k] ? { txt: `Avg ${k}${conV ? ' ' + fP(smaUlt[k]) : ''} ${smaFuera[k]} fuera`, tenue: true, fuera: true, ley: k }
+      : smaUlt[k] != null ? { txt: `Avg ${k}${conV ? ' ' + fP(smaUlt[k]) : ''}`, c: col, ley: k } : { txt: `Avg ${k} —`, tenue: true, ley: k };
     ricas = [SMAS.map(([k, col]) => it(k, col, true)), SMAS.map(([k, col]) => it(k, col, false)),
-      SMAS.map(([k, col]) => smaUlt[k] != null ? { txt: k, c: col, ley: k } : { txt: k + ' —', tenue: true, ley: k })];
+      SMAS.map(([k, col]) => smaFuera[k] ? { txt: `${k} ${smaFuera[k]}`, tenue: true, fuera: true, ley: k }
+        : smaUlt[k] != null ? { txt: k, c: col, ley: k } : { txt: k + ' —', tenue: true, ley: k })];
   } else if (conBB) {
     ricas = bbDib
       ? [[{ txt: 'Bollinger Bands 20 2', c: CHART_COL.bbBanda, ley: 'bb' }, { txt: 'Moving Average 20 (punto medio)', c: CHART_COL.bbMedio, ley: 'bb-medio' }],
@@ -1775,7 +1786,8 @@ function chartSvg(pk, op) {
   out += ley.svg;
 
   // aria-label (G2): el marco y la vista, y las series y H-lines dibujadas
-  const ariaSeries = hl ? SMAS.map(([k]) => smaUlt[k] != null ? `SMA ${k}` : `SMA ${k} sin historia`).join(', ')
+  const ariaSeries = hl ? SMAS.map(([k]) => smaFuera[k] ? `SMA ${k} fuera del gráfico (por ${smaFuera[k] === '↑' ? 'encima' : 'debajo'})`
+    : smaUlt[k] != null ? `SMA ${k}` : `SMA ${k} sin historia`).join(', ')
     : conBB ? (bbDib ? 'Bollinger Bands 20 2 con su punto medio (media de 20)' : 'Bollinger Bands 20 2 sin historia') : '';
   const ariaLineas = vis.map(o => o.lb || `línea ${fP(o.v)}`).join(', ');
   const aria = (pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger') + ariaExt

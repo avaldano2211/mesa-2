@@ -60,6 +60,7 @@ const TONO = {
   grisClaro: ([r, g, b]) => Math.min(r, g, b) > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 40 && !(r > 240 && g > 240 && b > 240),
 };
 const es = (c, tono) => { const rgb = hex(c); return !!rgb && TONO[tono](rgb); };
+const CHART_COL_SMA200 = () => uno(hl, /<polyline data-sma="200"[^>]*>/g).stroke;   // rev69: el fucsia con que se dibuja la 200
 
 // ---------- el escenario: TSLA-like en Día, 250 velas (historia para las 4 medias) y niveles APRETADOS ----------
 //   techo 100.32, cierre ayer 100.27, apertura 100.22 y piso 100.18 caben en ~8 px: con la v66 la etiqueta a < 9 px de la
@@ -270,6 +271,31 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
 {
   const doctrina = (C.FUENTE.match(/\/\/ \(SMA 20 amarilla fina[^\n]*/) || [''])[0];
   assert(/200 fucsia/.test(doctrina) && !/200 morada/.test(C.FUENTE), 'la doctrina de la cabecera de Charts dice «200 fucsia» y ya no queda ningún «200 morada» en main.js', doctrina);
+}
+
+// 8. una media DIBUJADA pero fuera de la escala (la escala solo se estira por las medias a ±35 %): la leyenda y el aria-label
+//    no la nombran como si se viera (juez rev69: «Avg 200» en fucsia con 0 de 61 puntos dentro del área de velas)
+{
+  const T1 = Math.floor(Date.parse('2026-08-03T13:30:00Z') / 1000), vs = [];
+  for (let i = 0; i < 260; i++) {   // AAPL de Hora: sube fuerte y luego se queda plana (la SMA 200 queda muy por debajo)
+    const o = i < 170 ? 300 + i * 0.6 : 402 + Math.sin(i / 4) * 1.5, c = o + Math.cos(i / 3) * 0.8;
+    vs.push([T1 + i * 3600, +o.toFixed(2), +(Math.max(o, c) + .4).toFixed(2), +(Math.min(o, c) - .4).toFixed(2), +c.toFixed(2), 1000]);
+  }
+  const pkH = { ticker: 'AAPL', tf: 'hora', velas: vs, niveles: { spot: vs[vs.length - 1][4] } };
+  const tspans = (s) => [...s.matchAll(/<tspan data-ley="([^"]*)"([^>]*)>([^<]*)<\/tspan>/g)].map(m => ({ k: m[1], a: atributos(m[2]), t: m[3] }));
+  [[400, 300], [720, 320]].forEach(([w, h]) => {
+    const s = CH.chartSvg(pkH, { vista: 'hl', tf: 'hora', h, w, dec: 2 });
+    const clip = uno(s, /<clipPath[^>]*><rect[^>]*>/g), y0 = Number(clip.y), y1 = y0 + Number(clip.height);
+    const dentro = (k) => { const m = new RegExp('<polyline data-sma="' + k + '" points="([^"]*)"').exec(s); return m ? m[1].trim().split(' ').map(p => Number(p.split(',')[1])).filter(y => y >= y0 && y <= y1).length : -1; };
+    assert(dentro('200') === 0 && dentro('20') > 0, w + ' px: de verdad la SMA 200 se dibuja (data-sma) con 0 puntos dentro del área de velas y la 20 sí se ve', dentro('200') + ' / ' + dentro('20'));
+    const L = tspans(s), l200 = L.find(x => x.k === '200') || { a: {} }, l20 = L.find(x => x.k === '20') || { a: {} };
+    assert(l200.a.fill !== CHART_COL_SMA200() && l200.a['data-fuera'] === '1' && /^Avg 200( [\d.]+)? ↓ fuera$/.test(l200.t), w + ' px: la leyenda dice «Avg 200 … ↓ fuera» en tenue (no en fucsia como si estuviera)', JSON.stringify(l200));
+    assert(l20.a.fill === uno(s, /<polyline data-sma="20"[^>]*>/g).stroke && !l20.a['data-fuera'], 'y la 20, que sí se ve, sigue en su color', JSON.stringify(l20));
+    const aria = (/aria-label="([^"]*)"/.exec(s) || [])[1] || '';
+    assert(/SMA 200 fuera del gráfico \(por debajo\)/.test(aria) && /SMA 20, /.test(aria), w + ' px: el aria-label dice «SMA 200 fuera del gráfico (por debajo)»', aria);
+  });
+  // con una media dentro de la escala nada cambia (el escenario de siempre: las 4 en su color)
+  assert(!/data-fuera/.test(hl), 'con las cuatro medias a la vista, ninguna se marca fuera');
 }
 
 C.resumen();
