@@ -398,12 +398,46 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
 //     373) y el nombre quedaba en «target / alto / 250.00». El nombre nunca se parte; el subtítulo baja y se parte.
 //     (La medida en el navegador va en rev69; aquí, las reglas de index.html que lo garantizan.)
 {
-  const css = require('fs').readFileSync(path.join(path.dirname(path.resolve(process.argv[2])), '..', 'index.html'), 'utf8');
+  const fsx = require('fs');   // el index.html al lado del main.js probado (../index.html) o, si no hay, el de este árbol
+  const cssRuta = [path.join(path.dirname(path.resolve(process.argv[2])), '..', 'index.html'), path.join(__dirname, '..', 'index.html')].find(r => fsx.existsSync(r));
+  const css = cssRuta ? fsx.readFileSync(cssRuta, 'utf8') : '';
   const regla = (sel) => { const m = new RegExp('(?:^|[}\\n])\\s*' + sel.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&') + '\\s*\\{([^}]*)\\}').exec(css); return m ? m[1] : null; };
   const hlR = regla('.hl') || '', fr = regla('.hl .fresco') || '', nom = regla('.hl>span:first-child') || '';
   assert(!/white-space:\s*nowrap/.test(fr) && /min-width:\s*0/.test(fr), 'el subtítulo de una fila H-LINES se puede partir (sin nowrap) y encoger', fr);
   assert(/flex-wrap:\s*wrap/.test(hlR) && /margin-left:\s*auto/.test(fr), 'si no cabe al lado del nombre, baja a su propia fila, a la derecha', hlR);
   assert(/white-space:\s*nowrap/.test(nom), 'y el nombre de la línea («target alto 250.00») nunca se parte en columna', nom);
+}
+
+// 13. el apilado con las líneas PEGADAS AL EJE DE ABAJO: la pasada hacia arriba las sube (sin ella, las etiquetas bajaban
+//     hasta y≈199 en un svg de 200, por debajo del eje y encima de los rótulos del tiempo, sin que nada avisara)
+{
+  // la función sola: 4 etiquetas cuyas líneas están en el borde de abajo
+  const ap = CH.apilarEtiquetas([{ k: 'a', v: 4, y: 182 }, { k: 'b', v: 3, y: 182.5 }, { k: 'c', v: 2, y: 183 }, { k: 'd', v: 1, y: 183.5 }], 11, 20, 179, []);
+  const ps = ap.puestas.map(e => e.pos);
+  assert(ap.sinSitio.length === 0 && ps.every(y => y >= 20 && y <= 179) && ps.slice(1).every((y, i) => y - ps[i] >= 11 - 1e-9), 'apilarEtiquetas: con 4 líneas en el borde de abajo, todas dentro de [yMin, yMax] y separadas', JSON.stringify(ps));
+  igual(ap.puestas.map(e => e.k), ['a', 'b', 'c', 'd'], 'y en el orden de sus líneas');
+  // en el gráfico de verdad (el caso del juez: piso, cierre, apertura y mín a centavos del mínimo de las velas)
+  const vs = velas(78);
+  const lo = Math.min(...vs.map(v => v[3]));
+  const pkB = { ticker: 'SPY', velas: vs, niveles: { spot: 100.4, pisos_hora: [{ p: lo + .01 }], cierre_ayer: lo + .04, apertura_hoy: lo + .07, atl: lo + .10, ath: 101.4, ath_dias: 30 } };
+  const sB = CH.chartSvg(pkB, { vista: 'hl', tf: 'm15', h: 200, w: 400 });
+  const eje = Number(uno(sB, /<clipPath[^>]*><rect[^>]*>/g).y) + Number(uno(sB, /<clipPath[^>]*><rect[^>]*>/g).height);
+  const ysB = elementos(sB, /<text data-etq="[^"]*"[^>]*>/g).map(e => Number(e.y));
+  assert(ysB.length >= 4 && Math.max(...ysB) <= eje - 3 + 1e-9, 'gráfico 400×200 con 4 líneas pegadas al eje de abajo: ninguna etiqueta baja del área de velas (la más baja en y ' + Math.max(...ysB).toFixed(1) + ', el eje en ' + eje.toFixed(1) + ')', JSON.stringify(ysB));
+}
+
+// 14. la lista H-LINES SIN el spot del worker: el precio de referencia es el cierre de la vela en curso (o de la última),
+//     como en el gráfico — el «— precio … —» va en su sitio y el techo/piso son los próximos a ESE precio
+{
+  const nvS = { techos_hora: [{ p: 101.5 }, { p: 99.9 }], pisos_hora: [{ p: 99.0 }, { p: 97.0 }], cierre_ayer: 100.6 };
+  const vsS = velas(30);
+  const pkS = { ticker: 'AAPL', tf: 'm15', velas: vsS, vela_viva: [vsS[29][0] + 900, 100.0, 100.4, 99.6, 100.2, 10], niveles: nvS };
+  const h = CH.hlinesLista(pkS, null, 2);
+  const orden = [...h.matchAll(/data-hl="([^"]*)"/g)].map(m => m[1]);
+  assert(/data-hl="spot"><span>— precio 100\.20 —/.test(h) && orden.indexOf('spot') === orden.indexOf('cierre_ayer') + 1, 'sin spot del worker, «— precio 100.20 —» (el cierre de la vela en curso) en su sitio, debajo del cierre de ayer 100.60', orden.join(' '));
+  assert(/data-hl="techo"><span>[^]*?techo hora 101\.50/.test(h) && /data-hl="piso"><span>[^]*?piso hora 99\.00/.test(h), 'y el techo y el piso son los próximos a ESE precio (101.50 y 99.00; no los de un precio vacío)', h.slice(0, 300));
+  const hU = CH.hlinesLista({ ...pkS, vela_viva: null }, null, 2);
+  assert(new RegExp('— precio ' + vsS[29][4].toFixed(2).replace('.', '\\.') + ' —').test(hU), 'sin vela en curso, el cierre de la última vela');
 }
 
 C.resumen();
