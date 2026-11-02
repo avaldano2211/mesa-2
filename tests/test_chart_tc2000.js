@@ -393,4 +393,17 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   assert(!/class="fuera"/.test(nodos['#gchLeg'].innerHTML), 'sin velas para dibujar, la leyenda no marca nada «fuera»');
 }
 
+// 12. la lista H-LINES cabe a 375 px (iPhone): el subtítulo largo («lejos del precio: fuera de este gráfico · el más optimista
+//     de los analistas», ~345 px) no puede ir en una sola línea sin partir: con nowrap la hoja ganaba scroll lateral (412 vs
+//     373) y el nombre quedaba en «target / alto / 250.00». El nombre nunca se parte; el subtítulo baja y se parte.
+//     (La medida en el navegador va en rev69; aquí, las reglas de index.html que lo garantizan.)
+{
+  const css = require('fs').readFileSync(path.join(path.dirname(path.resolve(process.argv[2])), '..', 'index.html'), 'utf8');
+  const regla = (sel) => { const m = new RegExp('(?:^|[}\\n])\\s*' + sel.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&') + '\\s*\\{([^}]*)\\}').exec(css); return m ? m[1] : null; };
+  const hlR = regla('.hl') || '', fr = regla('.hl .fresco') || '', nom = regla('.hl>span:first-child') || '';
+  assert(!/white-space:\s*nowrap/.test(fr) && /min-width:\s*0/.test(fr), 'el subtítulo de una fila H-LINES se puede partir (sin nowrap) y encoger', fr);
+  assert(/flex-wrap:\s*wrap/.test(hlR) && /margin-left:\s*auto/.test(fr), 'si no cabe al lado del nombre, baja a su propia fila, a la derecha', hlR);
+  assert(/white-space:\s*nowrap/.test(nom), 'y el nombre de la línea («target alto 250.00») nunca se parte en columna', nom);
+}
+
 C.resumen();

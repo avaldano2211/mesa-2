@@ -235,10 +235,14 @@
   .chart svg{display:block;width:100%;height:auto;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
   .chart svg text{font-family:var(--mono);font-size:9px}
   .chart .vacio{padding:26px 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
-  .hl{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
+  /* v67 rev69 (juez, iPhone 375 px: «lejos del precio: fuera de este gráfico · el más optimista de los analistas» con nowrap
+     desbordaba la hoja y aplastaba el nombre en «target / alto / 250.00»): el NOMBRE de la línea nunca se parte; el
+     subtítulo, si no cabe al lado, baja a su propia fila (flex-wrap), alineado a la derecha, y se parte por palabras */
+  .hl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 8px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
   .hl:first-child{border-top:none}
   .hl i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:7px}
-  .hl .fresco{text-align:right;white-space:nowrap}
+  .hl>span:first-child{white-space:nowrap}
+  .hl .fresco{text-align:right;margin-left:auto;min-width:0;overflow-wrap:anywhere}
   /* v67: la muestra de una línea del gráfico fuera de él (lista H-LINES, leyenda del gestor): un trocito del lienzo oscuro
      (el fondo va en línea, CHART_COL.lienzo) con la línea en su color y su trazo, igual en tema claro y oscuro */
   .hl i.chsw,.gleg span i.chsw,i.chsw{display:inline-block;width:24px;height:11px;border:0;border-radius:3px;vertical-align:middle;
