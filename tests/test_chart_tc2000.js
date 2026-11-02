@@ -60,6 +60,7 @@ const TONO = {
   grisClaro: ([r, g, b]) => Math.min(r, g, b) > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 40 && !(r > 240 && g > 240 && b > 240),
 };
 const es = (c, tono) => { const rgb = hex(c); return !!rgb && TONO[tono](rgb); };
+const H_VISTA = { v: 'hl' };   // rev69: la vista de la hoja de juguete (sección 10)
 const CHART_COL_SMA200 = () => uno(hl, /<polyline data-sma="200"[^>]*>/g).stroke;   // rev69: el fucsia con que se dibuja la 200
 
 // ---------- el escenario: TSLA-like en Día, 250 velas (historia para las 4 medias) y niveles APRETADOS ----------
@@ -330,6 +331,29 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   assert(nEtq < 2 && nota === '+' + (2 - nEtq) + ' ' + (2 - nEtq > 1 ? 'líneas' : 'línea') + ' sin etiqueta' && !/data-etq=/.test(est), 'mini estrecho (320) con precios de 5 cifras: la leyenda lleva las que caben y dice «' + nota + '»', JSON.stringify(Le));
   // fuera del mini, nada cambia: las etiquetas siguen en el área, a la izquierda (sección 2)
   assert(!/data-ley="etq-/.test(hl) && (hl.match(/data-etq=/g) || []).length === 9, 'en la hoja y las tarjetas las etiquetas siguen junto a sus líneas (solo el mini las lleva a la leyenda)');
+}
+
+// 10. la hoja del gráfico (pintarChart, con sus nodos de juguete): la lista H-LINES recibe las líneas que el gráfico de al
+//     lado DIBUJÓ (si no, la marca «fuera de este gráfico» queda desconectada) y, SIN gráfico (el aviso «Sin velas
+//     todavía…»), no marca ninguna (el juez vio las 6 de 6 «lejos del precio» con una sola vela)
+{
+  const nodos = {};
+  const H = construir(['pintarChart', 'chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'hlinesLista', 'rangoValido', 'fmtFechaNY'].concat(AUX_V67, opc(['nivelesDibujados'])),
+    { esc, haceCuanto, _ch: { sym: 'AAPL' }, $: (q) => (nodos[q] = nodos[q] || nodo()), chartPrefs: () => ({ vista: H_VISTA.v, tf: 'dia', ext: false }), _velas: new Map(), _targets: { por: {} },
+      chartSelectores: () => '', chartFrescoTxt: () => '', anchoVista: () => 375, GESTOR_ANCHO_TABLA: 900, lecturaChart: () => '', document: { activeElement: null } },
+    { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'].concat(CONST_V67) });
+  const lista = () => (nodos['#chHlines'] || {}).innerHTML || '';
+  const pkLejos = { ...pkD, niveles: { ...NV, ath: 1000 } };
+  H_VISTA.v = 'hl'; H.pintarChart({ payload: pkLejos }, TG);
+  assert(/<svg/.test(nodos['#chSvg'].innerHTML) && /class="hl fuera" data-hl="ath"/.test(lista()) && (lista().match(/class="hl fuera"/g) || []).length === 1,
+    'Medias + H-lines: la lista de la hoja marca «fuera de este gráfico» SOLO la línea que el gráfico no dibujó (máx a 1000)', (lista().match(/class="hl[^"]*" data-hl="[^"]*"/g) || []).join(' '));
+  H.pintarChart({ payload: { ...pkD, velas: pkD.velas.slice(-1) } }, TG);
+  assert(/Sin velas todavía/.test(nodos['#chSvg'].innerHTML) && /data-hl="techo"/.test(lista()) && !/hl fuera/.test(lista()) && !/fuera de este gráfico/.test(lista()),
+    'con UNA vela (no hay gráfico, solo el aviso) la lista sigue con sus líneas y no marca NINGUNA «lejos del precio»', (lista().match(/class="hl[^"]*" data-hl="[^"]*"/g) || []).join(' '));
+  H.pintarChart({ payload: { ...pkD, velas: pkD.velas.slice(0, 3).concat([[1, 2]]) } }, TG);
+  assert(/Sin velas todavía/.test(nodos['#chSvg'].innerHTML) && !/hl fuera/.test(lista()), 'tampoco con una fila de vela mal formada');
+  H_VISTA.v = 'bb'; H.pintarChart({ payload: pkLejos }, TG);
+  assert(!/hl fuera/.test(lista()), 'en la vista Bollinger (sin las H-lines Sardiñas en el gráfico) la lista no marca nada');
 }
 
 C.resumen();

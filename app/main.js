@@ -1725,9 +1725,11 @@ function chartSvg(pk, op) {
   //    línea lleva un conector de su color. A la IZQUIERDA, como desde la v45: la derecha es del eje de precios, de la
   //    cajita del spot y de las velas más nuevas (las que importan); a la izquierda están las más viejas. El halo de la
   //    letra es el lienzo.
+  //    v67 rev69: cada línea dice también su precio (data-v): con varios strikes (todos data-nivel="strike") la leyenda del
+  //    gestor sabe CUÁL se dibujó (nivelesDibujados)
   const vis = niv.filter(o => o.v >= lo && o.v <= hi).sort((a, b) => b.v - a.v);
   vis.forEach(o => {
-    out += `<line data-nivel="${o.k}" x1="${pad.l}" y1="${f1(Y(o.v))}" x2="${f1(W - pad.r)}" y2="${f1(Y(o.v))}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}"/>`;
+    out += `<line data-nivel="${o.k}" data-v="${o.v}" x1="${pad.l}" y1="${f1(Y(o.v))}" x2="${f1(W - pad.r)}" y2="${f1(Y(o.v))}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}"/>`;
   });
   const PRIORIDAD_ETQ = ['strike', 'extra', 'techo', 'piso', 'cierre_ayer', 'apertura_hoy', 'target', 'ath', 'atl', 'target_alto', 'target_bajo'];
   //    El conector va en DIAGONAL desde el extremo izquierdo de su línea hasta su etiqueta: como el apilado conserva el
@@ -2028,6 +2030,15 @@ function hlinesLista(pk, tg, dec, dibujadas) {
   return h || `<div class="mut">Sin niveles publicados todavía.</div>`;
 }
 
+// v67 rev69: las H-lines que un svg de chartSvg DIBUJÓ, [{ k, v }] (data-nivel y data-v de cada línea, en su orden); null
+// si lo que devolvió chartSvg NO es un gráfico (el aviso «Sin velas todavía…»: menos de 2 velas, una fila mal formada):
+// sin gráfico no hay nada «lejos del precio: fuera de este gráfico» (el juez vio las 6 de 6 marcadas así). La usan la
+// lista H-LINES de la hoja y la leyenda del gestor. PURA.
+function nivelesDibujados(svg) {
+  if (typeof svg !== 'string' || !/^<svg[\s>]/.test(svg)) return null;
+  return [...svg.matchAll(/<line data-nivel="([^"]*)" data-v="([^"]*)"/g)].map(m => ({ k: m[1], v: Number(m[2]) }));
+}
+
 // ---- hoja modal del chart (grande, con lectura, H-lines y editor de target) ----
 let _ch = null;    // { sym, gen, timer }
 function abrirChart(sym) {
@@ -2097,7 +2108,9 @@ function pintarChart(fila, tg) {
   // v64 rev: y dice lo que ESE gráfico calculó (data-ind-ext / data-sma-ext del svg)
   $('#chLectura').innerHTML = lecturaChart(pk, tf, dec, ext === true && /data-ext="1"/.test(svg), svg);
   // v67: en Medias + H-lines la lista dice qué línea NO cabe en este gráfico (un nivel lejano no aplasta las velas: se omite)
-  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec, vista === 'hl' ? [...svg.matchAll(/data-nivel="([^"]*)"/g)].map(m => m[1]) : null);
+  //   rev69: solo si de verdad hay gráfico (nivelesDibujados da null con el aviso «Sin velas todavía…»)
+  const dib = vista === 'hl' ? nivelesDibujados(svg) : null;
+  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec, dib ? dib.map(x => x.k) : null);
   // el editor de target se rellena también si los targets llegaron DESPUÉS de
   // abrir la hoja (sin pisar lo que se esté escribiendo)
   [['tgT', tg && tg.target], ['tgA', tg && tg.target_alto], ['tgB', tg && tg.target_bajo],
