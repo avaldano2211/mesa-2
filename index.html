@@ -235,10 +235,24 @@
   .chart svg{display:block;width:100%;height:auto;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
   .chart svg text{font-family:var(--mono);font-size:9px}
   .chart .vacio{padding:26px 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
-  .hl{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
+  /* v67 rev69 (juez, iPhone 375 px: «lejos del precio: fuera de este gráfico · el más optimista de los analistas» con nowrap
+     desbordaba la hoja y aplastaba el nombre en «target / alto / 250.00»): el NOMBRE de la línea nunca se parte; el
+     subtítulo, si no cabe al lado, baja a su propia fila (flex-wrap), alineado a la derecha, y se parte por palabras */
+  .hl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 8px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
   .hl:first-child{border-top:none}
   .hl i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:7px}
-  .hl .fresco{text-align:right;white-space:nowrap}
+  .hl>span:first-child{white-space:nowrap}
+  .hl .fresco{text-align:right;margin-left:auto;min-width:0;overflow-wrap:anywhere}
+  /* v67: la muestra de una línea del gráfico fuera de él (lista H-LINES, leyenda del gestor): un trocito del lienzo oscuro
+     (el fondo va en línea, CHART_COL.lienzo) con la línea en su color y su trazo, igual en tema claro y oscuro */
+  .hl i.chsw,.gleg span i.chsw,i.chsw{display:inline-block;width:24px;height:11px;border:0;border-radius:3px;vertical-align:middle;
+    margin-right:7px;flex:none;background-size:18px 2px;background-position:center;background-repeat:no-repeat}
+  i.chsw{background-image:linear-gradient(currentColor,currentColor)}
+  i.chsw[data-trazo="guiones"]{background-image:repeating-linear-gradient(90deg,currentColor 0 5px,transparent 5px 7px)}
+  i.chsw[data-trazo="puntos"]{background-image:repeating-linear-gradient(90deg,currentColor 0 2px,transparent 2px 4px)}
+  i.chsw[data-trazo="rayaPunto"]{background-image:repeating-linear-gradient(90deg,currentColor 0 7px,transparent 7px 9px,currentColor 9px 11px,transparent 11px 13px)}
+  .hl.mut{font-size:11px;padding:3px 0}
+  .hl.fuera>span:first-child{opacity:.6}
   /* v58: editor de tickers EN la pestaña Tickers (agregar / reactivar / quitar) y el botón «Extendido».
      El campo va a 16 px: por debajo Safari en el iPhone amplía la página al enfocarlo y no vuelve solo. */
   .tkedit{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:2px 0}
@@ -460,6 +474,7 @@
   .gleg{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;margin-top:8px;align-items:center}
   .gleg span i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:5px}
   .gleg span.prima i{border-top-style:dotted}
+  .gleg span.fuera{opacity:.6}   /* v67 rev69: la línea que el gráfico de al lado no dibujó */
   .gin[disabled],.gchip[disabled]{opacity:.45;cursor:not-allowed}
   /* iPhone (< 900 px): controles del gestor y del gráfico con área de toque (≥ 32 px; la casilla Activo decide si una
      posición queda sin vigilancia y medía 13 px). En Mac las reglas de arriba siguen tal cual. */

@@ -32,8 +32,9 @@ const xsDe = (pts) => pts.split(' ').map(p => Number(p.split(',')[0]));
 const polilineas = (svg, attr) => (svg.match(new RegExp('<polyline ' + attr + '="[^"]*" points="[^"]*"', 'g')) || []).map(m => xsDe(/points="([^"]*)"/.exec(m)[1]));
 const saltoMax = (xs) => xs.slice(1).reduce((m, x, i) => Math.max(m, x - xs[i]), 0);
 
-const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart'],
-  { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
+const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart',
+  'nivelesChart', 'leyendaChartSvg', 'apilarEtiquetas', 'rangoValido'],   // v67: paleta y H-lines con nombre
+  { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', 'CHART_COL'] });
 
 // ════════════════ 1. chartPrefs.ext · botón «Extendido» · editor en los selectores · chartExt ════════════════
 function armarSel(E) {
@@ -138,12 +139,12 @@ function armarSel(E) {
   igual(cuenta(con, /<rect class="vela"/g), 52, 'con extendido: 52 regulares (MAXV_EXT m15 = 2 sesiones)');
   igual(cuenta(con, /<rect class="vela ext"/g), 72, 'y las extendidas que caen en la ventana: pre+post de las 2 sesiones (36 × 2); las del día anterior quedan fuera');
   igual(cuenta(con, /<rect data-ext="1"/g), 3, 'tres sombras: pre del día 2 · post día 2 + pre día 3 (seguidas) · post día 3');
-  const anchos = (con.match(/<rect data-ext="1" x="[^"]*" y="8" width="([^"]*)"/g) || []).map(m => Number(/width="([^"]*)"/.exec(m)[1]));
+  const anchos = (con.match(/<rect data-ext="1" x="[^"]*" y="[\d.]+" width="([^"]*)"/g) || []).map(m => Number(/width="([^"]*)"/.exec(m)[1]));
   const bw = (400 - 6 - 48) / (52 + 72);
   cerca(anchos[0], 20 * bw, 'la primera sombra mide 20 velas (el pre del día 2)', 0.2);
   cerca(anchos[1], 36 * bw, 'la segunda 36 (post 16 + pre 20 seguidas)', 0.2);
   cerca(anchos[2], 16 * bw, 'la tercera 16 (el post del día 3)', 0.2);
-  assert(/<rect data-ext="1"[^>]*fill="var\(--tx3\)" fill-opacity="\.09"\/>/.test(con), 'sombra tenue del color de texto terciario');
+  assert(new RegExp('<rect data-ext="1"[^>]*fill="' + CH.CHART_COL.ext + '" fill-opacity="\\.12"\\/>').test(con), 'sombra tenue (v67: gris de la paleta del lienzo, visible sobre el fondo oscuro)');
   assert(con.indexOf('data-ext="1"') < con.indexOf('data-bb="banda"') && con.indexOf('data-ext="1"') > con.indexOf('<g clip-path'), 'las sombras van dentro del clip y DEBAJO de las líneas y velas');
   assert(/<rect class="vela ext"[^>]*fill-opacity="\.75"\/>/.test(con), 'las velas extendidas van translúcidas (.75)');
   // v64 (Andrés 2026-10-13): con extendido, Bollinger va CONTINUO sobre pre y post (serie combinada): ya no se trocea
@@ -155,9 +156,10 @@ function armarSel(E) {
   cerca(saltoMax(polilineas(sin, 'data-bb')[0]), (400 - 6 - 48) / 78, 'y sin extendido el paso entre puntos es exactamente una vela (±0.1 por el redondeo a un decimal)', 0.1);
   const xsVelas = (con.match(/<rect class="vela[^"]*" x="([^"]*)"/g) || []).map(m => Number(/x="([^"]*)"/.exec(m)[1]));
   assert(xsVelas.length === 124 && xsVelas.every((x, i) => i === 0 || x > xsVelas[i - 1]), 'las 124 velas salen en orden ascendente por tiempo (regulares y extendidas entremezcladas)');
-  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida"/.test(con), 'el aria-label añade « extendido» (v64: «con indicadores de sesión extendida»)');
-  assert(/aria-label="AAPL 15 min Bollinger"/.test(sin), 'y sin extendido no');
-  assert(cuenta(con, /<line x1="[^"]*" y1="8" x2="[^"]*" y2="[^"]*" stroke="var\(--tx3\)" stroke-width="1" opacity="\.45"\/>/g) >= 1, 'el separador de día sigue saliendo (ahora al primer pre del día)');
+  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida[:"]/.test(con), 'el aria-label añade « extendido» (v64: «con indicadores de sesión extendida»)');
+  assert(/aria-label="AAPL 15 min Bollinger[:"]/.test(sin), 'y sin extendido no');
+  // v67: el separador va con la paleta fija del lienzo (CHART_COL.separador) y empieza en el área de velas (bajo la leyenda)
+  assert(cuenta(con, new RegExp('<line x1="[^"]*" y1="[\\d.]+" x2="[^"]*" y2="[^"]*" stroke="' + CH.CHART_COL.separador + '" stroke-width="1" opacity="\\.45"\\/>', 'g')) >= 1, 'el separador de día sigue saliendo (ahora al primer pre del día)');
   // medias (ventana izquierda): v64, continuas también
   const hl = CH.chartSvg(pk, { vista: 'hl', tf: 'm15', ext: true });
   igual([cuenta(hl, /data-sma="20"/g), cuenta(hl, /data-sma="40"/g)], [1, 1], 'v64: en Medias + H-lines las SMA 20 y 40 son UNA polilínea continua cada una');
@@ -166,9 +168,9 @@ function armarSel(E) {
   const pkV = { ...pk, velas_ext: EXT.slice(0, -1), vela_viva_ext: EXT[EXT.length - 1] };
   const v = CH.chartSvg(pkV, { vista: 'bb', tf: 'm15', ext: true });
   igual(cuenta(v, /<rect class="vela ext viva"/g), 1, 'fuera de la sesión regular la vela extendida en formación se dibuja');
-  assert(/<rect class="vela ext viva"[^>]*fill-opacity="\.45" stroke="var\(--[a-z]+\)" stroke-width="1" stroke-dasharray="2 2"\/>/.test(v), 'punteada y translúcida como la viva de siempre');
+  assert(/<rect class="vela ext viva"[^>]*fill-opacity="\.45" stroke="#[0-9A-F]{6}" stroke-width="1" stroke-dasharray="2 2"\/>/.test(v), 'punteada y translúcida como la viva de siempre');
   igual(cuenta(v, /<rect class="vela ext"/g), 71, 'y las cerradas extendidas son una menos');
-  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida"/.test(v), 'cuenta como extendido');
+  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida[:"]/.test(v), 'cuenta como extendido');
   const pkR = { ...pk, vela_viva: fila(T(DIAS[2], '13:30') + 26 * 900, 99), vela_viva_ext: fila(T(DIAS[2], '20:00'), 5) };
   const r = CH.chartSvg(pkR, { vista: 'bb', tf: 'm15', ext: true });
   igual([cuenta(r, /<rect class="vela viva"/g), cuenta(r, /vela ext viva/g)], [1, 0], 'con vela viva REGULAR (sesión en curso) la viva extendida NO se dibuja');
@@ -188,7 +190,7 @@ function armarSel(E) {
   igual(CH.chartSvg(sucio, { vista: 'bb', tf: 'm15', ext: true }), con, 'filas extendidas mal formadas o que pisan una ranura regular se ignoran (misma cadena)');
   const vacioExt = CH.chartSvg({ ...pk, velas_ext: EXT.slice(0, 36) }, { vista: 'bb', tf: 'm15', ext: true });
   igual([cuenta(vacioExt, /<rect class="vela"/g), cuenta(vacioExt, /vela ext/g)], [52, 0], 'extendidas publicadas pero fuera de la ventana (solo las del día 1): ventana de 2 sesiones y ninguna dibujada');
-  assert(/aria-label="AAPL 15 min Bollinger"/.test(vacioExt), 'y entonces el aria-label no dice extendido');
+  assert(/aria-label="AAPL 15 min Bollinger[:"]/.test(vacioExt), 'y entonces el aria-label no dice extendido');
   // v58 rev: el worker publica 5 sesiones (N_MAX m15 = 130) y en sesión la ventana de 2 (MAXV_EXT 52) empieza a
   // MEDIA sesión de D−2: el pre de ese día no puede pegarse a la regular de mediodía (continuidad temporal falsa)
   {
@@ -212,7 +214,7 @@ function armarSel(E) {
   const extH = [1, 2, 3, 4].map(k => fila(ultH + k * 3600, k));
   const h = CH.chartSvg({ ticker: 'AAPL', tf: 'hora', velas: regH, velas_ext: extH }, { vista: 'bb', tf: 'hora', ext: true });
   igual([cuenta(h, /<rect class="vela"/g), cuenta(h, /<rect class="vela ext"/g), cuenta(h, /data-ext="1"/g)], [60, 4, 1], 'en Hora: 60 regulares (MAXV_EXT) + las 4 extendidas del post en una sombra');
-  assert(/aria-label="AAPL Hora Bollinger extendido con indicadores de sesión extendida"/.test(h), 'con su aria-label');
+  assert(/aria-label="AAPL Hora Bollinger extendido con indicadores de sesión extendida[:"]/.test(h), 'con su aria-label');
   igual(cuenta(CH.chartSvg({ ticker: 'AAPL', tf: 'hora', velas: regH }, { vista: 'bb', tf: 'hora', ext: true }), /<rect class="vela"/g), 90, 'en Hora sin velas_ext siguen siendo 90');
   // el gráfico del gestor (m1/m5, con ventana) no cambia aunque llegue ext
   const m5 = { ticker: 'AAPL', tf: 'm5', velas: serie('2026-09-22', '13:30', 100, 300), velas_ext: serie('2026-09-22', '12:00', 10, 300) };
@@ -262,7 +264,7 @@ function armarSel(E) {
   assert(/<span class="fresco">Día · Bollinger<\/span>/.test(CH.chartInline('AAPL', fila15, 'bb', 'dia', null, false, true)), 'en Día la cabecera no dice extendido');
   // v58 rev: «· extendido» solo si el svg DIBUJÓ alguna extendida (el mismo criterio que su aria-label)
   const fuera = CH.chartInline('AAPL', { payload: { ticker: 'AAPL', tf: 'm15', velas: REG, velas_ext: serie('2026-09-21', '20:00', 16) }, actualizado_at: hoy }, 'bb', 'm15', null, false, true);
-  assert(/<span class="fresco">15 min · Bollinger<\/span>/.test(fuera) && !/vela ext/.test(fuera) && /aria-label="AAPL 15 min Bollinger"/.test(fuera), 'velas_ext publicadas pero fuera de la ventana (solo el post de un día anterior): ni una dibujada → la cabecera NO dice «extendido»', fuera.slice(0, 200));
+  assert(/<span class="fresco">15 min · Bollinger<\/span>/.test(fuera) && !/vela ext/.test(fuera) && /aria-label="AAPL 15 min Bollinger[:"]/.test(fuera), 'velas_ext publicadas pero fuera de la ventana (solo el post de un día anterior): ni una dibujada → la cabecera NO dice «extendido»', fuera.slice(0, 200));
   assert(/<span class="fresco">última vela hace \d+ h<\/span>/.test(fuera), 'y la frescura es la regular');
   const malas = CH.chartInline('AAPL', { payload: { ticker: 'AAPL', tf: 'm15', velas: REG, velas_ext: [[1, 2]] }, actualizado_at: hoy }, 'bb', 'm15', null, false, true);
   assert(/<span class="fresco">15 min · Bollinger<\/span>/.test(malas) && /extendido: sin datos aún/.test(malas) && !/data-ext/.test(malas), 'filas extendidas mal formadas: sin «extendido» en la cabecera y «sin datos aún» en la frescura');

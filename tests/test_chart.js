@@ -20,8 +20,9 @@ function velas(n, op) {
   }
   return out;
 }
-const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'lecturaChart', 'hlinesLista', 'rangoValido', 'fmtFechaNY'],
-  { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'] });
+const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'lecturaChart', 'hlinesLista', 'rangoValido', 'fmtFechaNY',
+  'nivelesChart', 'muestraLinea', 'leyendaChartSvg', 'apilarEtiquetas'],   // v67: la paleta y las H-lines con nombre
+  { esc, haceCuanto }, { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', 'CHART_COL'] });
 
 // ════════════════ 1. bollingerApp / smaApp / techoPisoProximos ════════════════
 {
@@ -61,11 +62,11 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'medias
   const pk = { ticker: 'AAPL', tf: 'm15', velas: velas(90), niveles: { cierre_ayer: 99.5, apertura_hoy: 100.2, spot: 100.4 } };
   const bb = CH.chartSvg(pk, { vista: 'bb', h: 200, tf: 'm15' });
   assert(/^<svg viewBox="0 0 400 200"/.test(bb) && /<\/svg>$/.test(bb), 'vista Bollinger: un svg 400×200', bb.slice(0, 80));
-  assert(/aria-label="AAPL 15 min Bollinger"/.test(bb), 'con su aria-label (ticker, marco y ventana)');
+  assert(/aria-label="AAPL 15 min Bollinger: /.test(bb), 'con su aria-label (ticker, marco y ventana; v67: y lo dibujado)');
   assert(/data-bb="banda"/.test(bb) && /data-bb="sup"/.test(bb) && /data-bb="inf"/.test(bb) && /data-bb="medio"/.test(bb), 'banda + superior/inferior punteadas + medio');
   assert(!/data-sma=/.test(bb), 'en la ventana Bollinger no van las medias');
   assert(/data-nivel="cierre_ayer"/.test(bb) && /data-nivel="apertura_hoy"/.test(bb), 'las líneas nativas (cierre de ayer, apertura de hoy) van en las dos ventanas');
-  assert(/>cierre ayer<\/text>/.test(bb) && />apertura<\/text>/.test(bb), 'con su etiqueta');
+  assert(/>cierre ayer 99\.50<\/text>/.test(bb) && />apertura hoy 100\.20<\/text>/.test(bb), 'con su etiqueta (v67: nombre y precio)');
   assert(/data-spot="1"/.test(bb) && />100\.40<\/text>/.test(bb), 'la cajita del precio actual lleva el spot del worker');
   igual((bb.match(/<rect class="vela"/g) || []).length, 78, 'en 15 min se ven 78 velas (3 sesiones): las 90 se recortan por la derecha');
   assert((bb.match(/class="ejex"/g) || []).length >= 3, 'eje de tiempo con varias etiquetas');
@@ -73,12 +74,12 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'medias
   assert(bb.match(/class="ejey"[^>]*>(\d+\.\d\d)<\/text>/), 'los precios llevan 2 decimales');
   const hl = CH.chartSvg({ ...pk, velas: velas(250, { paso: 86400, t0: T0 - 250 * 86400 }), tf: 'dia', niveles: { ...pk.niveles, ath: 102.5, atl: 97.5, ath_dias: 250, techos_hora: [{ p: 101.5 }], pisos_hora: [{ p: 98.7 }] } },
     { vista: 'hl', h: 300, tf: 'dia', targets: { target: 102, target_alto: 103, target_bajo: 99 } });
-  assert(/viewBox="0 0 400 300"/.test(hl) && /aria-label="AAPL Día medias y H-lines"/.test(hl), 'vista Medias + H-lines a 300 de alto');
+  assert(/viewBox="0 0 400 300"/.test(hl) && /aria-label="AAPL Día medias y H-lines: /.test(hl), 'vista Medias + H-lines a 300 de alto');
   ['20', '40', '100', '200'].forEach(k => assert(new RegExp('data-sma="' + k + '"').test(hl), 'SMA ' + k + ' dibujada (con 250 velas hay historia para las cuatro)'));
   assert(!/data-bb=/.test(hl), 'en esta ventana no va la banda de Bollinger');
-  assert(/data-nivel="ath"/.test(hl) && /data-nivel="atl"/.test(hl) && />máx 250 d<\/text>/.test(hl) && />mín 250 d<\/text>/.test(hl), 'máx/mín del periodo en azul con «250 d» (jamás «hist»: no es el all-time)');
+  assert(/data-nivel="ath"/.test(hl) && /data-nivel="atl"/.test(hl) && />máx 250 días 102\.50<\/text>/.test(hl) && />mín 250 días 97\.50<\/text>/.test(hl), 'máx/mín del periodo en azul con «250 días» y su precio (jamás «hist»: no es el all-time)');
   assert(/data-nivel="techo"/.test(hl) && /data-nivel="piso"/.test(hl), 'techo y piso de HORA próximos');
-  assert(/data-nivel="target"/.test(hl) && />target \$102\.00<\/text>/.test(hl) && /data-nivel="target_alto"/.test(hl) && /data-nivel="target_bajo"/.test(hl), 'target de analistas con sus alto y bajo');
+  assert(/data-nivel="target"/.test(hl) && />target analistas 102\.00<\/text>/.test(hl) && /data-nivel="target_alto"/.test(hl) && /data-nivel="target_bajo"/.test(hl), 'target de analistas con sus alto y bajo');
   assert(!/data-nivel="target"/.test(CH.chartSvg(pk, { vista: 'bb', targets: { target: 102 } })), 'el target NO va en la ventana Bollinger');
   assert(/data-nivel="ath"/.test(hl) && !/data-nivel="ath"/.test(CH.chartSvg({ ...pk, niveles: { ...pk.niveles, ath: 1000 } }, { vista: 'hl' })), 'un nivel lejano (±35 %) no aplasta las velas: se omite');
   igual((hl.match(/<rect class="vela"/g) || []).length, 120, 'en Día se ven 120 velas');
@@ -136,20 +137,21 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'medias
   const nv = { spot: 100.4, techos_hora: [{ p: 105, respetos: 3, edad: 12 }, { p: 110, respetos: 1, edad: 40 }], pisos_hora: [{ p: 95, respetos: 2, edad: 8 }], ath: 120, ath_fecha: '2026-06-01', atl: 80, atl_fecha: '2026-01-05', ath_dias: 250,
     techos_dia: [{ p: 118 }], pisos_dia: [{ p: 85 }], cierre_ayer: 99.5, max_ayer: 101, min_ayer: 98, apertura_hoy: 100.2, salto: { lado: 'arriba', desde: 98, hasta: 100, gap_pct: 2.04, hace_velas: 3 } };
   const h = CH.hlinesLista({ niveles: nv }, { target: 115, target_alto: 125, target_bajo: 105, fuente: 'finviz', fecha: '2026-09-21' }, 2);
-  assert(/target \$115\.00/.test(h) && /finviz · 21 sept?\.? · 105\.00–125\.00/.test(h), 'el target de analistas con fuente, fecha y rango', h.slice(0, 200));
-  assert(/techo hora \$105\.00 <b style="color:var\(--oro\)">· próximo<\/b>/.test(h) && /3 respetos · edad 12 velas/.test(h), 'el techo PRÓXIMO arriba, con respetos y edad');
-  assert(/piso hora \$95\.00 <b[^>]*>· próximo/.test(h), 'y el piso próximo');
-  assert(/ver los demás swings de hora \(1\)<\/summary>/.test(h) && /<details/.test(h), 'los demás swings (el 110) van en un desplegable: pocas líneas, nada de espagueti');
-  assert(/máx 250 d \$120\.00/.test(h) && /mín 250 d \$80\.00/.test(h), 'máx/mín del periodo con «250 d»');
+  // v67: los MISMOS nombres que las etiquetas del gráfico (nivelesChart) y su precio
+  assert(/target analistas 115\.00/.test(h) && /finviz · 21 sept?\.? · 105\.00–125\.00/.test(h), 'el target de analistas con fuente, fecha y rango', h.slice(0, 200));
+  assert(/techo hora 105\.00<\/span><span class="fresco">próximo · 3 respetos · edad 12 velas/.test(h), 'el techo PRÓXIMO, con respetos y edad');
+  assert(/piso hora 95\.00<\/span><span class="fresco">próximo · /.test(h), 'y el piso próximo');
+  assert(/ver los demás swings de hora \(1; no se dibujan\)<\/summary>/.test(h) && /<details/.test(h), 'los demás swings (el 110) van en un desplegable: pocas líneas, nada de espagueti');
+  assert(/máx 250 días 120\.00/.test(h) && /mín 250 días 80\.00/.test(h), 'máx/mín del periodo con «250 días»');
   assert(/referencias de día \(no son H-lines\)/.test(h) && /\$118\.00/.test(h) && /\$85\.00/.test(h), 'los swings de DÍA salen como referencias, no como H-lines');
-  assert(/cierre de ayer \$99\.50/.test(h) && /ayer 98\.00–101\.00/.test(h) && /apertura de hoy \$100\.20/.test(h), 'cierre de ayer con su rango y apertura de hoy');
+  assert(/cierre ayer 99\.50/.test(h) && /ayer 98\.00–101\.00/.test(h) && /apertura hoy 100\.20/.test(h), 'cierre de ayer con su rango y apertura de hoy');
   assert(/salto arriba \$98\.00 → \$100\.00/.test(h) && /\+2\.0% · hace 3 velas/.test(h), 'el salto (gap) con su % y antigüedad');
   assert(/Sin niveles publicados todavía\./.test(CH.hlinesLista({ niveles: {} }, null, 2)), 'sin niveles: se dice');
   assert(/Sin niveles publicados todavía\./.test(CH.hlinesLista(null, null, 2)), 'sin payload tampoco revienta');
   assert(!/target/.test(CH.hlinesLista({ niveles: nv }, null, 2)), 'sin target personal no se inventa uno');
-  assert(/del periodo \$120\.00/.test(CH.hlinesLista({ niveles: { ...nv, ath_dias: null } }, null, 2)), 'sin ath_dias: «del periodo» (jamás «hist»)');
+  assert(/máx del periodo 120\.00/.test(CH.hlinesLista({ niveles: { ...nv, ath_dias: null } }, null, 2)), 'sin ath_dias: «del periodo» (jamás «hist»)');
   assert(!/hist/.test(h), 'la palabra «hist» no aparece: no es el all-time del curso');
-  assert(/techo hora \$110\.00/.test(CH.hlinesLista({ niveles: { ...nv, spot: 106 } }, null, 2).split('<details')[0]), 'roto el 105, el 110 pasa a ser el próximo');
+  assert(/techo hora 110\.00/.test(CH.hlinesLista({ niveles: { ...nv, spot: 106 } }, null, 2).split('<details')[0]), 'roto el 105, el 110 pasa a ser el próximo');
 }
 
 // ════════════════ 5. textoRangoTarjeta: rango inválido (lo > hi) → «—» ════════════════
@@ -267,19 +269,19 @@ const CH = construir(['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'medias
     let velasResp = { AAPL: { payload: pk, actualizado_at: new Date().toISOString() } }, esperarVelas = null;
     const reg = { cargasVelas: [] };
     const P = construir(['pintarChart', 'cargarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'rangoValido', 'serieExtM', 'mediasExtM',
-      'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
+      'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'cerrarChart', 'nivelesChart', 'muestraLinea', 'leyendaChartSvg', 'apilarEtiquetas'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
       $: (s) => nodos[s] || null, localStorage: localStorageFalso({}), esc, haceCuanto, document: { activeElement: nodos['#tgT'] },
       cargarVelas: async (syms, tf, forzar) => { reg.cargasVelas.push([syms, tf, forzar]); if (esperarVelas) await esperarVelas.promesa; return velasResp; },
       cargarTargets: async () => ({ AAPL: { target: 260, target_alto: 280, target_bajo: 240, fecha: '2026-09-21', fuente: 'finviz' } }),
       clearInterval() {},
-    }, { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', '_velas', '_targets'], extras: ['CHART_TF_K', '__setCh', '__getCh'],
+    }, { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', '_velas', '_targets', 'CHART_COL'], extras: ['CHART_TF_K', '__setCh', '__getCh'],
       prefijo: 'let _ch = null; function __setCh(v) { _ch = v; } function __getCh() { return _ch; }' });
     P.__setCh({ sym: 'AAPL', gen: 0, timer: null });
     await P.cargarChart(false);
     igual(reg.cargasVelas, [[['AAPL'], 'm15', false]], 'cargarChart pide las velas del símbolo con el marco preferido');
     assert(/<svg viewBox="0 0 400 300"/.test(nodos['#chSvg'].innerHTML), 'la hoja pinta el chart grande (300 de alto)');
     assert(/última vela/.test(nodos['#chFresco'].textContent), 'con su antigüedad');
-    assert(/BB superior/.test(nodos['#chLectura'].innerHTML) && /target \$260\.00/.test(nodos['#chHlines'].innerHTML), 'la lectura y las H-lines (con el target personal)');
+    assert(/BB superior/.test(nodos['#chLectura'].innerHTML) && /target analistas 260\.00/.test(nodos['#chHlines'].innerHTML), 'la lectura y las H-lines (con el target personal; v67: con el nombre del gráfico)');
     igual([nodos['#tgA'].value, nodos['#tgB'].value, nodos['#tgF'].value, nodos['#tgS'].value], [280, 240, '2026-09-21', 'finviz'], 'el editor del target se rellena con lo guardado');
     igual(nodos['#tgT'].value, '', 'pero NO el campo que se está escribiendo (activeElement)');
     // la guarda: una carga vieja no pinta si la hoja se cerró, cambió de símbolo o hubo otra carga después

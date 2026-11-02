@@ -21,6 +21,13 @@
         (sesión regular)» y la nota que lo explica; mediasExtM (pureza + cobertura) por separado
      9. solo la viva extendida a la vista (ninguna extendida CERRADA entra en el cálculo): ni «con pre/post» ni
         data-ind-ext ni la nota; SVG byte a byte el de la v63; la lectura usa la viva extendida para la «última vela»
+   v67 (gráfico «como TC2000»: paleta fija, lienzo oscuro, franja de leyenda arriba, etiquetas con nombre y precio): el
+   SVG ya no puede ser byte a byte el de la v63 (colores, etiquetas, leyenda y la franja de arriba cambian A PROPÓSITO).
+   La no regresión del punto 5 pasa a ser «el MISMO dibujo»: dibujo() lee del SVG las velas, las bandas, las medias, los
+   niveles, el spot, las sombras de pre/post y el eje de tiempo, con las Y convertidas a PRECIO con el propio eje de precios
+   de cada SVG (ajuste por mínimos cuadrados de sus marcas); X exactas y precios ±0,3 px. Ninguna cuenta cambia: solo el dibujo.
+   (±0,3 px: cada SVG redondea sus coordenadas a 0,1 px —±0,05 en cada uno— y una vela de cuerpo menor de 1 px se dibuja
+   de 1 px, que en precio depende de la escala de cada gráfico; un cambio de dibujo de verdad mueve 1 px o más.)
    Funciones REALES del fuente con dependencias falsas (casa_pruebas.js).
    Uso: node test_bb_ext.js mesa-2-app/app/main.js */
 'use strict';
@@ -33,7 +40,9 @@ const { assert, igual, cerca, construir, esc, haceCuanto, localStorageFalso, nod
 
 const NOMBRES = ['chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'chartFrescoTxt', 'chartInline', 'lecturaChart'];
 const CONSTS = ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol'];
-const CH = construir(NOMBRES, { esc, haceCuanto }, { consts: CONSTS });
+// v67: el dibujo «como TC2000» usa la paleta (CHART_COL) y las H-lines con nombre (nivelesChart, leyenda, apilado)
+const NOMBRES67 = ['nivelesChart', 'leyendaChartSvg', 'apilarEtiquetas', 'rangoValido'], CONSTS67 = ['CHART_COL'];
+const CH = construir(NOMBRES.concat(NOMBRES67), { esc, haceCuanto }, { consts: CONSTS.concat(CONSTS67) });
 
 // ---------- el main.js de la v63 (para la no regresión byte a byte) ----------
 // Se fija el commit de la v63 (1651303 = main al cortar la v64): comparar contra «main» a secas dejaría de probar nada
@@ -67,9 +76,47 @@ const polis = (svg, attr, val) => [...svg.matchAll(new RegExp('<polyline ' + att
 const poligono = (svg) => { const m = /<polygon data-bb="banda" points="([^"]*)"/.exec(svg); return m ? m[1] : null; };
 const zonasExt = (svg) => [...svg.matchAll(/<rect data-ext="1" x="([^"]*)" y="[^"]*" width="([^"]*)"/g)].map(m => [Number(m[1]), Number(m[1]) + Number(m[2])]);
 const velasSvg = (svg) => [...svg.matchAll(/<rect class="(vela[^"]*)" x="([^"]*)" y="[^"]*" width="([^"]*)"/g)].map(m => ({ clase: m[1], cx: Number(m[2]) + Number(m[3]) / 2 }));
-const ticks = (svg) => [...svg.matchAll(/<text class="ejey" x="[^"]*" y="([^"]*)" fill="var\(--tx3\)">([^<]*)<\/text>/g)].map(m => [Number(m[2]), Number(m[1]) - 3]);
+const ticks = (svg) => [...svg.matchAll(/<text class="ejey" x="[^"]*" y="([^"]*)" fill="[^"]*">([^<]*)<\/text>/g)].map(m => [Number(m[2]), Number(m[1]) - 3]);
 const saltoMax = (pts) => pts.slice(1).reduce((m, p, i) => Math.max(m, p[0] - pts[i][0]), 0);
 const enZona = (x, zonas) => zonas.some(([a, b]) => x > a && x < b);
+// v67: «el MISMO dibujo» que otro SVG (la v63), sin mirar colores, etiquetas ni la franja de la leyenda: X tal cual y cada Y
+// convertida a PRECIO con el eje de precios del propio SVG ({ p } = un precio; se compara ±0,3 px del gráfico más grueso)
+function dibujo(svg) {
+  const tk = ticks(svg);
+  if (tk.length < 2) return { sinEje: true, svg: svg.length };
+  const A = ajuste(tk), P = (y) => ({ p: (Number(y) - A.a) / A.b });
+  const pts = (txt) => pares(txt).map(([x, y]) => [x, P(y)]);
+  const todos = (re, f) => [...svg.matchAll(re)].map(f);
+  return {
+    ppx: Math.abs(1 / A.b),
+    viewBox: (/viewBox="([^"]*)"/.exec(svg) || [])[1],
+    marcas: [(/data-ind-ext="([^"]*)"/.exec(svg) || [])[1] || null, (/data-sma-ext="([^"]*)"/.exec(svg) || [])[1] || null],
+    velas: todos(/<rect class="(vela[^"]*)" x="([^"]*)" y="([^"]*)" width="([^"]*)" height="([^"]*)"/g, m => [m[1], m[2], m[4], P(m[3]), P(Number(m[3]) + Number(m[5]))]),
+    bb: ['sup', 'medio', 'inf'].map(q => polis(svg, 'data-bb', q).map(l => l.map(([x, y]) => [x, P(y)]))),
+    banda: todos(/<polygon data-bb="banda" points="([^"]*)"/g, m => pts(m[1])),
+    sma: ['20', '40', '100', '200'].map(k => polis(svg, 'data-sma', k).map(l => l.map(([x, y]) => [x, P(y)]))),
+    niveles: todos(/<line data-nivel="([^"]*)" x1="[^"]*" y1="([^"]*)"/g, m => [m[1], P(m[2])]).sort((a, b) => (a[0] + a[1].p.toFixed(4)).localeCompare(b[0] + b[1].p.toFixed(4))),
+    spot: todos(/<path data-spot="1" d="M[^ ]+ ([^ ]+) /g, m => P(m[1])),
+    ext: zonasExt(svg),
+    ejeX: todos(/<text class="ejex" x="([^"]*)"[^>]*>([^<]*)<\/text>/g, m => [m[1], m[2]]),
+  };
+}
+// compara dos dibujos: { p } con tolerancia (0,3 px del más grueso de los dos), lo demás exacto; devuelve la 1.ª diferencia
+function difDibujo(a, b) {
+  const tol = 0.3 * Math.max(a.ppx || 0, b.ppx || 0) + 1e-9;
+  const ir = (x, y, ruta) => {
+    if (x && y && typeof x === 'object' && 'p' in x && typeof y === 'object' && 'p' in y) { const t = tol * (x.px || 1); return Math.abs(x.p - y.p) <= t ? null : ruta + ': ' + x.p + ' ≠ ' + y.p + ' (tolerancia ' + t.toFixed(5) + ', px ' + (a.ppx || 0).toFixed(5) + ' / ' + (b.ppx || 0).toFixed(5) + ')'; }
+    if (Array.isArray(x) && Array.isArray(y)) { if (x.length !== y.length) return ruta + ': largo ' + x.length + ' ≠ ' + y.length; for (let i = 0; i < x.length; i++) { const d = ir(x[i], y[i], ruta + '[' + i + ']'); if (d) return d; } return null; }
+    if (x && y && typeof x === 'object' && typeof y === 'object') { for (const k of new Set(Object.keys(x).concat(Object.keys(y)))) { if (k === 'ppx') continue; const d = ir(x[k], y[k], ruta + '.' + k); if (d) return d; } return null; }
+    return x === y ? null : ruta + ': ' + JSON.stringify(x) + ' ≠ ' + JSON.stringify(y);
+  };
+  return ir(a, b, 'dibujo');
+}
+// «mismo dibujo» con la v63: velas, bandas, medias, niveles, spot, sombras y eje de tiempo (y que haya algo que comparar)
+function mismoDibujo(svg, svg63, msg) {
+  const a = dibujo(svg), b = dibujo(svg63), d = a.sinEje || b.sinEje ? 'sin eje de precios que leer' : difDibujo(a, b);
+  assert(!d && a.velas.length > 0, msg, d || '');
+}
 // recta y = a + b·v por mínimos cuadrados
 function ajuste(pv) {
   const n = pv.length, mv = pv.reduce((s, p) => s + p[0], 0) / n, my = pv.reduce((s, p) => s + p[1], 0) / n;
@@ -172,11 +219,11 @@ assert(/data-ext="1"/.test(R.svg) && /<rect class="vela viva"/.test(R.svg), 'rea
   const sc = CH.chartSvg(corto, { vista: 'bb', tf: 'm15', ext: true });
   igual([velasSvg(sc).length, (polis(sc, 'data-bb', 'medio')[0] || []).length], [30, 11], 'con 30 velas en M (20 del pre + 10 regulares) la banda empieza en la 20.ª: 11 puntos, sin nulos dibujados');
   const sc2 = CH.chartSvg({ ...corto, velas_ext: serie(DIAS[2], '12:00', 6, 900, 101.5) }, { vista: 'bb', tf: 'm15', ext: true });
-  igual([cuenta(sc2, /data-bb=/g), /aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida"/.test(sc2)], [0, true], 'con menos de 20 velas en M no hay banda (ni un trazo inventado), y el extendido sigue dibujado');
+  igual([cuenta(sc2, /data-bb=/g), /aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida[:"]/.test(sc2)], [0, true], 'con menos de 20 velas en M no hay banda (ni un trazo inventado), y el extendido sigue dibujado');
   // solo la viva extendida (velas_ext vacía): M = las regulares; una sola banda, sin reventar
   const sv0 = CH.chartSvg({ ...PK, velas_ext: [], vela_viva_ext: EXT[EXT.length - 1] }, { vista: 'bb', tf: 'm15', ext: true });
   igual([cuenta(sv0, /data-bb="medio"/g), cuenta(sv0, /vela ext viva/g)], [1, 1], 'solo con la viva extendida: una banda (de las regulares) y la viva');
-  assert(!/data-ind-ext|indicadores de sesión extendida/.test(sv0) && /aria-label="AAPL 15 min Bollinger extendido"/.test(sv0), 'v64 rev: y sin «con indicadores de sesión extendida» ni data-ind-ext (ninguna vela de pre/post entra en las bandas)');
+  assert(!/data-ind-ext|indicadores de sesión extendida/.test(sv0) && /aria-label="AAPL 15 min Bollinger extendido[:"]/.test(sv0), 'v64 rev: y sin «con indicadores de sesión extendida» ni data-ind-ext (ninguna vela de pre/post entra en las bandas)');
 }
 
 // ════════════════ 3. Medias + H-lines: las SMA continuas igual ════════════════
@@ -205,9 +252,9 @@ revisarSMA('REAL AAPL', PR);
 // ════════════════ 4. rendimiento: M y los indicadores UNA vez por llamada ════════════════
 {
   const reg = { bb: [], sma: [] };
-  const P = construir(['chartSvg', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo'], { esc, haceCuanto,
+  const P = construir(['chartSvg', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo'].concat(NOMBRES67), { esc, haceCuanto,
     bollingerApp: (c, n, k) => { reg.bb.push(c.slice()); return CH.bollingerApp(c, n, k); },
-    smaApp: (c, n) => { reg.sma.push([n, c.length]); return CH.smaApp(c, n); } }, { consts: CONSTS });
+    smaApp: (c, n) => { reg.sma.push([n, c.length]); return CH.smaApp(c, n); } }, { consts: CONSTS.concat(CONSTS67) });
   P.chartSvg(PR, { vista: 'bb', tf: 'm15', ext: true });
   igual([reg.bb.length, reg.sma], [1, [[20, 191], [40, 191], [100, 191], [200, 191]]], 'Bollinger con extendido: bollingerApp UNA vez por llamada; las 4 SMA una vez cada una sobre M (v64 rev: para decidir cuáles van con pre/post — la lectura de la hoja lo dice en las dos vistas); las regulares vienen de pk.sma, nada recalculado');
   igual(reg.bb[0], combinada(PR).map(x => x.c), 'y sobre los cierres de la serie combinada M (191, sin la viva)');
@@ -222,7 +269,7 @@ revisarSMA('REAL AAPL', PR);
   assert(ms < 3000, '100 gráficos reales con extendido en ' + ms + ' ms (la hoja y las tarjetas siguen siendo instantáneas)');
 }
 
-// ════════════════ 5. no regresión: byte a byte con la v63 ════════════════
+// ════════════════ 5. no regresión con la v63: el MISMO dibujo (v67: ya no byte a byte, ver la cabecera) ════════════════
 if (CH63) {
   const ventana10 = { ventana: { start: 10, end: 60 } };
   const m5 = { ticker: 'AAPL', tf: 'm5', velas: serie(DIAS[0], '13:30', 100, 300), velas_ext: serie(DIAS[0], '12:00', 10, 300), niveles: { spot: 100.2 } };
@@ -245,12 +292,17 @@ if (CH63) {
     ['gestor m5 sin Bollinger', m5, { vista: 'bb', tf: 'm5', bb: false, ...ventana10 }],
     ['Informe: mini gráfico de hoy (m15 con ventana)', PR, { vista: 'bb', tf: 'm15', h: 110, w: 380, ventana: { start: 60, end: PR.velas.length }, fondo: 'var(--bg2)' }],
   ];
-  casos.forEach(([n, pk, op]) => igual(CH.chartSvg(pk, op), CH63.chartSvg(pk, op), 'v63 byte a byte · chartSvg · ' + n));
+  casos.forEach(([n, pk, op]) => mismoDibujo(CH.chartSvg(pk, op), CH63.chartSvg(pk, op), 'v63 mismo dibujo (velas, bandas, medias, niveles, spot, eje; precios ±0,3 px) · chartSvg · ' + n));
   // chartInline y lecturaChart sin extendido
   const hoy = new Date().toISOString(), fila15 = { payload: PK, actualizado_at: hoy }, filaR = { payload: PR, actualizado_at: hoy };
-  igual(CH.chartInline('AAPL', fila15, 'bb', 'm15', null, false, false), CH63.chartInline('AAPL', fila15, 'bb', 'm15', null, false, false), 'v63 byte a byte · chartInline con Extendido apagado');
-  igual(CH.chartInline('AAPL', filaR, 'hl', 'dia', null, true, true), CH63.chartInline('AAPL', filaR, 'hl', 'dia', null, true, true), 'v63 byte a byte · chartInline en Día con Extendido');
-  igual(CH.chartInline('AAPL', { payload: { ...PK, velas_ext: undefined }, actualizado_at: hoy }, 'bb', 'm15', null, false, true), CH63.chartInline('AAPL', { payload: { ...PK, velas_ext: undefined }, actualizado_at: hoy }, 'bb', 'm15', null, false, true), 'v63 byte a byte · chartInline con Extendido y sin velas_ext');
+  // chartInline: la cabecera (marco · vista · extendido, y la frescura) byte a byte; el svg, el mismo dibujo
+  const sinSvg = (h) => h.replace(/<svg[\s\S]*<\/svg>/, '<svg/>'), elSvg = (h) => (/<svg[\s\S]*<\/svg>/.exec(h) || [''])[0];
+  [['con Extendido apagado', fila15, 'bb', 'm15', false, false], ['en Día con Extendido', filaR, 'hl', 'dia', true, true],
+   ['con Extendido y sin velas_ext', { payload: { ...PK, velas_ext: undefined }, actualizado_at: hoy }, 'bb', 'm15', false, true]].forEach(([n, f, v, tf, g, e]) => {
+    const a = CH.chartInline('AAPL', f, v, tf, null, g, e), b = CH63.chartInline('AAPL', f, v, tf, null, g, e);
+    igual(sinSvg(a), sinSvg(b), 'v63 byte a byte · chartInline ' + n + ' (todo menos el svg)');
+    mismoDibujo(elSvg(a), elSvg(b), 'v63 mismo dibujo · chartInline ' + n);
+  });
   [[PK, 'm15'], [PR, 'm15'], [PR, 'dia'], [{ ...PR, vela_viva: null }, 'hora']].forEach(([pk, tf], i) => {
     igual(CH.lecturaChart(pk, tf, 2), CH63.lecturaChart(pk, tf, 2), 'v63 byte a byte · lecturaChart sin ext (#' + (i + 1) + ', ' + tf + ')');
     igual(CH.lecturaChart(pk, tf, 2, false), CH63.lecturaChart(pk, tf, 2), 'v63 byte a byte · lecturaChart con ext false (#' + (i + 1) + ')');
@@ -259,7 +311,7 @@ if (CH63) {
   igual(CH.lecturaChart({ ...PR, velas_ext: undefined }, 'm15', 2, true), CH63.lecturaChart({ ...PR, velas_ext: undefined }, 'm15', 2), 'v63 byte a byte · lecturaChart con ext y sin velas_ext');
   igual(CH.lecturaChart({ ...PK, velas_ext: [] }, 'm15', 2, true), CH63.lecturaChart({ ...PK, velas_ext: [] }, 'm15', 2), 'v63 byte a byte · lecturaChart con ext y velas_ext vacía (sin viva extendida)');
   // y lo que SÍ cambia, cambia
-  assert(CH.chartSvg(PR, { vista: 'bb', tf: 'm15', ext: true }) !== CH63.chartSvg(PR, { vista: 'bb', tf: 'm15', ext: true }), 'con Extendido y velas extendidas a la vista el SVG ya no es el de la v63 (ahí está el cambio)');
+  assert(difDibujo(dibujo(CH.chartSvg(PR, { vista: 'bb', tf: 'm15', ext: true })), dibujo(CH63.chartSvg(PR, { vista: 'bb', tf: 'm15', ext: true }))), 'con Extendido y velas extendidas a la vista el DIBUJO ya no es el de la v63 (ahí está el cambio de la v64)');
 }
 
 // ════════════════ 6. lecturaChart con ext ════════════════
@@ -300,9 +352,9 @@ if (CH63) {
 function hoja(almacen, fila) {
   const nodos = {}; ['#chSel', '#chFresco', '#chSvg', '#chLectura', '#chHlines', '#modalChart', '#tgT', '#tgA', '#tgB', '#tgF', '#tgS'].forEach(id => { nodos[id] = nodo(); });
   const P = construir(['pintarChart', 'chartPrefs', 'chartSelectores', 'chartFrescoTxt', 'chartSvg', 'lecturaChart', 'hlinesLista', 'rangoValido', 'serieExtM', 'mediasExtM',
-    'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
+    'bollingerApp', 'smaApp', 'techoPisoProximos', 'chartTiempo', 'fmtFechaNY', 'nivelesChart', 'leyendaChartSvg', 'apilarEtiquetas', 'muestraLinea', 'nivelesDibujados'], { esAdmin: () => true, anchoVista: () => 400, GESTOR_ANCHO_TABLA: 900,
     $: (s) => nodos[s] || null, localStorage: localStorageFalso(almacen), esc, haceCuanto, document: { activeElement: null } },
-  { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', '_velas', '_targets'], prefijo: 'let _ch = { sym: "AAPL", gen: 0, timer: null };' });
+  { consts: ['CHART_VISTA_K', 'CHART_VISTAS', 'CHART_TFS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', '_velas', '_targets', 'CHART_COL'], prefijo: 'let _ch = { sym: "AAPL", gen: 0, timer: null };' });
   P.pintarChart(fila, null);
   return nodos;
 }
@@ -319,9 +371,9 @@ const cab = (h) => (/<span class="fresco">([^<]*)<\/span>/.exec(h) || [])[1];
   igual(cab(CH.chartInline('AAPL', fila15, 'bb', 'm15', null, false, false)), '15 min · Bollinger', 'sin Extendido, la de siempre');
   igual(cab(CH.chartInline('AAPL', fila15, 'bb', 'dia', null, false, true)), 'Día · Bollinger', 'en Día, la de siempre');
   igual(cab(CH.chartInline('AAPL', { payload: { ...PK, velas_ext: EXT.slice(0, 36) }, actualizado_at: hoy }, 'bb', 'm15', null, false, true)), '15 min · Bollinger', 'extendidas fuera de la ventana (ni una dibujada): no dice «extendido» (lo que se dice = lo que se ve)');
-  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida"/.test(CH.chartSvg(PK, { vista: 'bb', tf: 'm15', ext: true })), 'aria-label con Extendido: «… extendido con indicadores de sesión extendida»');
-  assert(/aria-label="AAPL 15 min medias y H-lines extendido con indicadores de sesión extendida"/.test(CH.chartSvg(PK, { vista: 'hl', tf: 'm15', ext: true })), 'también en Medias + H-lines');
-  assert(/aria-label="AAPL 15 min Bollinger"/.test(CH.chartSvg(PK, { vista: 'bb', tf: 'm15' })), 'sin Extendido no');
+  assert(/aria-label="AAPL 15 min Bollinger extendido con indicadores de sesión extendida[:"]/.test(CH.chartSvg(PK, { vista: 'bb', tf: 'm15', ext: true })), 'aria-label con Extendido: «… extendido con indicadores de sesión extendida»');
+  assert(/aria-label="AAPL 15 min medias y H-lines extendido con indicadores de sesión extendida[:"]/.test(CH.chartSvg(PK, { vista: 'hl', tf: 'm15', ext: true })), 'también en Medias + H-lines');
+  assert(/aria-label="AAPL 15 min Bollinger[:"]/.test(CH.chartSvg(PK, { vista: 'bb', tf: 'm15' })), 'sin Extendido no');
 
   // la hoja (hoja(), arriba): la nota bajo el gráfico
   const filaR = { payload: PR, actualizado_at: hoy };
@@ -391,7 +443,7 @@ const cab = (h) => (/<span class="fresco">([^<]*)<\/span>/.exec(h) || [])[1];
     const A = ajuste(pv), res = Math.max(...pv.map(([v, y]) => Math.abs(A.Y(v) - y)));
     const tk = ticks(svg), resTk = Math.max(...tk.map(([v, y]) => Math.abs(A.Y(v) - y)));
     assert(A.b < 0 && res <= 0.1 && resTk <= 0.1, N + ': las Y: SMA 20/40 = smaApp sobre M, SMA 100/200 = pk.sma del worker, con la escala del eje (±0,1 px; ' + res.toFixed(3) + ' / ' + resTk.toFixed(3) + ')');
-    assert(new RegExp('aria-label="AAPL Hora medias y H-lines extendido con indicadores de sesión extendida \\(SMA 100/200 de la sesión regular\\)"').test(svg), N + ': el aria-label nombra las que siguen regulares');
+    assert(new RegExp('aria-label="AAPL Hora medias y H-lines extendido con indicadores de sesión extendida \\(SMA 100/200 de la sesión regular\\)[:"]').test(svg), N + ': el aria-label nombra las que siguen regulares');
     igual(cab(CH.chartInline('AAPL', { payload: pkH, actualizado_at: hoy }, 'hl', 'hora', null, true, true)), 'Hora · Medias + H-lines · extendido (medias con pre/post salvo SMA 100/200)', N + ': cabecera «(medias con pre/post salvo SMA 100/200)»');
     igual(cab(CH.chartInline('AAPL', { payload: pkH, actualizado_at: hoy }, 'bb', 'hora', null, true, true)), 'Hora · Bollinger · extendido (bandas con pre/post)', N + ': en Bollinger, «(bandas con pre/post)»');
     // la lectura: SMA 20/40 de M; SMA 100/200 las del worker con «(sesión regular)»; nada de «no hay historia»
@@ -404,7 +456,7 @@ const cab = (h) => (/<span class="fresco">([^<]*)<\/span>/.exec(h) || [])[1];
     igual(CH.lecturaChart(pkH, 'hora', 2, true), l, N + ': sin svg, la lectura decide lo MISMO que el gráfico (el de Extendido por defecto)');
     igual(CH.lecturaChart(pkH, 'hora', 2, true, CH.chartSvg(pkH, Object.assign({}, op, { vista: 'bb' }))), l, N + ': y lo mismo con el svg de la vista Bollinger (las 4 medias se deciden en las dos vistas)');
     if (CH63) {
-      ['bb', 'hl'].forEach(v => igual(CH.chartSvg(pkH, { vista: v, tf: 'hora', w: 880, h: 380 }), CH63.chartSvg(pkH, { vista: v, tf: 'hora', w: 880, h: 380 }), N + ': Extendido apagado (' + v + '): byte a byte la v63'));
+      ['bb', 'hl'].forEach(v => mismoDibujo(CH.chartSvg(pkH, { vista: v, tf: 'hora', w: 880, h: 380 }), CH63.chartSvg(pkH, { vista: v, tf: 'hora', w: 880, h: 380 }), N + ': Extendido apagado (' + v + '): el mismo dibujo que la v63'));
       igual(CH.lecturaChart(pkH, 'hora', 2), CH63.lecturaChart(pkH, 'hora', 2), N + ': y la lectura sin ext, byte a byte la v63');
     }
     if (ext.length === 60) {
@@ -465,8 +517,8 @@ const cab = (h) => (/<span class="fresco">([^<]*)<\/span>/.exec(h) || [])[1];
     ['bb', 'hl'].forEach(v => {
       const svg = CH.chartSvg(pk, { vista: v, tf: 'm15', ext: true });
       assert(/<rect class="vela ext viva"/.test(svg) && cuenta(svg, /<rect class="vela ext"/g) === 0, nom + ' (' + v + '): se dibuja la viva extendida y ninguna extendida cerrada');
-      assert(!/data-ind-ext|indicadores de sesión extendida/.test(svg) && new RegExp('aria-label="AAPL 15 min ' + (v === 'hl' ? 'medias y H-lines' : 'Bollinger') + ' extendido"').test(svg), nom + ' (' + v + '): sin data-ind-ext ni «con indicadores de sesión extendida»');
-      if (CH63) igual(svg, CH63.chartSvg(pk, { vista: v, tf: 'm15', ext: true }), nom + ' (' + v + '): SVG byte a byte el de la v63');
+      assert(!/data-ind-ext|indicadores de sesión extendida/.test(svg) && new RegExp('aria-label="AAPL 15 min ' + (v === 'hl' ? 'medias y H-lines' : 'Bollinger') + ' extendido[:"]').test(svg), nom + ' (' + v + '): sin data-ind-ext ni «con indicadores de sesión extendida»');
+      if (CH63) mismoDibujo(svg, CH63.chartSvg(pk, { vista: v, tf: 'm15', ext: true }), nom + ' (' + v + '): el mismo dibujo que la v63');
     });
     igual([cab(CH.chartInline('AAPL', { payload: pk, actualizado_at: hoy }, 'bb', 'm15', null, false, true)), cab(CH.chartInline('AAPL', { payload: pk, actualizado_at: hoy }, 'hl', 'm15', null, false, true))],
       ['15 min · Bollinger · extendido', '15 min · Medias + H-lines · extendido'], nom + ': la cabecera dice «extendido» (se ve) pero no «con pre/post»');
