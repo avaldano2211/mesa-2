@@ -530,6 +530,7 @@ function dibujarNav() {
 
 async function ruta() {
   if (!sesionActiva) return;
+  pintarAvisoBrokers();   // v68 A: la franja «bróker sin conexión», en TODAS las pestañas (estado local: sin red)
   const tab = (location.hash.replace('#/', '') || 'informe');
   if (tab !== 'cuentas' && typeof _diario === 'object' && _diario) _diario.notaPre = null;   // v53: «Nota» del Copiloto solo vale para la visita que abre
   if (tab !== 'cuentas' && typeof diarioAncho === 'function') diarioAncho(false);              // v55: el envoltorio ancho es solo del Diario
@@ -745,6 +746,7 @@ async function opsInforme() {
       if (!pos || pos.error || !bt || bt.error) r = { ops: null, error: String(((pos && pos.error) || (bt && bt.error) || {}).message || 'sin respuesta') };
       else {
         const libro = await libroParaUnir();
+        if (typeof avisoAnotarTrades === 'function') avisoAnotarTrades(bt);   // v68 A
         r = { ops: unirOperaciones(pos.data || [], bt.data || [], libro).ops, error: null };
       }
     } catch (e) { r = { ops: null, error: String((e && e.message) || e) }; }
@@ -2365,6 +2367,7 @@ async function vistaCopiloto(hb) {
     cargarOcultas(senP),
   ]);
   const libroCop = await libroParaUnir();   // v62 rev4: caché de 60 s compartida con el Diario y Cuentas
+  if (typeof avisoAnotarTrades === 'function') avisoAnotarTrades(bt);                    // v68 A: la franja mira las ejecuciones ya leídas (sin pedir nada)
   const senales = sen.data || [];
   const posic = pos.data || [];
   const abiertas = posic.filter(p => p.estado === 'abierta');
@@ -3438,7 +3441,7 @@ const BROKERS = [
 // Opción B: el proxy del VPS solo FIRMA con el secreto de app; el token con
 // poder (oauth_token + secret) se guarda aquí en localStorage y jamás se sube a
 // la nube. E*TRADE lo caduca cada medianoche ET → login casi diario, con PIN.
-const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2', lig: 'mz_et_sync_lig', dia: 'mz_et_dia', acct: 'mz_et_acct', login: 'mz_et_login' };   // v65 rev: lig = la pasada LIGERA del historial (etradeSincronizarLigera)
+const ET_K = { tok: 'mz_et_tok', sec: 'mz_et_sec', cache: 'mz_et_cache', sync: 'mz_et_sync2', lig: 'mz_et_sync_lig', dia: 'mz_et_dia', acct: 'mz_et_acct', login: 'mz_et_login', ok: 'mz_et_ultok' };   // v65 rev: lig = la pasada LIGERA del historial (etradeSincronizarLigera) · v68 A: ok = hora (ms) de la última sincronización BUENA (la franja «desde cuándo»; un «expirado» pisa sync y lig, esta no)
 const num2 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // El token de E*TRADE muere a medianoche ET: si el login fue otro día NY, está
 // expirado seguro y no vale la pena molestar al proxy (mz_et_dia = día del login).
@@ -4109,6 +4112,7 @@ async function etradeSincronizarLigera(cr, prev, uid, ses) {
   const marcar = (reg) => {
     reg.ts = Date.now(); reg.ses = ses;   // con la sesión en que se hizo (pasadaSyncAhora: falta la del cierre)
     try { localStorage.setItem(ET_K.lig, JSON.stringify(reg)); } catch (_) {}
+    if (reg.estado === 'ok' && !reg.fills_err && ET_K.ok) { try { localStorage.setItem(ET_K.ok, String(reg.ts)); } catch (_) {} }   // v68 A: leyó y escribió el libro
     // solo contadores/estado (jamás tokens ni trades)
     if (reg.estado !== 'ok' || reg.fills > 0 || reg.fills_err) { try { etProxy('/diag', { que: 'etrade_sync_ligera', uid: true, ...reg }).catch(() => {}); } catch (_) {} }
     return reg;
@@ -4148,6 +4152,7 @@ async function etradeSincronizarImpl(forzar) {
   const fin = (resumen) => {
     resumen.ts = Date.now();
     try { localStorage.setItem(ET_K.sync, JSON.stringify({ ts: resumen.ts, resumen, ses: P.ses })); } catch (_) {}   // v65 rev: y su sesión
+    if (resumen.estado === 'ok' && ET_K.ok) { try { localStorage.setItem(ET_K.ok, String(resumen.ts)); } catch (_) {} }   // v68 A
     // Diagnóstico a la bitácora del proxy: SOLO contadores/estado (jamás tokens ni trades).
     try { etProxy('/diag', { que: 'etrade_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}
     return resumen;
@@ -4219,7 +4224,7 @@ async function etradeGuardarSnapshot(snap) {
 // web de Schwab, la página oauth-schwab.html canjea el código y muestra un
 // código de 6 dígitos que se pega aquí (la PWA del iPhone no comparte
 // almacenamiento con Safari). Schwab NO tiene vista previa: la orden entra al enviar.
-const SW_K = { tok: 'mz_sw_tok', ref: 'mz_sw_ref', exp: 'mz_sw_exp', refts: 'mz_sw_ref_ts', acct: 'mz_sw_acct', num: 'mz_sw_num', cache: 'mz_sw_cache', muerto: 'mz_sw_muerto', login: 'mz_sw_login' };
+const SW_K = { tok: 'mz_sw_tok', ref: 'mz_sw_ref', exp: 'mz_sw_exp', refts: 'mz_sw_ref_ts', acct: 'mz_sw_acct', num: 'mz_sw_num', cache: 'mz_sw_cache', muerto: 'mz_sw_muerto', login: 'mz_sw_login', ok: 'mz_sw_ultok' };   // v68 A: ok = como ET_K.ok
 const SW_REFRESH_DIAS = 7;
 function swCreds() {
   try {
@@ -4695,6 +4700,7 @@ async function schwabSincronizarLigera(prev, uid, ses) {
   const marcar = (reg) => {
     reg.ts = Date.now(); reg.ses = ses;
     try { localStorage.setItem(SW_K_SYNC_LIG, JSON.stringify(reg)); } catch (_) {}
+    if (reg.estado === 'ok' && !reg.fills_err && SW_K.ok) { try { localStorage.setItem(SW_K.ok, String(reg.ts)); } catch (_) {} }   // v68 A
     if (reg.estado !== 'ok' || reg.fills > 0 || reg.fills_err) { try { etProxy('/diag', { que: 'schwab_sync_ligera', uid: true, ...reg }).catch(() => {}); } catch (_) {} }   // solo contadores, jamás tokens
     return reg;
   };
@@ -4723,6 +4729,7 @@ async function schwabSincronizarImpl(forzar) {
   const fin = (resumen) => {
     resumen.ts = Date.now();
     try { localStorage.setItem(SW_K_SYNC, JSON.stringify({ ts: resumen.ts, resumen, ses: P.ses })); } catch (_) {}
+    if (resumen.estado === 'ok' && SW_K.ok) { try { localStorage.setItem(SW_K.ok, String(resumen.ts)); } catch (_) {} }   // v68 A
     try { etProxy('/diag', { que: 'schwab_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}   // solo contadores, jamás tokens
     return resumen;
   };
@@ -6677,6 +6684,7 @@ async function vistaCuentasSaldos() {
   const fillsP = Promise.resolve().then(() => leerFillsTodos()).catch(fallo);
   const senP = Promise.all([posP, btP]).then(([p, b]) => leerSenalesCuentas((p && p.data) || [], (b && b.data) || [])).catch(fallo);
   const [posR, btR, csR, fillsR, senR] = await Promise.all([posP, btP, sb.from('cuenta_snapshots').select('*'), fillsP, senP]);
+  if (typeof avisoAnotarTrades === 'function') avisoAnotarTrades(btR);   // v68 A
   // A1 (v50): el mismo conjunto DEDUPLICADO que Disciplina. Antes se concatenaba
   // manual + bróker a pelo y una operación registrada a mano Y traída del bróker
   // contaba DOS veces: la utilidad, el número de operaciones, los aciertos y el
@@ -6836,6 +6844,215 @@ window.MZ = Object.assign(window.MZ || {}, {
   swCambiarCuenta: () => swCambiarCuenta(),
   etOlvidar: () => { etOlvidar(); toast('E*TRADE olvidada en este equipo'); ruta(); },
 });
+
+// ---------- v68 A · AVISO GLOBAL «bróker sin conexión» (spec70, 2026-11-02) ----------
+// Andrés estuvo 9 días hábiles sin que entrara una sola ejecución de E*TRADE a la Mesa (el token murió el 24-oct, la app
+// lo marcó muerto y dejó de llamar, como debe) y Schwab desde el 28-oct; la app solo lo decía en letra pequeña dentro de
+// Cuentas. Ahora una franja debajo de la cabecera, en TODAS las pestañas, dice por cada bróker afectado qué pasa, desde
+// cuándo y qué hacer, con «Conectar» (el flujo de siempre: MZ.conectar) y «Ocultar hasta mañana». Solo para brókeres que
+// este usuario usa: con sesión guardada en este equipo, o con ejecuciones suyas en los datos que la app YA cargó (el libro
+// de fills en caché y broker_trades de las vistas). Un amigo sin E*TRADE ni Schwab no ve nada. Se calcula con el estado
+// local y esos datos: CERO llamadas de red (ni al proxy ni a Supabase), barato, en cada ruta(). Nada aquí toca tokens,
+// órdenes ni fills: solo LEE.
+const AVISO_BRK_K = 'mz_aviso_brk_oculto';   // { etrade: 'AAAA-MM-DD' (día NY en que se ocultó), schwab: … }
+const AVISO_BRK = ['etrade', 'schwab'];
+const _avisoBrk = { uid: null, bt: { etrade: null, schwab: null }, libroRef: null, libroUid: null, libro: { etrade: null, schwab: null }, mem: {} };
+// PURA: días hábiles (lunes a viernes; sin calendario de festivos, como antesDe1030NY) DESPUÉS de `desde` y hasta `hoy`
+// incluido (AAAA-MM-DD): los días de mercado cuyas ejecuciones pueden faltar. null si alguna fecha no vale.
+function diasHabilesDesde(desde, hoy) {
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  if (!re.test(String(desde || '')) || !re.test(String(hoy || ''))) return null;
+  const a = Date.parse(desde + 'T12:00:00Z'), b = Date.parse(hoy + 'T12:00:00Z');
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  let n = 0;
+  for (let t = a + 86400000; t <= b && n < 5000; t += 86400000) { const d = new Date(t).getUTCDay(); if (d > 0 && d < 6) n++; }
+  return n;
+}
+// PURA: «vie 23-oct» (AAAA-MM-DD → día de la semana y fecha corta); '' si no es una fecha.
+function fechaCortaAviso(ymd) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ymd || ''))) return '';
+  const d = new Date(String(ymd) + 'T12:00:00Z');
+  if (!Number.isFinite(d.getTime())) return '';
+  return ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'][d.getUTCDay()] + ' ' + d.getUTCDate() + '-'
+    + ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'][d.getUTCMonth()];
+}
+// PURA: el día NY de la última EJECUCIÓN de E*TRADE y de Schwab en unas filas ya cargadas (fills del libro o
+// broker_trades): { etrade: 'AAAA-MM-DD' | null, schwab: … }. Solo las de `uid` (la RLS ya lo hace; aquí, por si acaso),
+// sin las que solo ANOTAN un vencimiento (lado «vencimiento») y sin instantes futuros (ahoraMs).
+function ultimaEjecucionBrokers(filas, uid, ahoraMs) {
+  const out = { etrade: null, schwab: null };
+  const tope = Number(ahoraMs) > 0 ? Number(ahoraMs) + 6e4 : Infinity;
+  for (const f of (Array.isArray(filas) ? filas : [])) {
+    if (!f || (f.broker !== 'etrade' && f.broker !== 'schwab')) continue;
+    if (uid && f.user_id != null && f.user_id !== uid) continue;
+    if (f.lado === 'vencimiento') continue;
+    let m = 0;
+    for (const k of ['ejecutado_at', 'cerrada_at', 'abierta_at']) { const t = Date.parse(f[k] || ''); if (Number.isFinite(t) && t <= tope && t > m) m = t; }
+    if (!m) continue;
+    const d = ymdNY(new Date(m).toISOString());
+    if (d && (!out[f.broker] || d > out[f.broker])) out[f.broker] = d;
+  }
+  return out;
+}
+// PURA (v68 A): las líneas de la franja. e = {
+//   hoy: 'AAAA-MM-DD' (NY),
+//   et: { creds, dia (mz_et_dia: día NY del login | 'muerto' | null), okSync: día NY de la última sincronización BUENA en
+//         este equipo | null },
+//   sw: { creds, vencido (swVencido: login semanal caducado o refresh rechazado), okSync, login: día NY del login semanal | null },
+//   datos: { etrade, schwab }: día NY de la última ejecución en los datos ya cargados del usuario | null,
+//   ocultos: { etrade: 'AAAA-MM-DD', … }: «Ocultar hasta mañana» (vale el día NY en que se pulsó) }
+// → [{ broker, estado, nivel, desde, fuente, dias }] solo de los brókeres afectados y no ocultos hoy. estado:
+//   E*TRADE 'otro_dia' (token de otro día NY: E*TRADE lo cierra a medianoche) · 'muerto' (E*TRADE rechazó el token) ·
+//   Schwab 'caducado' · los dos 'sin_equipo' (sin sesión en este equipo pero con ejecuciones en los datos o con una
+//   sincronización buena anterior aquí). desde = lo más reciente entre la última sincronización buena en este equipo
+//   (fuente 'sync') y la última ejecución en los datos (fuente 'datos'; otro equipo pudo traerla); si no hay ninguna, el
+//   día del último login en este equipo (fuente 'login'). dias = días hábiles sin sincronizar (diasHabilesDesde). nivel:
+//   'ambar' con 1 día hábil o menos (el login DIARIO de E*TRADE: «falta el login de hoy»), 'rojo' con más o sin fecha.
+//   Un fin de semana sin nada pendiente (0 días hábiles) no se avisa: no hay mercado que perder.
+function avisoBrokersEstado(e) {
+  e = e || {};
+  const hoy = String(e.hoy || ''), datos = e.datos || {}, ocultos = e.ocultos || {};
+  const finde = (() => { const d = /^\d{4}-\d{2}-\d{2}$/.test(hoy) ? new Date(hoy + 'T12:00:00Z').getUTCDay() : 1; return d === 0 || d === 6; })();
+  const fecha = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(String(x || '')) ? String(x) : null);
+  const out = [];
+  const linea = (broker, estado, sync, dato, login) => {
+    if (!estado || ocultos[broker] === hoy) return;
+    sync = fecha(sync); dato = fecha(dato); login = fecha(login);
+    const d = (sync && (!dato || sync >= dato)) ? { desde: sync, fuente: 'sync' } : dato ? { desde: dato, fuente: 'datos' }
+      : login ? { desde: login, fuente: 'login' } : { desde: null, fuente: null };
+    const dias = d.desde ? diasHabilesDesde(d.desde, hoy) : null;
+    if (dias === 0 && finde) return;
+    out.push({ broker, estado, nivel: dias != null && dias <= 1 ? 'ambar' : 'rojo', desde: d.desde, fuente: d.fuente, dias });
+  };
+  const et = e.et || {}, sw = e.sw || {};
+  const etEst = et.creds ? (et.dia === 'muerto' ? 'muerto' : (et.dia && et.dia !== hoy) ? 'otro_dia' : null)
+    : (datos.etrade || fecha(et.okSync)) ? 'sin_equipo' : null;
+  linea('etrade', etEst, et.okSync, datos.etrade, etEst === 'otro_dia' ? et.dia : null);
+  const swEst = sw.creds ? (sw.vencido ? 'caducado' : null) : (datos.schwab || fecha(sw.okSync)) ? 'sin_equipo' : null;
+  linea('schwab', swEst, sw.okSync, datos.schwab, swEst === 'caducado' ? sw.login : null);
+  return out;
+}
+// PURA: el HTML de la franja ('' sin líneas). Todo lo dinámico pasa por esc(); los botones llevan claves fijas.
+function avisoBrokersHtml(lineas) {
+  if (!Array.isArray(lineas) || !lineas.length) return '';
+  return lineas.map(l => {
+    const sw = l.broker === 'schwab', N = sw ? 'Schwab' : 'E*TRADE', b = sw ? 'schwab' : 'etrade';
+    const f = l.desde ? esc(fechaCortaAviso(l.desde) || l.desde) : '';
+    const nd = l.dias != null && l.dias > 0 ? ` (${esc(l.dias)} día${l.dias === 1 ? '' : 's'} hábil${l.dias === 1 ? '' : 'es'})` : '';
+    const fuente = l.fuente === 'sync' ? 'la de la última sincronización buena en este equipo'
+      : l.fuente === 'datos' ? `la de tu última operación de ${N} guardada en la Mesa`
+      : l.fuente === 'login' ? 'la del último login en este equipo' : '';
+    const desdeTxt = f ? `no entran a la Mesa desde el <b>${f}</b>${nd}` : 'no entran a la Mesa';
+    const motivo = l.estado === 'muerto' ? 'E*TRADE rechazó la sesión: vuelve a entrar.'
+      : l.estado === 'otro_dia' ? 'E*TRADE cierra la sesión cada medianoche: falta el login de hoy.'
+      : l.estado === 'caducado' ? 'El login semanal de Schwab caducó: vuelve a entrar.'
+      : `Este equipo no tiene sesión de ${N}.`;
+    let tit;
+    if (l.estado === 'sin_equipo') tit = `${N} no está conectado en este equipo`;
+    else if (l.nivel === 'ambar') tit = l.estado === 'otro_dia' ? 'E*TRADE: falta el login de hoy' : l.estado === 'caducado' ? 'Schwab: el login semanal caducó' : `${N} se desconectó`;
+    else tit = `${N} desconectado`;
+    const cuerpo = l.estado === 'sin_equipo'
+      ? `lo último de ${N} guardado en la Mesa es del <b>${f || '—'}</b>${nd}; si operaste después, conéctalo aquí para que entre.`
+      : `tus operaciones de ${N} ${desdeTxt}. ${motivo}`;
+    return `<div class="avl ${l.nivel === 'ambar' ? 'ambar' : 'rojo'}" data-brk="${b}" data-estado="${esc(l.estado)}">`
+      + `<div class="avt"><b class="avtit">${esc(tit)}</b> — ${cuerpo}${fuente && l.estado !== 'sin_equipo' ? `<span class="avf">Fecha: ${fuente}.</span>` : ''}</div>`
+      + `<div class="avb"><button type="button" class="avc" onclick="MZ.conectar('${b}')">Conectar ${N}</button>`
+      + `<button type="button" class="avo" onclick="MZ.avisoOcultar('${b}')" aria-label="Ocultar el aviso de ${N} hasta mañana">Ocultar hasta mañana</button></div></div>`;
+  }).join('');
+}
+// Los datos ya cargados del usuario: el libro de fills en caché (_libro.filas, memo por referencia) y lo último de
+// broker_trades que leyó alguna vista (avisoAnotarTrades). Sin sesión, nada.
+function avisoDatosBrokers() {
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  const nada = { etrade: null, schwab: null };
+  if (!uid) return nada;
+  let lib = nada;
+  try {
+    const filas = (typeof _libro === 'object' && _libro) ? _libro.filas : null;
+    if (filas !== _avisoBrk.libroRef || _avisoBrk.libroUid !== uid) {
+      _avisoBrk.libroRef = filas; _avisoBrk.libroUid = uid;
+      _avisoBrk.libro = Array.isArray(filas) ? ultimaEjecucionBrokers(filas, uid, Date.now()) : nada;
+    }
+    lib = _avisoBrk.libro;
+  } catch (_) {}
+  const bt = _avisoBrk.uid === uid ? _avisoBrk.bt : nada;
+  const max = (a, b) => (!a ? b || null : !b ? a : a > b ? a : b);
+  return { etrade: max(lib.etrade, bt.etrade), schwab: max(lib.schwab, bt.schwab) };
+}
+// Lo llaman las vistas que YA leen broker_trades (Informe, Copiloto, Cuentas, Diario, Disciplina) con su resultado
+// ({ data, error }): se anota la última ejecución por bróker y se repinta la franja (sin pedir nada).
+function avisoAnotarTrades(r) {
+  try {
+    const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+    if (!uid || !r || r.error || !Array.isArray(r.data)) return;
+    _avisoBrk.uid = uid; _avisoBrk.bt = ultimaEjecucionBrokers(r.data, uid, Date.now());
+    pintarAvisoBrokers();
+  } catch (_) {}
+}
+// El estado local de este equipo (localStorage, con try/catch) + los datos ya cargados → la entrada de avisoBrokersEstado.
+function avisoBrokersLeer() {
+  const ls = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+  const js = (k) => { try { return JSON.parse(ls(k) || 'null'); } catch (_) { return null; } };
+  const dia = (ms) => (Number(ms) > 0 ? ymdNY(new Date(Number(ms)).toISOString()) || null : null);
+  // la última sincronización BUENA: la clave propia (v68) o, de antes, una completa/ligera guardada con estado ok
+  const buena = (ok, sync, lig) => {
+    let m = Number(ok) || 0;
+    if (sync && sync.resumen && sync.resumen.estado === 'ok') m = Math.max(m, Number(sync.ts) || 0);
+    if (lig && lig.estado === 'ok' && !lig.fills_err) m = Math.max(m, Number(lig.ts) || 0);
+    return dia(m);
+  };
+  const hoy = hoyNY();
+  let ocultos = {};
+  const o = js(AVISO_BRK_K);
+  if (o && typeof o === 'object') ocultos = Object.assign({}, o);
+  Object.keys(_avisoBrk.mem).forEach(k => { if (_avisoBrk.mem[k] === hoy) ocultos[k] = hoy; });   // sin almacenamiento, en memoria
+  const swC = swCreds();
+  return {
+    hoy,
+    et: { creds: !!etCreds(), dia: ls(ET_K.dia), okSync: buena(ls(ET_K.ok), js(ET_K.sync), js(ET_K.lig)) },
+    sw: { creds: !!swC, vencido: !!swC && swVencido(), okSync: buena(ls(SW_K.ok), js(SW_K_SYNC), js(SW_K_SYNC_LIG)), login: swC ? dia(swC.refts) : null },
+    datos: avisoDatosBrokers(),
+    ocultos,
+  };
+}
+// Pinta (o vacía) la franja #avisoBrk, justo encima de #vista (fuera de ella: ninguna vista la pisa). Solo toca el DOM si
+// el HTML cambió (role=status: no se re-anuncia en cada minuto). Al reconectar, el «ocultar hasta mañana» de ese bróker
+// se olvida: si vuelve a caerse hoy, se vuelve a decir. Devuelve el HTML (para las pruebas).
+function pintarAvisoBrokers() {
+  let html = '';
+  try {
+    const e = avisoBrokersLeer();
+    const conectado = { etrade: e.et.creds && e.et.dia !== 'muerto' && (!e.et.dia || e.et.dia === e.hoy), schwab: e.sw.creds && !e.sw.vencido };
+    const olvidar = AVISO_BRK.filter(b => conectado[b] && e.ocultos[b]);
+    if (olvidar.length) {
+      olvidar.forEach(b => { delete e.ocultos[b]; delete _avisoBrk.mem[b]; });
+      try { localStorage.setItem(AVISO_BRK_K, JSON.stringify(e.ocultos)); } catch (_) {}
+    }
+    html = avisoBrokersHtml(avisoBrokersEstado(e));
+  } catch (_) { html = ''; }
+  try {
+    let el = $('#avisoBrk');
+    if (!el) {
+      if (!html) return html;   // nada que decir y aún no hay franja: el DOM no se toca
+      const v = $('#vista');
+      if (!v || !v.parentNode) return html;
+      el = document.createElement('div');
+      el.id = 'avisoBrk'; el.className = 'avbrk';
+      el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+      v.parentNode.insertBefore(el, v);
+    }
+    if (el._avisoHtml !== html) { el.innerHTML = html; el._avisoHtml = html; }
+  } catch (_) {}
+  return html;
+}
+function avisoOcultar(b) {
+  if (!AVISO_BRK.includes(b)) return;
+  const hoy = hoyNY();
+  _avisoBrk.mem[b] = hoy;
+  try { const o = JSON.parse(localStorage.getItem(AVISO_BRK_K) || 'null') || {}; o[b] = hoy; localStorage.setItem(AVISO_BRK_K, JSON.stringify(o)); } catch (_) {}
+  pintarAvisoBrokers();
+}
+window.MZ = Object.assign(window.MZ || {}, { avisoOcultar });
 
 // ---------- GESTOR DE POSICIONES (v55): el de la mesa vieja, contra los contratos C1/C2 ----------
 // Columnas de `posiciones` (sql 0018): modo_salida (trailing | fijo), trail_pct, arm_pct,
@@ -10811,6 +11028,7 @@ async function vistaDisciplina() {
     cargarPlanUsuario(),
   ]);
   const libroDis = await libroParaUnir();   // v62 rev4: lo mismo que Cuentas
+  if (typeof avisoAnotarTrades === 'function') avisoAnotarTrades(btR);                   // v68 A
   const plan = planActivo();
   const conCorte = new Set(((corR && corR.data) || []).map(o => String(o.posicion_id)));
   const posic = (posR.data || []).map(p => conCorte.has(String(p.id)) ? { ...p, _salida_corte: true } : p);
@@ -12266,6 +12484,7 @@ async function vistaDiario(forzar) {
   const gen = ++_diario.gen;
   carteraDesdeCache();
   const [fillsR, posR, btR] = await Promise.all([leerFillsTodos(), sb.from('posiciones').select('*'), sb.from('broker_trades').select('*'), notasCargar()]);
+  if (typeof avisoAnotarTrades === 'function') avisoAnotarTrades(btR);                                                 // v68 A: la franja, con lo ya leído
   if (gen !== _diario.gen) return;                                       // llegó otra pasada mientras cargaba
   if ((location.hash.replace('#/', '') || 'informe') !== 'cuentas' || _cuentasVista !== 'diario') return;
   if (!forzar && diarioEnUso()) return;                                   // empezó a escribir mientras cargaba

@@ -221,6 +221,22 @@
     font:700 12px var(--sans);cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
   .vernueva .vercerrar{background:transparent;color:var(--tx2);padding:7px 6px;font-size:13px}
   .vercab{color:var(--oro);margin-right:6px;letter-spacing:.02em}
+  /* v68 A: la franja «bróker sin conexión» (#avisoBrk, la pone main.js entre la cabecera y la vista: en TODAS las pestañas),
+     una línea por bróker: roja (más de 1 día hábil sin sincronizar) o ámbar (falta el login de hoy), con «Conectar» y
+     «Ocultar hasta mañana». A 375 px el texto se parte y los botones bajan a su fila: sin desborde lateral. */
+  .avbrk{margin:2px 16px 4px;display:flex;flex-direction:column;gap:8px}
+  .avbrk:empty{display:none}
+  .avl{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 12px;border-radius:12px;font-size:12.5px;line-height:1.45;
+    color:var(--tx);background:rgba(242,109,95,.10);border:1px solid rgba(242,109,95,.5)}
+  .avl.ambar{background:rgba(231,181,77,.10);border-color:rgba(231,181,77,.55)}
+  .avl .avt{flex:1 1 260px;min-width:0;overflow-wrap:anywhere}
+  .avl .avtit{color:var(--rojo)}
+  .avl.ambar .avtit{color:var(--oro)}
+  .avl .avf{display:block;color:var(--tx2);font-size:11.5px;margin-top:2px}
+  .avl .avb{display:flex;flex-wrap:wrap;gap:6px;flex:0 1 auto;max-width:100%}
+  .avl .avc{background:var(--oro);color:#0B0E14;border:0;border-radius:9px;padding:8px 12px;font:700 12.5px var(--sans);cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+  .avl .avo{background:transparent;color:var(--tx2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font:600 12px var(--sans);cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+  @media (min-width:900px){#app.ancho .avbrk{margin:2px 24px 4px}}
   /* rev68 (revisor de A1): con la franja a la vista (body.con-vernueva, --vernueva-alto = su alto medido), el cuadro abierto
      empieza DEBAJO de ella: tapaba la primera banda de las hojas altas (el ✕ de la calculadora, el título del formulario de
      orden). La hoja cabe en lo que queda (max-height 100% del .modal, sin pasar del 92dvh de siempre) */
