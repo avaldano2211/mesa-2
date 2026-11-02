@@ -155,6 +155,15 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   assert(hl.indexOf('data-fondo-etq') > hl.lastIndexOf('<line data-nivel=') && hl.indexOf('data-fondo-etq="techo"') < hl.indexOf('data-etq="techo"'), 'las cajitas van sobre las líneas y debajo de su texto');
   // cada etiqueta en el color de su línea
   assert(etq.every(e => e.fill === uno(hl, new RegExp('<line data-nivel="' + e['data-etq'] + '"[^>]*>', 'g')).stroke), 'cada etiqueta en el color de SU línea');
+  // si de verdad no caben todas (un gráfico bajito con muchas líneas), se quedan las más importantes y la LEYENDA lo dice
+  const muchas = Array.from({ length: 10 }, (_, i) => ({ v: 99.2 + i * 0.18, c: '#8CFFB5', lb: 'strike ' + i, k: 'strike', dash: '9 3 2 3' }));
+  const bajo = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h: 120, w: 400, tf: 'm15', hlines: true, extra: muchas });
+  const nLin = (bajo.match(/<line data-nivel=/g) || []).length, nEtq = (bajo.match(/<text data-etq=/g) || []).length;
+  const nota = (/<tspan data-ley="sin-sitio"[^>]*>([^<]*)<\/tspan>/.exec(bajo) || [])[1] || '';
+  assert(nEtq < nLin && nota === '+' + (nLin - nEtq) + ' líneas sin etiqueta', 'gráfico bajito con ' + nLin + ' líneas: salen ' + nEtq + ' etiquetas y la leyenda dice «' + nota + '»', nLin + '/' + nEtq + ' ' + nota);
+  const ysB = elementos(bajo, /<text data-etq="[^"]*"[^>]*>/g).map(e => Number(e.y)).sort((a, b) => a - b);
+  assert(ysB.slice(1).every((y, i) => y - ysB[i] >= 9), 'y las que salen tampoco se montan', JSON.stringify(ysB));
+  igual(elementos(bajo, /<text data-etq="[^"]*"[^>]*>/g).map(e => e['data-etq']).filter(k => k !== 'strike'), [], 'con sitio para 7, los 7 son strikes: tus posiciones van primero en la prioridad');
   // un rango de target invertido (bajo > alto) no se dibuja: la regla v66 A2
   const inv = CH.chartSvg(pkD, { vista: 'hl', h: 300, w: 400, tf: 'dia', targets: { target: 101.8, target_alto: 98.2, target_bajo: 102.9 } });
   assert(/data-nivel="target"/.test(inv) && !/data-nivel="target_alto"/.test(inv) && !/data-nivel="target_bajo"/.test(inv), 'target alto/bajo invertidos: no se dibujan (jamás un rango invertido); el target sí');
