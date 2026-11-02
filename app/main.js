@@ -1729,7 +1729,7 @@ function chartSvg(pk, op) {
   //    gestor sabe CUÁL se dibujó (nivelesDibujados)
   const vis = niv.filter(o => o.v >= lo && o.v <= hi).sort((a, b) => b.v - a.v);
   vis.forEach(o => {
-    out += `<line data-nivel="${o.k}" data-v="${o.v}" x1="${pad.l}" y1="${f1(Y(o.v))}" x2="${f1(W - pad.r)}" y2="${f1(Y(o.v))}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}"/>`;
+    out += `<line data-nivel="${o.k}" x1="${pad.l}" y1="${f1(Y(o.v))}" x2="${f1(W - pad.r)}" y2="${f1(Y(o.v))}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}" data-v="${o.v}"/>`;
   });
   const PRIORIDAD_ETQ = ['strike', 'extra', 'techo', 'piso', 'cierre_ayer', 'apertura_hoy', 'target', 'ath', 'atl', 'target_alto', 'target_bajo'];
   //    El conector va en DIAGONAL desde el extremo izquierdo de su línea hasta su etiqueta: como el apilado conserva el
@@ -2036,7 +2036,7 @@ function hlinesLista(pk, tg, dec, dibujadas) {
 // lista H-LINES de la hoja y la leyenda del gestor. PURA.
 function nivelesDibujados(svg) {
   if (typeof svg !== 'string' || !/^<svg[\s>]/.test(svg)) return null;
-  return [...svg.matchAll(/<line data-nivel="([^"]*)" data-v="([^"]*)"/g)].map(m => ({ k: m[1], v: Number(m[2]) }));
+  return [...svg.matchAll(/<line data-nivel="([^"]*)"[^>]*? data-v="([^"]*)"/g)].map(m => ({ k: m[1], v: Number(m[2]) }));
 }
 
 // ---- hoja modal del chart (grande, con lectura, H-lines y editor de target) ----
