@@ -239,6 +239,15 @@
   .hl:first-child{border-top:none}
   .hl i{display:inline-block;width:14px;height:0;border-top:2px solid currentColor;vertical-align:middle;margin-right:7px}
   .hl .fresco{text-align:right;white-space:nowrap}
+  /* v67: la muestra de una línea del gráfico fuera de él (lista H-LINES, leyenda del gestor): un trocito del lienzo oscuro
+     (el fondo va en línea, CHART_COL.lienzo) con la línea en su color y su trazo, igual en tema claro y oscuro */
+  .hl i.chsw,.gleg span i.chsw,i.chsw{display:inline-block;width:24px;height:11px;border:0;border-radius:3px;vertical-align:middle;
+    margin-right:7px;flex:none;background-size:18px 2px;background-position:center;background-repeat:no-repeat}
+  i.chsw{background-image:linear-gradient(currentColor,currentColor)}
+  i.chsw[data-trazo="guiones"]{background-image:repeating-linear-gradient(90deg,currentColor 0 5px,transparent 5px 7px)}
+  i.chsw[data-trazo="puntos"]{background-image:repeating-linear-gradient(90deg,currentColor 0 2px,transparent 2px 4px)}
+  i.chsw[data-trazo="rayaPunto"]{background-image:repeating-linear-gradient(90deg,currentColor 0 7px,transparent 7px 9px,currentColor 9px 11px,transparent 11px 13px)}
+  .hl.mut{font-size:11px;padding:3px 0}
   /* v58: editor de tickers EN la pestaña Tickers (agregar / reactivar / quitar) y el botón «Extendido».
      El campo va a 16 px: por debajo Safari en el iPhone amplía la página al enfocarlo y no vuelve solo. */
   .tkedit{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:2px 0}

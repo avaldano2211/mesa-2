@@ -479,13 +479,15 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
     igual(CHV.gchTfDef('raro')[0], 'm5', 'un tf desconocido cae a 5 min');
   }
   {
-    const L = construir(['nivelesPosicionesChart', 'reglaGestor', 'acotarGestor', 'nivelGestor', 'markGestor', 'gtcDePosicion', 'gtcLimite', 'planDePct', 'corteDe', 'fmtPrima'], { PLAN_PCT: 35, PLANES: { PLAN_35: { gtcPct: 35 }, PLAN_10: { gtcPct: 10 } } }, { consts: ['GESTOR_DEF', 'GESTOR_RANGOS', 'GCH_COLORES'] });
+    const L = construir(['nivelesPosicionesChart', 'reglaGestor', 'acotarGestor', 'nivelGestor', 'markGestor', 'gtcDePosicion', 'gtcLimite', 'planDePct', 'corteDe', 'fmtPrima'], { PLAN_PCT: 35, PLANES: { PLAN_35: { gtcPct: 35 }, PLAN_10: { gtcPct: 10 } } }, { consts: ['GESTOR_DEF', 'GESTOR_RANGOS', 'GCH_COLORES', 'CHART_COL'] });
     const r = L.nivelesPosicionesChart([{ ...SPY, _br: { mark: 4.20 } }, META, NVDA], 'SPY', 2);
-    igual(r.lineas.map(l => [l.v, l.c, l.lb, l.k]), [[770, 'var(--verde)', '770.00 CALL ×2  +27%', 'strike']], 'una línea por strike del ticker elegido (CALL en verde) con la etiqueta «770.00 CALL ×2 +27%»; las de otros tickers no entran');
+    // v67: el strike con el color de la paleta del lienzo (CALL verde menta, PUT naranja) y en raya-punto: en el gestor el blanco
+    // liso es edge line y var(--verde) del tema claro se leía mal sobre el lienzo oscuro
+    igual(r.lineas.map(l => [l.v, l.c, l.lb, l.k, l.dash]), [[770, L.CHART_COL.strikeCall, '770.00 CALL ×2  +27%', 'strike', '9 3 2 3']], 'una línea por strike del ticker elegido (CALL en verde menta, raya-punto) con la etiqueta «770.00 CALL ×2 +27%»; las de otros tickers no entran');
     igual(r.leyenda.map(l => l.txt), ['770.00 CALL ×2  +27%', 'GTC $3.65', 'corte $2.64', 'trailing $4.00'], 'la leyenda: el strike, y el GTC, el corte y el nivel de trailing como PRIMAS (no como líneas del subyacente)');
     assert(r.leyenda.slice(1).every(l => l.prima === true) && r.leyenda[1].c === 'var(--oro)' && r.leyenda[2].c === 'var(--rojo)' && r.leyenda[3].c === 'var(--morado)', 'cada prima con su color: GTC oro, corte rojo, trailing morado');
     const rm = L.nivelesPosicionesChart([META], 'META', 2);
-    igual([rm.lineas[0].c, rm.lineas[0].lb, rm.leyenda.map(l => l.txt)], ['var(--rojo)', '700.00 PUT ×1  -2%', ['700.00 PUT ×1  -2%', 'GTC $5.52', 'corte $4.00', 'objetivo $8.00', 'stop $2.75']], 'un PUT en rojo; en modo fijo la leyenda lleva objetivo y stop (2.75, stop_fijo_pct) y el corte del plan aparte (4.00)');
+    igual([rm.lineas[0].c, rm.lineas[0].lb, rm.leyenda.map(l => l.txt)], [L.CHART_COL.strikePut, '700.00 PUT ×1  -2%', ['700.00 PUT ×1  -2%', 'GTC $5.52', 'corte $4.00', 'objetivo $8.00', 'stop $2.75']], 'un PUT en naranja (v67); en modo fijo la leyenda lleva objetivo y stop (2.75, stop_fijo_pct) y el corte del plan aparte (4.00)');
     igual(L.nivelesPosicionesChart([NVDA], 'NVDA', 2).leyenda.map(l => l.txt), ['185.00 CALL ×3  +7%', 'GTC $2.86', 'trailing 💤 +25%'], 'trailing dormido: «trailing 💤 +25%», y sin corte (Plan 35) no hay corte');
     igual(L.nivelesPosicionesChart([{ ...SPY, strike: null }], 'SPY', 2).lineas, [], 'sin strike no hay línea');
   }
@@ -504,11 +506,12 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
     const nodes = {};
     const _gch = { sym: 'SPY', symManual: false, tf: 'm5', rango: 240, bb: true, view: { count: null, end: null }, pos: [], gen: 0, fila: null, tfReal: null, niveles15: null, pintado: null };
     const fila15 = { symbol: 'SPY', tf: 'm15', payload: { ticker: 'SPY', tf: 'm15', velas: velas(130, 900, 770), niveles: { spot: 770.3, cierre_ayer: 766.2 } }, actualizado_at: new Date().toISOString() };
-    const P = construir(['cargarChartGestor', 'pintarChartGestor', 'gchVentana', 'nivelesPosicionesChart', 'reglaGestor', 'acotarGestor', 'nivelGestor', 'markGestor', 'gtcDePosicion', 'gtcLimite', 'planDePct', 'corteDe', 'fmtPrima', 'techoPisoProximos'],
+    const P = construir(['cargarChartGestor', 'pintarChartGestor', 'gchVentana', 'nivelesPosicionesChart', 'reglaGestor', 'acotarGestor', 'nivelGestor', 'markGestor', 'gtcDePosicion', 'gtcLimite', 'planDePct', 'corteDe', 'fmtPrima', 'techoPisoProximos',
+      'itemLeyendaGestor', 'muestraLinea', 'nivelesChart', 'rangoValido'],   // v67: la leyenda con las muestras y nombres del gráfico
       { esc, _gch, _targets: { por: {} }, PLAN_PCT: 35, PLANES: { PLAN_35: { gtcPct: 35 }, PLAN_10: { gtcPct: 10 } }, decDe: () => 2, anchoVista: () => 1200, chartFrescoTxt: () => 'última vela hace 1 min',
         cargarVelasGestor: async (sym, tf) => (tf === 'm15' ? fila15 : null), cargarTargets: async () => ({}), chartSvg: (pk, op) => `<svg data-tf="${op.tf}" data-w="${op.w}" data-h="${op.h}" data-extra="${(op.extra || []).length}"></svg>`,
         $: (s) => (nodes[s] = nodes[s] || nodo({ clientWidth: 1100 })) },
-      { consts: ['GESTOR_ANCHO_TABLA', 'GESTOR_DEF', 'GESTOR_RANGOS', 'GCH_TFS', 'GCH_RANGOS', 'GCH_COLORES', 'GCH_ALTO_MAC', 'GCH_ALTO_IPHONE', 'gchTfDef'] });
+      { consts: ['GESTOR_ANCHO_TABLA', 'GESTOR_DEF', 'GESTOR_RANGOS', 'GCH_TFS', 'GCH_RANGOS', 'GCH_COLORES', 'GCH_ALTO_MAC', 'GCH_ALTO_IPHONE', 'gchTfDef', 'CHART_COL'] });
     _gch.pos = [SPY];
     await P.cargarChartGestor(true);
     igual([_gch.tfReal, nodes['#gchTitulo'].textContent], ['m15', 'SPY · 15 min'], 'sin velas de 5 min se cae a 15 min y el título lo dice');

@@ -1927,43 +1927,55 @@ function lecturaChart(pk, tf, dec, ext, svg) {
     ${medias.length ? `<div class="hist" style="grid-template-columns:repeat(${medias.length},1fr)">${medias.map(x => c('SMA ' + x.k + (reg.has(x.k) ? ' (sesión regular)' : ''), f(x.v))).join('')}</div>` : ''}
     ${faltan ? `<div class="mut" style="font-size:11px">${faltanTxt ? esc(faltanTxt) : `en este marco no hay historia para ${faltan === 1 ? 'una media' : faltan + ' medias'} (el curso decide las medias en hora y día)`}</div>` : ''}`;
 }
+// v67 (Andrés 2026-11-01: «aquí deberían de salir las líneas del color correcto y bien identificadas»): la lista H-LINES
+// con las MISMAS líneas, muestras (muestraLinea: su color y su trazo sobre el trocito de lienzo oscuro) y NOMBRES que el
+// gráfico (nivelesChart: «techo hora 105.00», «máx 250 días 120.00», «target analistas 115.00», «cierre ayer 99.50»…), de
+// ARRIBA ABAJO por precio, con el precio actual en su sitio para leer qué queda encima y qué debajo. Debajo, lo que NO
+// es una H-line del gráfico (los demás swings de hora, las referencias de día, el salto), como antes.
 function hlinesLista(pk, tg, dec) {
   const nv = (pk && pk.niveles) || {};
   const f = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(dec);
   const fecha = (ymd) => (ymd && /^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) ? fmtFechaNY(String(ymd) + 'T12:00:00Z') : '';
   const it = (col, txt, sub) => `<div class="hl"><span><i style="color:${col}"></i>${txt}</span><span class="fresco">${sub || ''}</span></div>`;
-  const { techo, piso } = techoPisoProximos(nv, nv.spot);
-  let h = '';
-  if (tg && tg.target != null) {
-    // v66 (A2): con los dos extremos, el bajo–alto solo se pinta si vale (rangoValido); con uno solo, el otro es «—»
-    const ab = (tg.target_bajo != null && tg.target_alto != null && !rangoValido(tg.target_bajo, tg.target_alto)) ? ' · bajo–alto: rango inválido'
-      : (tg.target_bajo != null || tg.target_alto != null) ? ` · ${f(tg.target_bajo)}–${f(tg.target_alto)}` : '';
-    h += it('var(--rojo)', `target $${esc(f(tg.target))}`, esc((tg.fuente || 'finviz') + (tg.fecha ? ' · ' + fecha(tg.fecha) : '') + ab));
-  }
-  // El curso marca POCAS líneas y las recorre al romperse («el gráfico no puede
-  // parecer un plato de espagueti»): arriba solo el techo y el piso próximos; el
-  // resto de swings queda en un desplegable.
+  // el precio de referencia del gráfico (chartSvg): el spot del worker; si no, el cierre de la vela en curso o de la última
+  const vs = (pk && Array.isArray(pk.velas)) ? pk.velas : [];
+  const ultV = (pk && Array.isArray(pk.vela_viva) && pk.vela_viva.length >= 5) ? pk.vela_viva : (Array.isArray(vs[vs.length - 1]) ? vs[vs.length - 1] : null);
+  const spotRef = nv.spot != null ? Number(nv.spot) : ultV ? Number(ultV[4]) : NaN;
+  const { techo, piso } = techoPisoProximos(nv, spotRef);
   const sub = (x) => `${esc(x.respetos != null ? x.respetos : '?')} respetos · edad ${esc(x.edad != null ? x.edad : '?')} velas`;
-  if (techo) h += it('var(--tx)', `techo hora $${esc(f(techo.p))} <b style="color:var(--oro)">· próximo</b>`, sub(techo));
-  if (piso) h += it('var(--tx)', `piso hora $${esc(f(piso.p))} <b style="color:var(--oro)">· próximo</b>`, sub(piso));
+  // v66 (A2): con los dos extremos del target, el bajo–alto solo se pinta si vale (rangoValido); con uno solo, el otro es «—»
+  const ab = (tg && tg.target_bajo != null && tg.target_alto != null && !rangoValido(tg.target_bajo, tg.target_alto)) ? ' · bajo–alto: rango inválido'
+    : (tg && (tg.target_bajo != null || tg.target_alto != null)) ? ` · ${f(tg.target_bajo)}–${f(tg.target_alto)}` : '';
+  // v66 (A2): el mínimo–máximo de ayer, con los dos, solo se pinta si vale (rangoValido); jamás invertido
+  const ayerRango = (nv.max_ayer != null && nv.min_ayer != null && !rangoValido(nv.min_ayer, nv.max_ayer)) ? 'ayer: rango inválido'
+    : (nv.max_ayer != null || nv.min_ayer != null) ? `ayer ${esc(f(nv.min_ayer))}–${esc(f(nv.max_ayer))}` : '';
+  const SUB = {
+    target: () => esc(((tg && tg.fuente) || 'finviz') + (tg && tg.fecha ? ' · ' + fecha(tg.fecha) : '') + ab),
+    target_alto: () => 'el más optimista de los analistas',
+    target_bajo: () => 'el más pesimista de los analistas',
+    techo: () => 'próximo · ' + sub(techo), piso: () => 'próximo · ' + sub(piso),
+    ath: () => esc(fecha(nv.ath_fecha)), atl: () => esc(fecha(nv.atl_fecha)),
+    cierre_ayer: () => ayerRango, apertura_hoy: () => '',
+  };
+  const lineas = nivelesChart(nv, (tg && tg.target != null) ? tg : null, spotRef, true).sort((a, b) => b.v - a.v);
+  let h = '', spotPuesto = !(spotRef > 0) || !lineas.length;
+  lineas.forEach(o => {
+    if (!spotPuesto && spotRef > o.v) { h += `<div class="hl mut" data-hl="spot"><span>— precio ${esc(f(spotRef))} —</span><span class="fresco"></span></div>`; spotPuesto = true; }
+    h += `<div class="hl" data-hl="${esc(o.k)}"><span>${muestraLinea(o.c, o.trazo)}${esc(o.nombre)} ${esc(f(o.v))}</span><span class="fresco">${SUB[o.k] ? SUB[o.k]() : ''}</span></div>`;
+  });
+  if (!spotPuesto) h += `<div class="hl mut" data-hl="spot"><span>— precio ${esc(f(spotRef))} —</span><span class="fresco"></span></div>`;
+  // El curso marca POCAS líneas y las recorre al romperse («el gráfico no puede parecer un plato de espagueti»): en el
+  // gráfico solo el techo y el piso próximos; el resto de swings queda en un desplegable.
   const otros = []
     .concat((Array.isArray(nv.techos_hora) ? nv.techos_hora : []).filter(x => !techo || Number(x.p) !== Number(techo.p)).map(x => ['techo', x]))
     .concat((Array.isArray(nv.pisos_hora) ? nv.pisos_hora : []).filter(x => !piso || Number(x.p) !== Number(piso.p)).map(x => ['piso', x]))
     .sort((a, b) => Number(b[1].p) - Number(a[1].p));
-  if (otros.length) h += `<details style="margin-top:2px"><summary class="mut" style="font-size:12px;cursor:pointer">ver los demás swings de hora (${otros.length})</summary>`
+  if (otros.length) h += `<details style="margin-top:2px"><summary class="mut" style="font-size:12px;cursor:pointer">ver los demás swings de hora (${otros.length}; no se dibujan)</summary>`
     + otros.map(([q, x]) => it('var(--tx2)', `${q} hora $${esc(f(x.p))}`, sub(x))).join('') + '</details>';
-  const dias = nv.ath_dias != null ? `${Math.round(Number(nv.ath_dias))} d` : 'del periodo';   // jamás «hist»: no es el all-time del curso
-  if (nv.ath != null) h += it('var(--azul)', `máx ${esc(dias)} $${esc(f(nv.ath))}`, esc(fecha(nv.ath_fecha)));
-  if (nv.atl != null) h += it('var(--azul)', `mín ${esc(dias)} $${esc(f(nv.atl))}`, esc(fecha(nv.atl_fecha)));
   const td = (nv.techos_dia || []).map(x => '$' + f(x.p)).join(' · '), pd = (nv.pisos_dia || []).map(x => '$' + f(x.p)).join(' · ');
   // los swings de DÍA no son H-lines en el curso (las edge lines se marcan en hora)
   if (td) h += it('var(--tx2)', 'referencias de día (no son H-lines)', esc(td));
   if (pd) h += it('var(--tx2)', 'referencias de día (no son H-lines)', esc(pd));
-  // v66 (A2): el mínimo–máximo de ayer, con los dos, solo se pinta si vale (rangoValido); jamás invertido
-  const ayerRango = (nv.max_ayer != null && nv.min_ayer != null && !rangoValido(nv.min_ayer, nv.max_ayer)) ? 'ayer: rango inválido'
-    : (nv.max_ayer != null || nv.min_ayer != null) ? `ayer ${esc(f(nv.min_ayer))}–${esc(f(nv.max_ayer))}` : '';
-  if (nv.cierre_ayer != null) h += it('var(--oro)', `cierre de ayer $${esc(f(nv.cierre_ayer))}`, ayerRango);
-  if (nv.apertura_hoy != null) h += it('var(--tx3)', `apertura de hoy $${esc(f(nv.apertura_hoy))}`, '');
   const s = nv.salto;
   if (s && s.desde != null && s.hasta != null) h += it('var(--oro)', `salto ${esc(s.lado || '')} $${esc(f(s.desde))} → $${esc(f(s.hasta))}`,
     `${esc(Number(s.gap_pct) > 0 ? '+' : '')}${esc(s.gap_pct != null ? Number(s.gap_pct).toFixed(1) : '?')}% · hace ${esc(s.hace_velas != null ? s.hace_velas : '?')} velas`);
@@ -1979,6 +1991,8 @@ function abrirChart(sym) {
   const m = document.createElement('div'); m.className = 'modal'; m.id = 'modalChart';
   const tg = _targets.por[sym] || null;
   const indice = CHART_INDICES.includes(sym);
+  // v67 (Andrés 2026-11-01: «¿qué significa alto y bajo?»): los campos dicen qué son («Target alto (el más optimista)»,
+  // «Target bajo (el más pesimista)») y una línea explica el consenso y los extremos
   m.innerHTML = `<div class="hoja">
     <div class="fila"><h3 style="margin:0">${esc(sym)}</h3><span class="fresco" id="chFresco">cargando…</span></div>
     <div id="chSel">${chartSelectores(vista, tf, 'chartSelHoja')}</div>
@@ -1993,8 +2007,9 @@ function abrirChart(sym) {
         <div><label>Target</label><input id="tgT" type="number" inputmode="decimal" step="0.01" placeholder="ej. 260" value="${tg && tg.target != null ? esc(tg.target) : ''}"></div>
         <div><label>Fecha</label><input id="tgF" type="date" value="${esc(tg && tg.fecha ? tg.fecha : hoyNY())}"></div></div>
       <div class="dos">
-        <div><label>Alto</label><input id="tgA" type="number" inputmode="decimal" step="0.01" value="${tg && tg.target_alto != null ? esc(tg.target_alto) : ''}"></div>
-        <div><label>Bajo</label><input id="tgB" type="number" inputmode="decimal" step="0.01" value="${tg && tg.target_bajo != null ? esc(tg.target_bajo) : ''}"></div></div>
+        <div><label for="tgA">Target alto (el más optimista)</label><input id="tgA" type="number" inputmode="decimal" step="0.01" value="${tg && tg.target_alto != null ? esc(tg.target_alto) : ''}"></div>
+        <div><label for="tgB">Target bajo (el más pesimista)</label><input id="tgB" type="number" inputmode="decimal" step="0.01" value="${tg && tg.target_bajo != null ? esc(tg.target_bajo) : ''}"></div></div>
+      <div class="mut" data-ayuda-target="1" style="font-size:11.5px;margin-top:4px">Target es el consenso (el promedio) de los precios objetivo de los analistas; alto y bajo son los extremos: el precio objetivo más optimista y el más pesimista de entre ellos. En el gráfico, el target va en rojo claro discontinuo y alto y bajo finos y punteados.</div>
       <label>Fuente</label><input id="tgS" value="${esc(tg && tg.fuente ? tg.fuente : 'finviz')}">
       <div class="err" id="tgErr"></div>`}
     <div class="dos" style="margin-top:8px">
@@ -7642,8 +7657,11 @@ function nivelesPosicionesChart(abiertas, sym, dec) {
     const n = nivelGestor(p, r, markGestor(p, p._br));
     const pnl = (n.mark != null && n.costo > 0) ? (n.mark - n.costo) / n.costo * 100 : null;
     const lb = `${f(k)} ${call ? 'CALL' : 'PUT'} ×${Number(p.contratos) || 1}${pnl != null ? `  ${pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}%` : ''}`;
-    lineas.push({ v: k, c: call ? 'var(--verde)' : 'var(--rojo)', lb, k: 'strike', w: 1.6, op: .95, dash: '' });
-    leyenda.push({ c: call ? 'var(--verde)' : 'var(--rojo)', txt: lb, k: 'strike' });
+    // v67 (Andrés 2026-11-01: «bien identificadas»): el strike con un color legible sobre el lienzo oscuro y distinto de
+    // las velas, del target y del BLANCO (en el gestor el blanco liso ya es edge line), en raya-punto y con su etiqueta
+    const col = call ? CHART_COL.strikeCall : CHART_COL.strikePut;
+    lineas.push({ v: k, c: col, lb, k: 'strike', w: 1.6, op: .95, dash: '9 3 2 3', trazo: 'rayaPunto' });
+    leyenda.push({ c: col, txt: lb, k: 'strike', trazo: 'rayaPunto' });
     const gtc = gtcDePosicion(p), corte = corteDe(p.prima_fill, p.stop_pct);
     if (gtc != null) leyenda.push({ c: GCH_COLORES.gtc, txt: `GTC $${gtc.toFixed(2)}`, prima: true, k: 'gtc' });
     if (corte != null) leyenda.push({ c: GCH_COLORES.corte, txt: `corte $${fmtPrima(corte)}`, prima: true, k: 'corte' });
@@ -7723,6 +7741,13 @@ async function cargarChartGestor(forzar) {
   _gch.niveles15 = (fila15 && fila15.payload && fila15.payload.niveles) || (tf === 'm15' && fila && fila.payload && fila.payload.niveles) || null;
   pintarChartGestor();
 }
+// v67: un elemento de la leyenda del gestor. Las líneas del gráfico (strikes, Bollinger, H-lines) con la muestra del
+// lienzo (muestraLinea) y su nombre en el color del tema; las PRIMAS (no van sobre el precio) como siempre, en su color
+// y punteadas. PURA.
+function itemLeyendaGestor(l) {
+  if (l.prima) return `<span class="prima" style="color:${l.c}" title="prima del contrato (no es un precio del subyacente)"><i></i>${esc(l.txt)}</span>`;
+  return `<span${l.k ? ` data-ley="${esc(l.k)}"` : ''}>${muestraLinea(l.c, l.trazo)}${esc(l.txt)}</span>`;
+}
 function pintarChartGestor() {
   const el = $('#gchSvg'); if (!el) return;
   const sym = _gch.sym, fila = _gch.fila, pk = fila && fila.payload;
@@ -7732,7 +7757,7 @@ function pintarChartGestor() {
   const { lineas, leyenda } = nivelesPosicionesChart(_gch.pos, sym, dec);
   if (!pk || !Array.isArray(pk.velas) || pk.velas.length < 2) {
     el.innerHTML = `<div class="vacio">${_gch.tfReal == null && _gch.fila == null ? `Sin velas de ${esc(sym)} todavía (el worker publica ${def[2]} min en sesión${_gch.tf !== 'm15' ? '; tampoco hay 15 min' : ''})` : 'Sin velas todavía para este marco'}</div>`;
-    if (leg) leg.innerHTML = leyenda.map(l => `<span class="${l.prima ? 'prima' : ''}" style="color:${l.c}"><i></i>${esc(l.txt)}</span>`).join('');
+    if (leg) leg.innerHTML = leyenda.map(itemLeyendaGestor).join('');
     if (fr) fr.textContent = ''; if (zt) zt.textContent = '';
     return;
   }
@@ -7744,20 +7769,19 @@ function pintarChartGestor() {
   const svg = chartSvg({ ...pk, ticker: pk.ticker || sym, niveles }, { vista: 'bb', bb: _gch.bb, hlines: true, tf, h: H, w: W, ventana: { start: v.start, end: v.end }, extra: lineas, dec, targets: _targets.por[sym] || null });
   el.innerHTML = svg;
   if (leg) {
+    // v67 (Andrés 2026-11-01: «bien identificadas»): la leyenda del gestor con las MISMAS muestras (muestraLinea, sobre el
+    // trocito de lienzo oscuro) y los MISMOS nombres que el gráfico (nivelesChart: «techo hora 401.25», «máx 120 días…»,
+    // «target analistas…»), las H-lines de arriba abajo por precio; el texto en el color del tema (blanco o amarillo
+    // sobre blanco no se leían en tema claro). Las primas siguen como estaban: no van sobre el precio.
     const nv = niveles || {};
     const fx = (x) => Number(x).toFixed(dec);
     const items = [];
-    if (_gch.bb) items.push({ c: 'var(--azul)', txt: 'BB (20, 2σ)' });
+    if (_gch.bb) items.push({ c: CHART_COL.bbBanda, txt: 'Bollinger Bands 20 2', k: 'bb' });
     leyenda.forEach(l => items.push(l));
-    const { techo, piso } = techoPisoProximos(nv, nv.spot != null ? nv.spot : Number(pk.velas[pk.velas.length - 1][4]));
-    if (techo) items.push({ c: 'var(--tx)', txt: `techo hora ${fx(techo.p)}` });
-    if (piso) items.push({ c: 'var(--tx)', txt: `piso hora ${fx(piso.p)}` });
-    if (nv.ath != null) items.push({ c: 'var(--azul)', txt: `máx ${nv.ath_dias != null ? Math.round(Number(nv.ath_dias)) + ' d ' : ''}${fx(nv.ath)}` });
-    if (nv.atl != null) items.push({ c: 'var(--azul)', txt: `mín ${nv.ath_dias != null ? Math.round(Number(nv.ath_dias)) + ' d ' : ''}${fx(nv.atl)}` });
-    if (nv.cierre_ayer != null) items.push({ c: 'var(--oro)', txt: `cierre ayer ${fx(nv.cierre_ayer)}` });
-    if (nv.apertura_hoy != null) items.push({ c: 'var(--tx3)', txt: `apertura ${fx(nv.apertura_hoy)}` });
-    const tg = _targets.por[sym]; if (tg && tg.target != null) items.push({ c: 'var(--rojo)', txt: `target ${fx(tg.target)}` });
-    leg.innerHTML = items.map(l => `<span class="${l.prima ? 'prima' : ''}" style="color:${l.c}" title="${l.prima ? 'prima del contrato (no es un precio del subyacente)' : ''}"><i></i>${esc(l.txt)}</span>`).join('')
+    const spotRef = nv.spot != null ? nv.spot : Number(pk.velas[pk.velas.length - 1][4]);
+    nivelesChart(nv, _targets.por[sym] || null, spotRef, true).sort((a, b) => b.v - a.v)
+      .forEach(o => items.push({ c: o.c, trazo: o.trazo, txt: `${o.nombre} ${fx(o.v)}`, k: o.k }));
+    leg.innerHTML = items.map(itemLeyendaGestor).join('')
       + (leyenda.some(l => l.prima) ? `<span class="fresco">· en punteado, PRIMAS del contrato (no van sobre el precio)</span>` : '');
   }
   if (fr) fr.textContent = (_gch.tfReal && _gch.tfReal !== _gch.tf ? `sin velas de ${gchTfDef(_gch.tf)[2]} min todavía (el worker aún no las publica): se muestra 15 min · ` : '') + chartFrescoTxt(fila, tf);

@@ -149,11 +149,13 @@ if (RV.length) {
 
 // ════════════════ 6. hlinesLista: mínimo–máximo de ayer y bajo–alto del target ════════════════
 {
-  const CH = construir(['hlinesLista', 'techoPisoProximos', 'fmtFechaNY'].concat(RV), { esc, haceCuanto }, { consts: ['decDe'] });
+  // v67: hlinesLista nombra las líneas como el gráfico (nivelesChart, muestraLinea, la paleta CHART_COL)
+  const v67 = tiene('nivelesChart') ? ['nivelesChart', 'muestraLinea'] : [];
+  const CH = construir(['hlinesLista', 'techoPisoProximos', 'fmtFechaNY'].concat(RV, v67), { esc, haceCuanto }, { consts: ['decDe'].concat(v67.length ? ['CHART_COL'] : []) });
   const nv = { spot: 100, cierre_ayer: 99.5, max_ayer: 98, min_ayer: 101 };   // invertido
   const h = CH.hlinesLista({ niveles: nv }, { target: 115, target_alto: 105, target_bajo: 125, fuente: 'finviz' }, 2);
-  assert(/cierre de ayer \$99\.50/.test(h) && /ayer: rango inválido/.test(h) && !/101\.00–98\.00/.test(h), 'el mínimo–máximo de ayer invertido no se pinta: «ayer: rango inválido»', h);
-  assert(/target \$115\.00/.test(h) && /bajo–alto: rango inválido/.test(h) && !/125\.00–105\.00/.test(h), 'el bajo–alto del target invertido tampoco (el target sí)', h);
+  assert(/cierre (de )?ayer \$?99\.50/.test(h) && /ayer: rango inválido/.test(h) && !/101\.00–98\.00/.test(h), 'el mínimo–máximo de ayer invertido no se pinta: «ayer: rango inválido»', h);
+  assert(/target (analistas )?\$?115\.00/.test(h) && /bajo–alto: rango inválido/.test(h) && !/125\.00–105\.00/.test(h), 'el bajo–alto del target invertido tampoco (el target sí)', h);
   const ok = CH.hlinesLista({ niveles: { ...nv, max_ayer: 101, min_ayer: 98 } }, { target: 115, target_alto: 125, target_bajo: 105 }, 2);
   assert(/ayer 98\.00–101\.00/.test(ok) && /105\.00–125\.00/.test(ok), 'válidos: como siempre');
   const medio = CH.hlinesLista({ niveles: { ...nv, max_ayer: 101, min_ayer: null } }, { target: 115, target_alto: 125 }, 2);
