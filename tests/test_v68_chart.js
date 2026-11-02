@@ -113,6 +113,38 @@ const filas = (h) => [...h.matchAll(/<div class="hl( fuera)?" data-hl="([^"]*)">
   assert(/Sin velas todavía/.test(nodos['#chSvg'].innerHTML) && !/hl fuera|no sale en Bollinger/.test(lista()), 'Bollinger sin gráfico (una vela): la lista no marca nada');
 }
 
+// ════════════════ B4 (rev70, revisor UX). El enlace «cambia a Medias + H-lines» solo con lo que de verdad sale al cambiar ════════════════
+{
+  // el caso de TSLA a 15 min: máx/mín de 397 días y los tres targets están LEJOS; en Medias + H-lines solo caben techo y piso
+  const pkT = { ticker: 'TSLA', tf: 'm15', velas: velas(78, { base: 400, amp: 1.5 }), niveles: { spot: 400.1, cierre_ayer: 399.9, apertura_hoy: 400.3,
+    techos_hora: [{ p: 401.5, respetos: 2, edad: 4 }], pisos_hora: [{ p: 398.6, respetos: 1, edad: 7 }], ath: 432, atl: 296, ath_dias: 397 } };
+  const TGT = { target: 412, target_alto: 426, target_bajo: 381 };
+  const LEJOS2 = /^lejos del precio: no sale en ninguna de las dos vistas/;
+  const dBB = CH.nivelesDibujados(CH.chartSvg(pkT, { vista: 'bb', h: 300, w: 400, tf: 'm15', targets: TGT })).map(x => x.k);
+  const dHL = CH.nivelesDibujados(CH.chartSvg(pkT, { vista: 'hl', h: 300, w: 400, tf: 'm15', targets: TGT })).map(x => x.k);
+  igual(dHL.slice().sort(), ['apertura_hoy', 'cierre_ayer', 'piso', 'techo'], 'TSLA 15 min en Medias + H-lines: solo caben techo y piso (y las nativas)');
+  const F = filas(CH.hlinesLista(pkT, TGT, 2, dBB, 'bb', dHL));
+  const prometidas = F.filter(f => NO_BB.test(f.sub)).map(f => f.k).sort();
+  igual(prometidas, ['piso', 'techo'], 'rev70: en Bollinger, «cambia a Medias + H-lines» SOLO junto a techo y piso (antes también máx/mín y los tres targets)');
+  assert(prometidas.every(k => dHL.includes(k)) && dHL.filter(k => !['cierre_ayer', 'apertura_hoy'].includes(k)).every(k => prometidas.includes(k)),
+    'rev70: lo que promete el enlace es EXACTAMENTE lo que el gráfico de Medias + H-lines dibuja de más');
+  igual(F.filter(f => LEJOS2.test(f.sub)).map(f => f.k).sort(), ['ath', 'atl', 'target', 'target_alto', 'target_bajo'],
+    'rev70: máx/mín de 397 días y los targets lejanos: «lejos del precio: no sale en ninguna de las dos vistas» (sin enlace)');
+  assert(F.filter(f => LEJOS2.test(f.sub)).every(f => f.fuera && !/<a /.test(f.sub)), '… marcadas «fuera» y sin enlace');
+  // en Medias + H-lines el parámetro nuevo no cambia nada
+  igual(CH.hlinesLista(pkT, TGT, 2, dHL, 'hl', dHL), CH.hlinesLista(pkT, TGT, 2, dHL, 'hl'), 'en Medias + H-lines, enHl no cambia la lista');
+  // la hoja (pintarChart) lo calcula sola con el gráfico real de Medias + H-lines
+  const nodos = {};
+  const H = construir(['pintarChart'].concat(NOMBRES),
+    { esc, haceCuanto, _ch: { sym: 'TSLA' }, $: (q) => (nodos[q] = nodos[q] || nodo()), chartPrefs: () => ({ vista: 'bb', tf: 'm15', ext: false }), _velas: new Map(), _targets: { por: {} },
+      chartSelectores: () => '', chartFrescoTxt: () => '', anchoVista: () => 375, GESTOR_ANCHO_TABLA: 900, lecturaChart: () => '', document: { activeElement: null } },
+    { consts: CONSTS });
+  H.pintarChart({ payload: pkT }, TGT);
+  const FH = filas(nodos['#chHlines'].innerHTML);
+  igual([FH.filter(f => NO_BB.test(f.sub)).map(f => f.k).sort(), FH.filter(f => LEJOS2.test(f.sub)).map(f => f.k).sort()],
+    [['piso', 'techo'], ['ath', 'atl', 'target', 'target_alto', 'target_bajo']], 'rev70: la hoja en Bollinger hace el mismo reparto con el gráfico real de Medias + H-lines');
+}
+
 // ════════════════ C. aria-label del gestor con BB apagado: lo que de verdad se dibuja ════════════════
 {
   const pk = { ticker: 'SPY', tf: 'm5', velas: velas(400, { paso: 300, base: 770 }), vela_viva: null,

@@ -1986,7 +1986,11 @@ function lecturaChart(pk, tf, dec, ext, svg) {
 // ayer, apertura de hoy: nivelesChart sin conHl) y la lista enseñaba techo, piso, targets y máx/mín sin decir que ahí no
 // están: la que no se dibujó y no es nativa se marca «no sale en Bollinger — cambia a Medias + H-lines» (con el enlace);
 // una nativa que no cupo sigue siendo «lejos del precio». Misma lógica nivelesDibujados sobre el svg real.
-function hlinesLista(pk, tg, dec, dibujadas, vista) {
+//   enHl (rev70, opcional, solo en Bollinger): las claves que DIBUJA el mismo gráfico en Medias + H-lines (su escala es otra:
+// sin bandas). El enlace «cambia a Medias + H-lines» solo va con las líneas que de verdad salen al cambiar; la que tampoco
+// cabe allí (un máx de 397 días, un target lejano) es «lejos del precio: no sale en ninguna de las dos vistas». Sin enHl,
+// como en la v68 (toda no nativa lleva el enlace).
+function hlinesLista(pk, tg, dec, dibujadas, vista, enHl) {
   const nv = (pk && pk.niveles) || {};
   const f = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(dec);
   const fecha = (ymd) => (ymd && /^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) ? fmtFechaNY(String(ymd) + 'T12:00:00Z') : '';
@@ -2019,7 +2023,9 @@ function hlinesLista(pk, tg, dec, dibujadas, vista) {
   lineas.forEach(o => {
     if (!spotPuesto && spotRef > o.v) { h += `<div class="hl mut" data-hl="spot"><span>— precio ${esc(f(spotRef))} —</span><span class="fresco"></span></div>`; spotPuesto = true; }
     const fuera = Array.isArray(dibujadas) && !dibujadas.includes(o.k);
-    const motivo = !fuera ? '' : (enBB && !nativas.has(o.k)) ? NO_BB : 'lejos del precio: fuera de este gráfico';
+    const motivo = !fuera ? '' : (enBB && !nativas.has(o.k))
+      ? ((Array.isArray(enHl) && !enHl.includes(o.k)) ? 'lejos del precio: no sale en ninguna de las dos vistas' : NO_BB)
+      : 'lejos del precio: fuera de este gráfico';
     const sb = [motivo, SUB[o.k] ? SUB[o.k]() : ''].filter(Boolean).join(' · ');
     h += `<div class="hl${fuera ? ' fuera' : ''}" data-hl="${esc(o.k)}"><span>${muestraLinea(o.c, o.trazo)}${esc(o.nombre)} ${esc(f(o.v))}</span><span class="fresco">${sb}</span></div>`;
   });
@@ -2123,7 +2129,10 @@ function pintarChart(fila, tg) {
   //   rev69: solo si de verdad hay gráfico (nivelesDibujados da null con el aviso «Sin velas todavía…»)
   //   v68 B: también en Bollinger, donde el gráfico solo dibuja cierre de ayer y apertura: lo demás «no sale en Bollinger»
   const dib = nivelesDibujados(svg);
-  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec, dib ? dib.map(x => x.k) : null, vista);
+  //   rev70 (revisor UX): y en Bollinger, qué saldría de verdad en Medias + H-lines (el mismo gráfico en esa vista; solo se
+  // mira qué líneas dibuja), para que «cambia a Medias + H-lines» no prometa líneas que allí tampoco caben
+  const dibHl = (vista === 'bb' && dib) ? nivelesDibujados(chartSvg(pk, { vista: 'hl', tf, h: grande ? 380 : 300, w: grande ? 880 : 400, targets: tg, dec, ext })) : null;
+  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec, dib ? dib.map(x => x.k) : null, vista, dibHl ? dibHl.map(x => x.k) : null);
   // el editor de target se rellena también si los targets llegaron DESPUÉS de
   // abrir la hoja (sin pisar lo que se esté escribiendo)
   [['tgT', tg && tg.target], ['tgA', tg && tg.target_alto], ['tgB', tg && tg.target_bajo],
