@@ -3657,7 +3657,7 @@ async function etradePinEnviar(rt) {
     localStorage.removeItem(ET_K.cache);
   } catch (_) {}
   toast('E*TRADE conectada ✓');
-  if (_ord && $('#modalOrden')) { cargarCadena(true); return; }   // reconectó desde el formulario de orden: la cadena sigue ahí
+  if (_ord && $('#modalOrden')) { if (typeof pintarAvisoBrokers === 'function') pintarAvisoBrokers(); cargarCadena(true); return; }   // reconectó desde el formulario de orden: la cadena sigue ahí (rev70: y la franja se va ya)
   ruta();
 }
 
@@ -4409,7 +4409,7 @@ function modalCodigoSchwab(url, abierta) {
   const esperar = setInterval(() => {
     if (!$('#modalSw') || Date.now() - t0 > 900000) { clearInterval(esperar); return; }
     const c = swCreds();
-    if (c && c.refts > t0 - 5000) { clearInterval(esperar); m.remove(); toast('Schwab conectada ✓'); if (_ord && $('#modalOrden')) cargarCadena(true); else ruta(); }
+    if (c && c.refts > t0 - 5000) { clearInterval(esperar); m.remove(); toast('Schwab conectada ✓'); if (_ord && $('#modalOrden')) { if (typeof pintarAvisoBrokers === 'function') pintarAvisoBrokers(); cargarCadena(true); } else ruta(); }
   }, 1500);
 }
 async function swCodigoEnviar() {
@@ -4426,7 +4426,7 @@ async function swCodigoEnviar() {
   try { localStorage.removeItem(SW_K.acct); localStorage.removeItem(SW_K.num); localStorage.removeItem(SW_K_SYNC); localStorage.removeItem(SW_K_SYNC_LIG); localStorage.removeItem(SW_K.login); } catch (_) {}
   const m = $('#modalSw'); if (m) m.remove();
   toast('Schwab conectada ✓');
-  if (_ord && $('#modalOrden')) { cargarCadena(true); return; }
+  if (_ord && $('#modalOrden')) { if (typeof pintarAvisoBrokers === 'function') pintarAvisoBrokers(); cargarCadena(true); return; }   // rev70: la franja se va ya
   ruta();
 }
 // símbolo OSI de Schwab: «SPY   260914C00769000» (subyacente a 6, yymmdd, C/P, strike×1000)
@@ -8917,6 +8917,7 @@ function cerrarOrden() {
   if (_ord && _ord.cadenaTimer) clearInterval(_ord.cadenaTimer);
   _ord = null;
   const m = $('#modalOrden'); if (m) m.remove();
+  if (typeof pintarAvisoBrokers === 'function') pintarAvisoBrokers();   // rev70: si se reconectó con el formulario abierto, la franja ya no pide «Conectar»
 }
 
 // ---- Cadena de opciones EN VIVO (E*TRADE, con tu login diario) ----

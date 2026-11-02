@@ -328,6 +328,12 @@ igual(RED, { fetch: 0, proxy: 0, sb: 0 }, 'en TODO el recorrido (crear, repintar
     && /if \(resumen\.estado === 'ok' && !resumen\.fills_err && SW_K\.ok\) \{ try \{ localStorage\.setItem\(SW_K\.ok, String\(resumen\.ts\)\)/.test(extraer('schwabSincronizarImpl'))
     && /if \(reg\.estado === 'ok' && !reg\.fills_err && SW_K\.ok\) \{ try \{ localStorage\.setItem\(SW_K\.ok, String\(reg\.ts\)\)/.test(extraer('schwabSincronizarLigera')),
     'las cuatro pasadas guardan la hora de la última sincronización BUENA (solo un número; un «expirado» no la pisa; rev70: tampoco una que no escribió el libro)');
+  // rev70 (revisor UX): reconectar con el formulario de orden abierto (las tres salidas que no llaman a ruta()) y cerrarlo repintan
+  // la franja: ya no pide «Conectar» tras un login correcto
+  const ramaOrden = (src) => /if \(_ord && \$\('#modalOrden'\)\) \{ if \(typeof pintarAvisoBrokers === 'function'\) pintarAvisoBrokers\(\); cargarCadena\(true\);/.test(src);
+  assert(ramaOrden(extraer('etradePinEnviar')) && ramaOrden(extraer('swCodigoEnviar')) && ramaOrden(extraer('modalCodigoSchwab')),
+    'rev70: etradePinEnviar, swCodigoEnviar y la espera del cuadro de Schwab repintan la franja en la rama del formulario de orden');
+  assert(/_ord = null;[\s\S]*pintarAvisoBrokers\(\)/.test(extraer('cerrarOrden')), 'rev70: y cerrarOrden() también');
   const K = construir([], {}, { consts: ['ET_K', 'SW_K'] });
   igual([K.ET_K.ok, K.SW_K.ok], ['mz_et_ultok', 'mz_sw_ultok'], 'en ET_K / SW_K: «olvidar en este equipo» (etOlvidar / swOlvidar) también la borra');
 }
@@ -340,7 +346,19 @@ igual(RED, { fetch: 0, proxy: 0, sb: 0 }, 'en TODO el recorrido (crear, repintar
   const avl = regla('.avl') || '', avt = regla('.avl .avt') || '', avb = regla('.avl .avb') || '';
   assert(/flex-wrap:\s*wrap/.test(avl) && /min-width:\s*0/.test(avt) && /overflow-wrap:\s*anywhere/.test(avt) && /flex-wrap:\s*wrap/.test(avb) && /max-width:\s*100%/.test(avb),
     'a 375 px el texto se parte y los botones bajan a su fila (sin desborde lateral)', [avl, avt, avb].join(' | '));
-  assert(/var\(--tx\)/.test(avl) && /var\(--rojo\)/.test(regla('.avl .avtit') || '') && /var\(--oro\)/.test(regla('.avl.ambar .avtit') || ''), 'colores con las variables del tema (claro y oscuro)');
+  assert(/var\(--tx\)/.test(avl) && /var\(--avrojo\)/.test(regla('.avl .avtit') || '') && /var\(--avoro\)/.test(regla('.avl.ambar .avtit') || ''), 'colores con las variables del tema (claro y oscuro)');
+  // rev70 (revisor UX): contraste AA (≥ 4,5:1) del título sobre el fondo teñido de la franja, en los DOS temas
+  const lum = (h) => { const c = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255).map(v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const rgb = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mezcla = (fg, a, bg) => '#' + rgb(fg).map((v, i) => Math.round(a * v + (1 - a) * rgb(bg)[i]).toString(16).padStart(2, '0')).join('');
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const bloques = [/:root\{([^}]*)\}/.exec(css), /:root:not\(\[data-theme="dark"\]\)\{([^}]*)\}/.exec(css), /:root\[data-theme="light"\]\{([^}]*)\}/.exec(css)].map(m => (m ? m[1] : ''));
+  const tok = (b, k) => { const m = new RegExp('--' + k + ':\\s*(#[0-9A-Fa-f]{6})').exec(b); return m ? m[1] : null; };
+  const res = bloques.map(b => { const bg = tok(b, 'bg'), r = tok(b, 'avrojo'), o = tok(b, 'avoro');
+    return (bg && r && o) ? [ratio(r, mezcla('#F26D5F', 0.10, bg)), ratio(o, mezcla('#E7B54D', 0.10, bg))].map(x => Math.round(x * 100) / 100) : null; });
+  assert(res.every(x => x && x[0] >= 4.5 && x[1] >= 4.5), 'rev70: el título rojo y el ámbar llegan a AA (≥ 4,5:1) en oscuro y en los dos bloques del claro (antes 3,69 y 3,33 en claro)', JSON.stringify(res));
+  assert(/body\.con-vernueva #avisoBrk:not\(:empty\)\{margin-top:calc\(var\(--vernueva-alto,48px\) \+ 8px\)\}/.test(css),
+    'rev70: con la franja fija de «versión nueva» a la vista, la de brókeres baja su alto (no le tapa el título; gana al margen de #app.ancho)');
   assert(/\.avbrk:empty\{display:none\}/.test(css) && /#app\.ancho \.avbrk\{margin:2px 24px 4px\}/.test(css), 'vacía no ocupa sitio; en la computadora sigue el margen de la vista ancha');
 }
 
