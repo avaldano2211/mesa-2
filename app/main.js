@@ -4152,7 +4152,7 @@ async function etradeSincronizarImpl(forzar) {
   const fin = (resumen) => {
     resumen.ts = Date.now();
     try { localStorage.setItem(ET_K.sync, JSON.stringify({ ts: resumen.ts, resumen, ses: P.ses })); } catch (_) {}   // v65 rev: y su sesión
-    if (resumen.estado === 'ok' && ET_K.ok) { try { localStorage.setItem(ET_K.ok, String(resumen.ts)); } catch (_) {} }   // v68 A
+    if (resumen.estado === 'ok' && !resumen.fills_err && ET_K.ok) { try { localStorage.setItem(ET_K.ok, String(resumen.ts)); } catch (_) {} }   // v68 A · rev70: y escribió el libro
     // Diagnóstico a la bitácora del proxy: SOLO contadores/estado (jamás tokens ni trades).
     try { etProxy('/diag', { que: 'etrade_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}
     return resumen;
@@ -4729,7 +4729,7 @@ async function schwabSincronizarImpl(forzar) {
   const fin = (resumen) => {
     resumen.ts = Date.now();
     try { localStorage.setItem(SW_K_SYNC, JSON.stringify({ ts: resumen.ts, resumen, ses: P.ses })); } catch (_) {}
-    if (resumen.estado === 'ok' && SW_K.ok) { try { localStorage.setItem(SW_K.ok, String(resumen.ts)); } catch (_) {} }   // v68 A
+    if (resumen.estado === 'ok' && !resumen.fills_err && SW_K.ok) { try { localStorage.setItem(SW_K.ok, String(resumen.ts)); } catch (_) {} }   // v68 A · rev70: y escribió el libro
     try { etProxy('/diag', { que: 'schwab_sync', uid: !!uid, ...resumen }).catch(() => {}); } catch (_) {}   // solo contadores, jamás tokens
     return resumen;
   };
@@ -6856,6 +6856,9 @@ window.MZ = Object.assign(window.MZ || {}, {
 // órdenes ni fills: solo LEE.
 const AVISO_BRK_K = 'mz_aviso_brk_oculto';   // { etrade: 'AAAA-MM-DD' (día NY en que se ocultó), schwab: … }
 const AVISO_BRK = ['etrade', 'schwab'];
+// rev70: lo último visto en los datos ({ uid, etrade, schwab }: solo DÍAS, nada de filas ni tokens), para que la franja sepa
+// «desde cuándo» al arrancar en el Informe del teléfono, que no lee ni el libro ni broker_trades (sin consultas nuevas)
+const AVISO_BRK_DATOS_K = 'mz_aviso_brk_datos';
 const _avisoBrk = { uid: null, bt: { etrade: null, schwab: null }, libroRef: null, libroUid: null, libro: { etrade: null, schwab: null }, mem: {} };
 // PURA: días hábiles (lunes a viernes; sin calendario de festivos, como antesDe1030NY) DESPUÉS de `desde` y hasta `hoy`
 // incluido (AAAA-MM-DD): los días de mercado cuyas ejecuciones pueden faltar. null si alguna fecha no vale.
@@ -6898,7 +6901,8 @@ function ultimaEjecucionBrokers(filas, uid, ahoraMs) {
 //   hoy: 'AAAA-MM-DD' (NY),
 //   et: { creds, dia (mz_et_dia: día NY del login | 'muerto' | null), okSync: día NY de la última sincronización BUENA en
 //         este equipo | null },
-//   sw: { creds, vencido (swVencido: login semanal caducado o refresh rechazado), okSync, login: día NY del login semanal | null },
+//   sw: { creds, vencido (swVencido: login semanal caducado o refresh rechazado), okSync, caduco: día NY en que CADUCÓ el login
+//         semanal (refts + 7 días, si ya pasó) | null — rev70: NO el día del login, que es cuando la sesión EMPEZÓ },
 //   datos: { etrade, schwab }: día NY de la última ejecución en los datos ya cargados del usuario | null,
 //   ocultos: { etrade: 'AAAA-MM-DD', … }: «Ocultar hasta mañana» (vale el día NY en que se pulsó) }
 // → [{ broker, estado, nivel, desde, fuente, dias }] solo de los brókeres afectados y no ocultos hoy. estado:
@@ -6906,30 +6910,42 @@ function ultimaEjecucionBrokers(filas, uid, ahoraMs) {
 //   Schwab 'caducado' · los dos 'sin_equipo' (sin sesión en este equipo pero con ejecuciones en los datos o con una
 //   sincronización buena anterior aquí). desde = lo más reciente entre la última sincronización buena en este equipo
 //   (fuente 'sync') y la última ejecución en los datos (fuente 'datos'; otro equipo pudo traerla); si no hay ninguna, el
-//   día del último login en este equipo (fuente 'login'). dias = días hábiles sin sincronizar (diasHabilesDesde). nivel:
-//   'ambar' con 1 día hábil o menos (el login DIARIO de E*TRADE: «falta el login de hoy»), 'rojo' con más o sin fecha.
-//   Un fin de semana sin nada pendiente (0 días hábiles) no se avisa: no hay mercado que perder.
+//   día del último login de E*TRADE en este equipo (fuente 'login') o el día en que caducó el login semanal de Schwab
+//   (fuente 'caduco'). dias = días hábiles sin sincronizar (diasHabilesDesde). nivel: 'ambar' con 1 día hábil o menos (el
+//   login DIARIO de E*TRADE: «falta el login de hoy»), 'rojo' con más o sin fecha. Un fin de semana sin nada pendiente (0
+//   días hábiles) no se avisa: no hay mercado que perder; con algo pendiente, rojo (rev70: el viernes perdido ya es una
+//   sesión entera, no «el login de hoy»).
+//   rev70 · OTRO EQUIPO (otro: true): si la fecha más fresca es de los DATOS y no de una sincronización de este equipo
+//   (sin sesión aquí, o datos más nuevos que la última buena de aquí), las ejecuciones las trajo otro equipo (Andrés usa el
+//   iPhone y el Mac). Entonces: con ejecuciones de HOY no se avisa (la Mesa va al día); con 1 día hábil tampoco (el otro
+//   equipo entra a diario); con más, ÁMBAR y diciendo lo que se sabe («lo último … es del X y lo trajo otro equipo»), sin
+//   presentar la fecha de una operación como si fuera la de una sincronización. Con ejecuciones de hoy en los datos y este
+//   equipo sin una buena de hoy, tampoco se avisa.
 function avisoBrokersEstado(e) {
   e = e || {};
   const hoy = String(e.hoy || ''), datos = e.datos || {}, ocultos = e.ocultos || {};
   const finde = (() => { const d = /^\d{4}-\d{2}-\d{2}$/.test(hoy) ? new Date(hoy + 'T12:00:00Z').getUTCDay() : 1; return d === 0 || d === 6; })();
   const fecha = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(String(x || '')) ? String(x) : null);
   const out = [];
-  const linea = (broker, estado, sync, dato, login) => {
+  const linea = (broker, estado, sync, dato, login, fLogin) => {
     if (!estado || ocultos[broker] === hoy) return;
     sync = fecha(sync); dato = fecha(dato); login = fecha(login);
     const d = (sync && (!dato || sync >= dato)) ? { desde: sync, fuente: 'sync' } : dato ? { desde: dato, fuente: 'datos' }
-      : login ? { desde: login, fuente: 'login' } : { desde: null, fuente: null };
+      : login ? { desde: login, fuente: fLogin || 'login' } : { desde: null, fuente: null };
     const dias = d.desde ? diasHabilesDesde(d.desde, hoy) : null;
     if (dias === 0 && finde) return;
-    out.push({ broker, estado, nivel: dias != null && dias <= 1 ? 'ambar' : 'rojo', desde: d.desde, fuente: d.fuente, dias });
+    if (d.fuente === 'datos' && dias === 0) return;                      // rev70: hoy ya entraron ejecuciones: la Mesa va al día
+    const otro = d.fuente === 'datos' && (estado === 'sin_equipo' || !!sync);   // rev70: las trajo otro equipo
+    if (otro && dias != null && dias <= 1) return;                       // … que entra a diario: nada que avisar aquí
+    const nivel = otro ? 'ambar' : (dias != null && dias <= 1 && !finde) ? 'ambar' : 'rojo';
+    out.push({ broker, estado, nivel, desde: d.desde, fuente: d.fuente, dias, otro });
   };
   const et = e.et || {}, sw = e.sw || {};
   const etEst = et.creds ? (et.dia === 'muerto' ? 'muerto' : (et.dia && et.dia !== hoy) ? 'otro_dia' : null)
     : (datos.etrade || fecha(et.okSync)) ? 'sin_equipo' : null;
   linea('etrade', etEst, et.okSync, datos.etrade, etEst === 'otro_dia' ? et.dia : null);
   const swEst = sw.creds ? (sw.vencido ? 'caducado' : null) : (datos.schwab || fecha(sw.okSync)) ? 'sin_equipo' : null;
-  linea('schwab', swEst, sw.okSync, datos.schwab, swEst === 'caducado' ? sw.login : null);
+  linea('schwab', swEst, sw.okSync, datos.schwab, swEst === 'caducado' ? sw.caduco : null, 'caduco');
   return out;
 }
 // PURA: el HTML de la franja ('' sin líneas). Todo lo dinámico pasa por esc(); los botones llevan claves fijas.
@@ -6941,22 +6957,28 @@ function avisoBrokersHtml(lineas) {
     const nd = l.dias != null && l.dias > 0 ? ` (${esc(l.dias)} día${l.dias === 1 ? '' : 's'} hábil${l.dias === 1 ? '' : 'es'})` : '';
     const fuente = l.fuente === 'sync' ? 'la de la última sincronización buena en este equipo'
       : l.fuente === 'datos' ? `la de tu última operación de ${N} guardada en la Mesa`
-      : l.fuente === 'login' ? 'la del último login en este equipo' : '';
+      : l.fuente === 'login' ? 'la del último login en este equipo'
+      : l.fuente === 'caduco' ? 'la del día en que caducó el login semanal en este equipo' : '';
     const desdeTxt = f ? `no entran a la Mesa desde el <b>${f}</b>${nd}` : 'no entran a la Mesa';
     const motivo = l.estado === 'muerto' ? 'E*TRADE rechazó la sesión' : l.estado === 'otro_dia' ? 'E*TRADE cierra la sesión cada medianoche'
       : l.estado === 'caducado' ? 'El login semanal de Schwab caducó' : '';
     let tit;
     if (l.estado === 'sin_equipo') tit = `${N} no está conectado en este equipo`;
+    else if (l.otro) tit = l.estado === 'otro_dia' ? 'E*TRADE: falta el login en este equipo' : l.estado === 'caducado' ? 'Schwab: el login semanal caducó en este equipo' : `${N}: sesión rechazada en este equipo`;
     else if (l.nivel === 'ambar') tit = l.estado === 'otro_dia' ? 'E*TRADE: falta el login de hoy' : l.estado === 'caducado' ? 'Schwab: falta el login semanal' : `${N} se desconectó`;
     else tit = `${N} desconectado`;
     // ámbar (el primer día): lo de hoy aún no se perdió; rojo: se dice desde cuándo y cuántos días hábiles faltan
+    //   rev70: con otro equipo trayendo las ejecuciones, solo lo que se sabe (la fecha es la de una OPERACIÓN, no la de una
+    // sincronización: no se dice «no entran desde»)
     const cuerpo = l.estado === 'sin_equipo'
       ? `lo último de ${N} guardado en la Mesa es del <b>${f || '—'}</b>${nd}; si operaste después, conéctalo aquí para que entre.`
+      : l.otro
+        ? `lo último de ${N} guardado en la Mesa es del <b>${f}</b>${nd} y lo trajo otro equipo; si operaste después, conecta aquí (o en ese equipo) para que entre.`
       : l.nivel === 'ambar'
         ? `lo que operes en ${N} no entra a la Mesa hasta que conectes${f ? ` (al día hasta el <b>${f}</b>)` : ''}. ${motivo}.`
         : `tus operaciones de ${N} ${desdeTxt}. ${motivo}: vuelve a entrar.`;
     return `<div class="avl ${l.nivel === 'ambar' ? 'ambar' : 'rojo'}" data-brk="${b}" data-estado="${esc(l.estado)}">`
-      + `<div class="avt"><b class="avtit">${esc(tit)}</b> — ${cuerpo}${fuente && l.estado !== 'sin_equipo' ? `<span class="avf">Fecha: ${fuente}.</span>` : ''}</div>`
+      + `<div class="avt"><b class="avtit">${esc(tit)}</b> — ${cuerpo}${fuente && l.estado !== 'sin_equipo' && !l.otro ? `<span class="avf">Fecha: ${fuente}.</span>` : ''}</div>`
       + `<div class="avb"><button type="button" class="avc" onclick="MZ.conectar('${b}')">Conectar ${N}</button>`
       + `<button type="button" class="avo" onclick="MZ.avisoOcultar('${b}')" aria-label="Ocultar el aviso de ${N} hasta mañana">Ocultar hasta mañana</button></div></div>`;
   }).join('');
@@ -6978,7 +7000,13 @@ function avisoDatosBrokers() {
   } catch (_) {}
   const bt = _avisoBrk.uid === uid ? _avisoBrk.bt : nada;
   const max = (a, b) => (!a ? b || null : !b ? a : a > b ? a : b);
-  return { etrade: max(lib.etrade, bt.etrade), schwab: max(lib.schwab, bt.schwab) };
+  // rev70: con lo guardado de la última vez (del MISMO usuario); se reescribe solo si cambió
+  const ymd = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(String(x || '')) ? String(x) : null);
+  let g = nada;
+  try { const o = JSON.parse(localStorage.getItem(AVISO_BRK_DATOS_K) || 'null'); if (o && o.uid === uid) g = { etrade: ymd(o.etrade), schwab: ymd(o.schwab) }; } catch (_) {}
+  const out = { etrade: max(max(lib.etrade, bt.etrade), g.etrade), schwab: max(max(lib.schwab, bt.schwab), g.schwab) };
+  if (out.etrade !== g.etrade || out.schwab !== g.schwab) { try { localStorage.setItem(AVISO_BRK_DATOS_K, JSON.stringify({ uid, etrade: out.etrade, schwab: out.schwab })); } catch (_) {} }
+  return out;
 }
 // Lo llaman las vistas que YA leen broker_trades (Informe, Copiloto, Cuentas, Diario, Disciplina) con su resultado
 // ({ data, error }): se anota la última ejecución por bróker y se repinta la franja (sin pedir nada).
@@ -6995,10 +7023,11 @@ function avisoBrokersLeer() {
   const ls = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
   const js = (k) => { try { return JSON.parse(ls(k) || 'null'); } catch (_) { return null; } };
   const dia = (ms) => (Number(ms) > 0 ? ymdNY(new Date(Number(ms)).toISOString()) || null : null);
-  // la última sincronización BUENA: la clave propia (v68) o, de antes, una completa/ligera guardada con estado ok
+  // la última sincronización BUENA: la clave propia (v68) o, de antes, una completa/ligera guardada con estado ok que SÍ
+  // escribió el libro (rev70: sin fills_err, también la completa: el Diario lee fills)
   const buena = (ok, sync, lig) => {
     let m = Number(ok) || 0;
-    if (sync && sync.resumen && sync.resumen.estado === 'ok') m = Math.max(m, Number(sync.ts) || 0);
+    if (sync && sync.resumen && sync.resumen.estado === 'ok' && !sync.resumen.fills_err) m = Math.max(m, Number(sync.ts) || 0);
     if (lig && lig.estado === 'ok' && !lig.fills_err) m = Math.max(m, Number(lig.ts) || 0);
     return dia(m);
   };
@@ -7011,7 +7040,9 @@ function avisoBrokersLeer() {
   return {
     hoy,
     et: { creds: !!etCreds(), dia: ls(ET_K.dia), okSync: buena(ls(ET_K.ok), js(ET_K.sync), js(ET_K.lig)) },
-    sw: { creds: !!swC, vencido: !!swC && swVencido(), okSync: buena(ls(SW_K.ok), js(SW_K_SYNC), js(SW_K_SYNC_LIG)), login: swC ? dia(swC.refts) : null },
+    // rev70: «caduco» = el día en que CADUCÓ el login semanal (refts + 7 días, si ya pasó), no el del login (cuando empezó)
+    sw: { creds: !!swC, vencido: !!swC && swVencido(), okSync: buena(ls(SW_K.ok), js(SW_K_SYNC), js(SW_K_SYNC_LIG)),
+      caduco: (swC && swC.refts > 0 && Date.now() - swC.refts > SW_REFRESH_DIAS * 86400000) ? dia(swC.refts + SW_REFRESH_DIAS * 86400000) : null },
     datos: avisoDatosBrokers(),
     ocultos,
   };

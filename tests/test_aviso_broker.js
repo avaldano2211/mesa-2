@@ -69,13 +69,13 @@ const corto = (ls) => ls.map(l => [l.broker, l.estado, l.nivel, l.desde, l.fuent
     'E*TRADE MUERTO (el caso de Andrés): rojo, desde la última ejecución de E*TRADE en los datos (23-oct), 6 días hábiles');
   igual(corto(est({ et: { creds: true, dia: 'muerto' } })), [['etrade', 'muerto', 'rojo', null, null, null]], 'muerto sin ninguna fecha: rojo igual (sin inventar una fecha)');
   igual(corto(est({ et: { creds: true, dia: 'muerto', okSync: HOY } })), [['etrade', 'muerto', 'ambar', HOY, 'sync', 0]], 'muerto HOY tras sincronizar hoy: ámbar');
-  igual(corto(est({ et: { creds: true, dia: 'muerto', okSync: '2026-10-20' }, datos: { etrade: '2026-10-23' } })), [['etrade', 'muerto', 'rojo', '2026-10-23', 'datos', 6]],
-    '«desde» = lo MÁS RECIENTE entre la última sincronización buena aquí y la última ejecución en los datos (otro equipo pudo traerla)');
+  igual(corto(est({ et: { creds: true, dia: 'muerto', okSync: '2026-10-20' }, datos: { etrade: '2026-10-23' } })), [['etrade', 'muerto', 'ambar', '2026-10-23', 'datos', 6]],
+    '«desde» = lo MÁS RECIENTE entre la última sincronización buena aquí y la última ejecución en los datos (rev70: datos más nuevos que la buena de aquí = los trajo OTRO equipo → ámbar)');
   igual(corto(est({ et: { creds: true, dia: 'muerto', okSync: '2026-10-23' }, datos: { etrade: '2026-10-22' } })), [['etrade', 'muerto', 'rojo', '2026-10-23', 'sync', 6]],
     '… y si la sincronización es más reciente, manda ella (fuente sync)');
-  igual(corto(est({ datos: { etrade: '2026-10-23' } })), [['etrade', 'sin_equipo', 'rojo', '2026-10-23', 'datos', 6]],
-    'E*TRADE NUNCA conectado en este equipo pero con datos: «no está conectado en este equipo», rojo con sus días');
-  igual(corto(est({ datos: { etrade: '2026-10-30' } })), [['etrade', 'sin_equipo', 'ambar', '2026-10-30', 'datos', 1]], '… ámbar si lo último es del día hábil anterior');
+  igual(corto(est({ datos: { etrade: '2026-10-23' } })), [['etrade', 'sin_equipo', 'ambar', '2026-10-23', 'datos', 6]],
+    'E*TRADE NUNCA conectado en este equipo pero con datos: «no está conectado en este equipo», con sus días (rev70: ámbar, la fecha es de una operación)');
+  igual(est({ datos: { etrade: '2026-10-30' } }), [], 'rev70: sin sesión aquí y lo último del día hábil anterior: otro equipo entra a diario, nada');
   igual(est({}), [], 'SIN DATOS y sin claves = SIN FRANJA');
   igual(est({ datos: { etrade: null, schwab: null } }), [], 'el amigo sin brókeres (Gad, Luca): ninguna franja');
   igual(est({ et: { creds: true, dia: HOY } }), [], 'E*TRADE conectado hoy: nada');
@@ -84,16 +84,18 @@ const corto = (ls) => ls.map(l => [l.broker, l.estado, l.nivel, l.desde, l.fuent
   // Schwab
   igual(corto(est({ sw: { creds: true, vencido: true, okSync: '2026-10-28', login: '2026-10-21' } })), [['schwab', 'caducado', 'rojo', '2026-10-28', 'sync', 3]],
     'Schwab con el login semanal CADUCADO: rojo desde la última sincronización buena (28-oct), 3 días hábiles');
-  igual(corto(est({ sw: { creds: true, vencido: true, login: '2026-10-21' } })), [["schwab", "caducado", "rojo", "2026-10-21", "login", 8]], 'sin sincronización ni datos: desde el login semanal');
+  igual(corto(est({ sw: { creds: true, vencido: true, caduco: '2026-10-28' } })), [['schwab', 'caducado', 'rojo', '2026-10-28', 'caduco', 3]], 'rev70: sin sincronización ni datos: desde el día en que CADUCÓ el login semanal');
+  igual(corto(est({ sw: { creds: true, vencido: true, login: '2026-10-21' } })), [['schwab', 'caducado', 'rojo', null, null, null]],
+    'rev70 (revisor UX): el día del LOGIN semanal (cuando la sesión empezó, 21-oct) jamás es el «desde» (decía «desde el mié 21-oct (8 días)», falso)');
   igual(corto(est({ sw: { creds: true, vencido: true, okSync: '2026-10-30' } })), [['schwab', 'caducado', 'ambar', '2026-10-30', 'sync', 1]], 'caducado hoy con todo al día hasta el viernes: ámbar');
-  igual(corto(est({ datos: { schwab: '2026-10-28' } })), [['schwab', 'sin_equipo', 'rojo', '2026-10-28', 'datos', 3]], 'Schwab sin sesión en este equipo pero con datos');
+  igual(corto(est({ datos: { schwab: '2026-10-28' } })), [['schwab', 'sin_equipo', 'ambar', '2026-10-28', 'datos', 3]], 'Schwab sin sesión en este equipo pero con datos');
   igual(est({ sw: { creds: true, vencido: false }, datos: { schwab: '2026-10-28' } }), [], 'Schwab con sesión viva: nada');
   igual(corto(est({ sw: { okSync: '2026-10-28' } })), [['schwab', 'sin_equipo', 'rojo', '2026-10-28', 'sync', 3]], 'sin sesión pero con una sincronización buena anterior aquí (se olvidó/caducó la sesión): también');
   // los dos, el día de hoy
   const hoyAndres = est({ et: { creds: true, dia: 'muerto' }, sw: { creds: true, vencido: true, okSync: '2026-10-28', login: '2026-10-21' }, datos: { etrade: '2026-10-23', schwab: '2026-10-27' } });
   igual(corto(hoyAndres), [['etrade', 'muerto', 'rojo', '2026-10-23', 'datos', 6], ['schwab', 'caducado', 'rojo', '2026-10-28', 'sync', 3]], 'los dos a la vez: una línea por bróker, E*TRADE primero');
   // ocultar hasta mañana
-  igual(corto(est({ et: { creds: true, dia: 'muerto' }, datos: { etrade: '2026-10-23', schwab: '2026-10-28' }, ocultos: { etrade: HOY } })), [['schwab', 'sin_equipo', 'rojo', '2026-10-28', 'datos', 3]],
+  igual(corto(est({ et: { creds: true, dia: 'muerto' }, datos: { etrade: '2026-10-23', schwab: '2026-10-28' }, ocultos: { etrade: HOY } })), [['schwab', 'sin_equipo', 'ambar', '2026-10-28', 'datos', 3]],
     '«Ocultar hasta mañana» de E*TRADE hoy: solo esa línea se va (Schwab sigue)');
   igual(corto(est({ et: { creds: true, dia: 'muerto' }, datos: { etrade: '2026-10-23' }, ocultos: { etrade: '2026-11-01' } })), [['etrade', 'muerto', 'rojo', '2026-10-23', 'datos', 6]],
     'ocultado AYER: hoy vuelve');
@@ -101,6 +103,21 @@ const corto = (ls) => ls.map(l => [l.broker, l.estado, l.nivel, l.desde, l.fuent
   igual(est({ hoy: '2026-10-31', et: { creds: true, dia: '2026-10-30', okSync: '2026-10-30' } }), [], 'sábado con todo sincronizado el viernes: sin franja (no hay mercado)');
   igual(corto(est({ hoy: '2026-10-31', et: { creds: true, dia: 'muerto' }, datos: { etrade: '2026-10-23' } })), [['etrade', 'muerto', 'rojo', '2026-10-23', 'datos', 5]], 'sábado con 5 días hábiles perdidos: sí');
   igual(corto(est({ et: { creds: true, dia: 'muerto' }, datos: { etrade: '23 de octubre' } })), [['etrade', 'muerto', 'rojo', null, null, null]], 'una fecha que no es AAAA-MM-DD no se usa');
+  // rev70 (revisores UX y lente 2): OTRO EQUIPO sincroniza (Andrés usa el iPhone y el Mac) — sin avisos falsos cada día
+  igual(est({ et: { creds: true, dia: '2026-10-27', okSync: '2026-10-27' }, datos: { etrade: HOY } }), [],
+    'rev70: token de otro día aquí, pero el otro equipo ya trajo una ejecución de HOY: nada (antes: ámbar «falta el login de hoy … al día hasta el lun 2-nov»)');
+  igual(est({ et: { creds: true, dia: '2026-10-27', okSync: '2026-10-27' }, datos: { etrade: '2026-10-30' } }), [], 'rev70: … y con la última del día hábil anterior traída por el otro equipo, tampoco');
+  igual(corto(est({ et: { creds: true, dia: '2026-10-27', okSync: '2026-10-27' }, datos: { etrade: '2026-10-28' } })), [['etrade', 'otro_dia', 'ambar', '2026-10-28', 'datos', 3]],
+    'rev70: con 3 días hábiles sin nada traído por el otro equipo: ÁMBAR (antes rojo: la fecha de una OPERACIÓN no es la de una sincronización)');
+  igual(est({ datos: { etrade: HOY, schwab: HOY } }), [], 'rev70 (revisor UX): equipo sin sesión y todo al día por el otro equipo: ni una franja (antes dos ámbar de ~330 px cada día)');
+  igual(est({ et: { creds: true, dia: 'muerto' }, sw: { creds: true, vencido: true }, datos: { etrade: HOY, schwab: HOY } }), [], 'rev70: muerto/caducado aquí pero con ejecuciones de hoy en la Mesa: nada');
+  igual(corto(est({ et: { creds: true, dia: '2026-10-23' }, datos: { etrade: '2026-10-23' } })), [['etrade', 'otro_dia', 'rojo', '2026-10-23', 'datos', 6]],
+    'rev70: sin sincronización buena conocida aquí (equipo que viene de la v67) no se presume otro equipo: el caso de Andrés sigue en ROJO');
+  // rev70 (lente 2): fin de semana con una sesión ya perdida → rojo, no «falta el login de hoy»
+  igual(corto(est({ hoy: '2026-10-31', et: { creds: true, dia: '2026-10-29', okSync: '2026-10-29' } })), [['etrade', 'otro_dia', 'rojo', '2026-10-29', 'sync', 1]],
+    'rev70: sábado con la última buena el jueves (el viernes ya se perdió): ROJO (antes ámbar «falta el login de hoy», un día sin mercado)');
+  igual(corto(est({ hoy: '2026-11-01', sw: { creds: true, vencido: true, okSync: '2026-10-29' } })), [['schwab', 'caducado', 'rojo', '2026-10-29', 'sync', 1]], 'rev70: … y Schwab el domingo, igual');
+  igual(corto(est({ hoy: '2026-11-03', et: { creds: true, dia: '2026-11-02', okSync: '2026-11-02' } })), [['etrade', 'otro_dia', 'ambar', '2026-11-02', 'sync', 1]], 'en día hábil, el primer día sigue en ámbar');
 }
 
 // ════════════════ 3. avisoBrokersHtml ════════════════
@@ -129,6 +146,13 @@ const corto = (ls) => ls.map(l => [l.broker, l.estado, l.nivel, l.desde, l.fuent
   const m0 = P.avisoBrokersHtml(est({ et: { creds: true, dia: 'muerto' } }));
   assert(/tus operaciones de E\*TRADE no entran a la Mesa\. E\*TRADE rechazó la sesión/.test(m0) && !/Fecha:/.test(m0) && !/undefined|null/.test(m0), 'sin fecha conocida no se inventa ni se escribe «null»', m0);
   igual(P.avisoBrokersHtml([]), '', 'sin líneas: nada');
+  const ot = P.avisoBrokersHtml(est({ et: { creds: true, dia: '2026-10-27', okSync: '2026-10-27' }, datos: { etrade: '2026-10-28' } }));
+  assert(/^<div class="avl ambar" data-brk="etrade" data-estado="otro_dia">/.test(ot) && /E\*TRADE: falta el login en este equipo<\/b> — lo último de E\*TRADE guardado en la Mesa es del <b>mié 28-oct<\/b> \(3 días hábiles\) y lo trajo otro equipo; si operaste después, conecta aquí \(o en ese equipo\) para que entre\./.test(ot)
+    && !/no entran a la Mesa desde|Fecha:/.test(ot), 'rev70: otro equipo: dice lo que se sabe (lo último y que lo trajo otro equipo), sin «no entran desde»', ot);
+  const fs1 = P.avisoBrokersHtml(est({ hoy: '2026-10-31', et: { creds: true, dia: '2026-10-29', okSync: '2026-10-29' } }));
+  assert(/^<div class="avl rojo"/.test(fs1) && /no entran a la Mesa desde el <b>jue 29-oct<\/b> \(1 día hábil\)/.test(fs1) && !/login de hoy/.test(fs1), 'rev70: sábado: rojo, «desde el jue 29-oct (1 día hábil)», sin «el login de hoy»', fs1);
+  const cad = P.avisoBrokersHtml(est({ sw: { creds: true, vencido: true, caduco: '2026-10-28' } }));
+  assert(/desde el <b>mié 28-oct<\/b> \(3 días hábiles\)/.test(cad) && /Fecha: la del día en que caducó el login semanal en este equipo\./.test(cad), 'rev70: Schwab: la fecha de la caducidad, y lo dice', cad);
   const raro = P.avisoBrokersHtml([{ broker: 'etrade', estado: '"><img src=x onerror=alert(1)>', nivel: 'rojo', desde: '<b>', fuente: 'sync', dias: '<i>' }]);
   assert(!/<img|<i>|"><img/.test(raro) && /&lt;img/.test(raro), 'todo lo dinámico pasa por esc()', raro);
   const malo = P.avisoBrokersHtml([{ broker: "etrade');alert(1);//", estado: 'muerto', nivel: 'rojo', desde: null, dias: null }]);
@@ -154,7 +178,7 @@ function armar(inicial, op) {
     fetch: () => { RED.fetch++; return Promise.reject(new Error('sin red')); },
     etProxy: () => { RED.proxy++; return Promise.reject(new Error('sin red')); },
     sb: { from: () => { RED.sb++; throw new Error('sin red'); } },
-  }, { consts: ['AVISO_BRK_K', 'AVISO_BRK', '_avisoBrk', 'ET_K', 'SW_K', 'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_REFRESH_DIAS'] });
+  }, { consts: ['AVISO_BRK_K', 'AVISO_BRK', 'AVISO_BRK_DATOS_K', '_avisoBrk', 'ET_K', 'SW_K', 'SW_K_SYNC', 'SW_K_SYNC_LIG', 'SW_REFRESH_DIAS'] });
   return { M, ls, E, nodos, creados, libro, ses, franja: () => nodos['#avisoBrk'] };
 }
 const fillET = (d) => ({ id: 1, broker: 'etrade', user_id: 'u1', lado: 'venta', ejecutado_at: d + 'T17:00:00Z', fecha_ny: d });
@@ -203,12 +227,23 @@ const fillET = (d) => ({ id: 1, broker: 'etrade', user_id: 'u1', lado: 'venta', 
     'equipo que viene de la v67 (sin ET_K.ok): la completa/ligera guardada con estado ok da la fecha; 6 días hábiles → rojo');
   const B3 = armar({ mz_et_tok: 'T', mz_et_sec: 'S', mz_et_dia: '2026-10-23', mz_et_sync_lig: JSON.stringify({ ts: MS('2026-10-30T15:00:00Z'), estado: 'ok', fills_err: 'sin tabla' }) });
   assert(/\(6 días hábiles\)/.test(B3.M.pintarAvisoBrokers()) && /último login/.test(B3.M.pintarAvisoBrokers()), 'una ligera que NO pudo escribir en el libro no cuenta como sincronización buena');
+  const B4 = armar({ mz_et_tok: 'T', mz_et_sec: 'S', mz_et_dia: '2026-10-23', mz_et_sync2: JSON.stringify({ ts: MS('2026-10-30T15:00:00Z'), resumen: { estado: 'ok', fills_err: 'permission denied' } }) });
+  const h4 = B4.M.pintarAvisoBrokers();
+  assert(/^<div class="avl rojo"/.test(h4) && /desde el <b>vie 23-oct<\/b> \(6 días hábiles\)/.test(h4) && !/30-oct/.test(h4),
+    'rev70 (lente 2): una COMPLETA guardada «ok» que no pudo escribir el libro (fills_err) tampoco cuenta (antes: ámbar «al día hasta el vie 30-oct»)', h4);
 }
 {
   // e. Schwab: login semanal caducado (refresh de hace 12 días) con datos; y nunca conectado aquí pero con datos
   const S = armar({ mz_sw_tok: 'A', mz_sw_ref: 'R', mz_sw_ref_ts: String(Date.now() - 12 * 86400000), mz_sw_sync: JSON.stringify({ ts: MS('2026-10-28T22:02:00Z'), resumen: { estado: 'ok' } }) });
   const h = S.M.pintarAvisoBrokers();
   assert(/data-brk="schwab" data-estado="caducado"/.test(h) && /mié 28-oct/.test(h) && /Conectar Schwab/.test(h) && !/data-brk="etrade"/.test(h), 'Schwab caducado: su línea (desde el mié 28-oct), sin E*TRADE', h);
+  // rev70 (revisor UX): el estado real de Andrés en Schwab — login del 21-oct, la completa y la ligera pisadas con «expirado», sin
+  // mz_sw_ultok (es de la v68), sin datos cargados (el Informe del teléfono): la fecha es la de la CADUCIDAD (28-oct), no la del login
+  const SA = armar({ mz_sw_tok: 'A', mz_sw_ref: 'R', mz_sw_ref_ts: String(MS('2026-10-21T13:00:00Z')),
+    mz_sw_sync: JSON.stringify({ ts: MS('2026-10-28T22:02:00Z'), resumen: { estado: 'expirado' } }), mz_sw_sync_lig: JSON.stringify({ ts: MS('2026-10-28T22:02:00Z'), estado: 'expirado' }) });
+  const hA = SA.M.pintarAvisoBrokers();
+  assert(/data-estado="caducado"/.test(hA) && /desde el <b>mié 28-oct<\/b> \(3 días hábiles\)/.test(hA) && !/21-oct/.test(hA) && /caducó el login semanal/.test(hA),
+    'rev70: Schwab caducado sin sincronización buena ni datos: «desde el mié 28-oct (3 días hábiles)» (antes «mié 21-oct (8 días)»)', hA);
   const S2 = armar({ mz_sw_tok: 'A', mz_sw_ref: 'R', mz_sw_muerto: '1' });
   assert(/data-brk="schwab" data-estado="caducado"/.test(S2.M.pintarAvisoBrokers()), 'Schwab con el refresh RECHAZADO (mz_sw_muerto): también');
   const S3 = armar({ mz_sw_tok: 'A', mz_sw_ref: 'R', mz_sw_ref_ts: String(Date.now() - 2 * 86400000) }, { libro: [{ broker: 'schwab', user_id: 'u1', ejecutado_at: '2026-10-01T15:00:00Z' }] });
@@ -233,6 +268,23 @@ const fillET = (d) => ({ id: 1, broker: 'etrade', user_id: 'u1', lado: 'venta', 
   assert(/data-estado="sin_equipo"/.test(G3.franja().innerHTML), 'una lectura con error no borra lo anotado');
   G3.ses.user.id = 'u2';
   igual(G3.M.pintarAvisoBrokers(), '', 'otro usuario en la misma página: lo anotado del anterior no vale');
+}
+{
+  // rev70 (revisor UX): el Informe del TELÉFONO no lee ni el libro ni broker_trades. Lo último visto en los datos se guarda
+  // (solo días, por usuario) y la franja lo usa al arrancar: con fecha en el muerto, y la línea del equipo sin sesión
+  const R = armar({ mz_et_tok: 'T', mz_et_sec: 'S', mz_et_dia: 'muerto' }, { libro: [fillET('2026-10-23'), { broker: 'schwab', user_id: 'u1', ejecutado_at: '2026-10-28T15:00:00Z' }] });
+  R.M.pintarAvisoBrokers();
+  igual(JSON.parse(R.ls.almacen.mz_aviso_brk_datos), { uid: 'u1', etrade: '2026-10-23', schwab: '2026-10-28' }, 'rev70: se guarda lo último de cada bróker (solo el día y el usuario)');
+  const guardado = R.ls.almacen.mz_aviso_brk_datos;
+  const R2 = armar({ mz_et_tok: 'T', mz_et_sec: 'S', mz_et_dia: 'muerto', mz_aviso_brk_datos: guardado });   // recarga: Informe del teléfono, nada cargado
+  const h2 = R2.M.pintarAvisoBrokers();
+  assert(/data-estado="muerto"/.test(h2) && /desde el <b>vie 23-oct<\/b> \(6 días hábiles\)/.test(h2), 'rev70: al arrancar sin datos cargados, el muerto ya dice «desde el vie 23-oct» (antes: sin fecha)', h2);
+  const R3 = armar({ mz_aviso_brk_datos: guardado });   // el equipo que nunca conectó E*TRADE
+  assert(/data-brk="etrade" data-estado="sin_equipo"/.test(R3.M.pintarAvisoBrokers()), 'rev70: … y el equipo que nunca conectó ve su línea sin tener que pasar por Copiloto (antes: ninguna)');
+  const R4 = armar({ mz_aviso_brk_datos: guardado }, { uid: 'u2' });
+  igual(R4.M.pintarAvisoBrokers(), '', 'rev70: lo guardado de OTRO usuario no vale (muralla user_id)');
+  const R5 = armar({ mz_aviso_brk_datos: JSON.stringify({ uid: 'u1', etrade: '<img>', schwab: 5 }) });
+  igual(R5.M.pintarAvisoBrokers(), '', 'rev70: lo guardado que no es una fecha AAAA-MM-DD se ignora');
 }
 {
   // g. almacenamiento bloqueado (ventana privada): no revienta, no hay franja por claves; «ocultar» vale en memoria
@@ -271,11 +323,11 @@ igual(RED, { fetch: 0, proxy: 0, sb: 0 }, 'en TODO el recorrido (crear, repintar
   assert(!/sb\.from|fetch\(|etProxy\(/.test(['pintarAvisoBrokers', 'avisoBrokersLeer', 'avisoBrokersEstado', 'avisoBrokersHtml', 'avisoDatosBrokers', 'avisoAnotarTrades', 'avisoOcultar', 'ultimaEjecucionBrokers'].map(extraer).join('\n')),
     'el código del aviso no tiene ni una llamada de red (ni sb.from, ni fetch, ni etProxy)');
   // la última sincronización BUENA se guarda en las cuatro pasadas (completa y ligera de E*TRADE y de Schwab), sin tokens
-  assert(/if \(resumen\.estado === 'ok' && ET_K\.ok\) \{ try \{ localStorage\.setItem\(ET_K\.ok, String\(resumen\.ts\)\)/.test(extraer('etradeSincronizarImpl'))
+  assert(/if \(resumen\.estado === 'ok' && !resumen\.fills_err && ET_K\.ok\) \{ try \{ localStorage\.setItem\(ET_K\.ok, String\(resumen\.ts\)\)/.test(extraer('etradeSincronizarImpl'))
     && /if \(reg\.estado === 'ok' && !reg\.fills_err && ET_K\.ok\) \{ try \{ localStorage\.setItem\(ET_K\.ok, String\(reg\.ts\)\)/.test(extraer('etradeSincronizarLigera'))
-    && /if \(resumen\.estado === 'ok' && SW_K\.ok\) \{ try \{ localStorage\.setItem\(SW_K\.ok, String\(resumen\.ts\)\)/.test(extraer('schwabSincronizarImpl'))
+    && /if \(resumen\.estado === 'ok' && !resumen\.fills_err && SW_K\.ok\) \{ try \{ localStorage\.setItem\(SW_K\.ok, String\(resumen\.ts\)\)/.test(extraer('schwabSincronizarImpl'))
     && /if \(reg\.estado === 'ok' && !reg\.fills_err && SW_K\.ok\) \{ try \{ localStorage\.setItem\(SW_K\.ok, String\(reg\.ts\)\)/.test(extraer('schwabSincronizarLigera')),
-    'las cuatro pasadas guardan la hora de la última sincronización BUENA (solo un número; un «expirado» no la pisa)');
+    'las cuatro pasadas guardan la hora de la última sincronización BUENA (solo un número; un «expirado» no la pisa; rev70: tampoco una que no escribió el libro)');
   const K = construir([], {}, { consts: ['ET_K', 'SW_K'] });
   igual([K.ET_K.ok, K.SW_K.ok], ['mz_et_ultok', 'mz_sw_ultok'], 'en ET_K / SW_K: «olvidar en este equipo» (etOlvidar / swOlvidar) también la borra');
 }
