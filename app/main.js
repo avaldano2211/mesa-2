@@ -1725,9 +1725,14 @@ function chartSvg(pk, op) {
   //    orden, dos conectores nunca se cruzan ni se montan (en vertical, todos en la misma columna, no se sabía cuál era cuál)
   const xEt = pad.l + 12, xCon = pad.l + 1;
   const ap = apilarEtiquetas(vis.filter(o => o.lb).map(o => ({ k: o.k, v: o.v, y: Y(o.v), o })), fs + 2, pad.t + fs * 0.8 + 1, yAxis - 3, PRIORIDAD_ETQ);
+  //    v67 rev (vista previa): cada etiqueta sobre una cajita del lienzo (como las de TC2000): con solo el halo, las líneas
+  //    vecinas pasaban por los huecos entre palabras («cierre-ayer-414.30») y se leía a trozos. La cajita acaba 1 px por
+  //    encima de la línea de la etiqueta (la línea sigue a la vista, la etiqueta «se apoya» en ella) y mide fs·0.8 + 2,
+  //    menos que la separación del apilado (fs + 2): dos cajitas nunca se montan.
   ap.puestas.forEach(e => {
     const o = e.o, ym = e.pos - fs * 0.32;
     if (e.movida) out += `<polyline data-conector="${o.k}" points="${f1(xCon)},${f1(e.y)} ${f1(xEt - 2)},${f1(ym)}" fill="none" stroke="${o.c}" stroke-width="1" opacity=".85"/>`;
+    out += `<rect data-fondo-etq="${o.k}" x="${f1(xEt - 2)}" y="${f1(e.pos - fs * 0.8)}" width="${f1(String(o.lb).length * fs * 0.61 + 4)}" height="${f1(fs * 0.8 + 2)}" rx="2" fill="${CHART_COL.lienzo}" fill-opacity=".8"/>`;
     out += `<text data-etq="${o.k}" x="${f1(xEt)}" y="${f1(e.pos)}" text-anchor="start" fill="${o.c}" font-weight="700" style="font-size:${fs}px" stroke="${CHART_COL.lienzo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(o.lb)}</text>`;
   });
 
@@ -1932,7 +1937,9 @@ function lecturaChart(pk, tf, dec, ext, svg) {
 // gráfico (nivelesChart: «techo hora 105.00», «máx 250 días 120.00», «target analistas 115.00», «cierre ayer 99.50»…), de
 // ARRIBA ABAJO por precio, con el precio actual en su sitio para leer qué queda encima y qué debajo. Debajo, lo que NO
 // es una H-line del gráfico (los demás swings de hora, las referencias de día, el salto), como antes.
-function hlinesLista(pk, tg, dec) {
+//   dibujadas (v67, opcional): las claves de las H-lines que el gráfico de al lado DIBUJÓ (data-nivel); la que no está se
+// marca «lejos del precio: fuera de este gráfico» (sin la lista, nada se marca).
+function hlinesLista(pk, tg, dec, dibujadas) {
   const nv = (pk && pk.niveles) || {};
   const f = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(dec);
   const fecha = (ymd) => (ymd && /^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) ? fmtFechaNY(String(ymd) + 'T12:00:00Z') : '';
@@ -1961,7 +1968,9 @@ function hlinesLista(pk, tg, dec) {
   let h = '', spotPuesto = !(spotRef > 0) || !lineas.length;
   lineas.forEach(o => {
     if (!spotPuesto && spotRef > o.v) { h += `<div class="hl mut" data-hl="spot"><span>— precio ${esc(f(spotRef))} —</span><span class="fresco"></span></div>`; spotPuesto = true; }
-    h += `<div class="hl" data-hl="${esc(o.k)}"><span>${muestraLinea(o.c, o.trazo)}${esc(o.nombre)} ${esc(f(o.v))}</span><span class="fresco">${SUB[o.k] ? SUB[o.k]() : ''}</span></div>`;
+    const fuera = Array.isArray(dibujadas) && !dibujadas.includes(o.k);
+    const sb = [fuera ? 'lejos del precio: fuera de este gráfico' : '', SUB[o.k] ? SUB[o.k]() : ''].filter(Boolean).join(' · ');
+    h += `<div class="hl${fuera ? ' fuera' : ''}" data-hl="${esc(o.k)}"><span>${muestraLinea(o.c, o.trazo)}${esc(o.nombre)} ${esc(f(o.v))}</span><span class="fresco">${sb}</span></div>`;
   });
   if (!spotPuesto) h += `<div class="hl mut" data-hl="spot"><span>— precio ${esc(f(spotRef))} —</span><span class="fresco"></span></div>`;
   // El curso marca POCAS líneas y las recorre al romperse («el gráfico no puede parecer un plato de espagueti»): en el
@@ -2050,7 +2059,8 @@ function pintarChart(fila, tg) {
   // v64: la lectura con pre/post (y su nota) solo si el gráfico DIBUJÓ extendidas (el criterio de chartInline);
   // v64 rev: y dice lo que ESE gráfico calculó (data-ind-ext / data-sma-ext del svg)
   $('#chLectura').innerHTML = lecturaChart(pk, tf, dec, ext === true && /data-ext="1"/.test(svg), svg);
-  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec);
+  // v67: en Medias + H-lines la lista dice qué línea NO cabe en este gráfico (un nivel lejano no aplasta las velas: se omite)
+  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec, vista === 'hl' ? [...svg.matchAll(/data-nivel="([^"]*)"/g)].map(m => m[1]) : null);
   // el editor de target se rellena también si los targets llegaron DESPUÉS de
   // abrir la hoja (sin pisar lo que se esté escribiendo)
   [['tgT', tg && tg.target], ['tgA', tg && tg.target_alto], ['tgB', tg && tg.target_bajo],

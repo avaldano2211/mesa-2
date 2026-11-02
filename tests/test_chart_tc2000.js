@@ -145,6 +145,14 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   assert(etq.every(e => e['text-anchor'] === 'start' && Number(e.x) < 40), 'a la IZQUIERDA (la derecha es del eje y de la cajita del spot)');
   const ley = uno(hl, /<text data-leyenda="1"[^>]*>/g);
   assert(ley.y && ys[0] - fs >= Number(ley.y), 'ninguna etiqueta sube a la franja de la leyenda', ys[0] + ' vs leyenda ' + ley.y);
+  // cada etiqueta sobre su cajita del lienzo (las líneas vecinas no le pasan por los huecos), sin montarse y sin tapar SU línea
+  const fondos = elementos(hl, /<rect data-fondo-etq="[^"]*"[^>]*>/g);
+  const fondoDe = (k) => fondos.find(f => f['data-fondo-etq'] === k) || {};
+  assert(fondos.length === etq.length && etq.every(e => { const f = fondoDe(e['data-etq']); return Number(f.y) < Number(e.y) && Number(f.y) + Number(f.height) <= Number(e.y) + fs * 0.3 && Number(f.x) <= Number(e.x); }), 'cada etiqueta lleva su cajita de fondo detrás');
+  const fy = fondos.map(f => [Number(f.y), Number(f.y) + Number(f.height)]).sort((a, b) => a[0] - b[0]);
+  assert(fy.slice(1).every((f, i) => f[0] >= fy[i][1]), 'las cajitas no se montan entre sí', JSON.stringify(fy));
+  assert(etq.filter(e => !movidas.includes(e)).every(e => { const f = fondoDe(e['data-etq']); return Number(f.y) + Number(f.height) < yLinea(e['data-etq']); }), 'y la cajita de una etiqueta en su sitio acaba ENCIMA de su línea (la línea se sigue viendo)');
+  assert(hl.indexOf('data-fondo-etq') > hl.lastIndexOf('<line data-nivel=') && hl.indexOf('data-fondo-etq="techo"') < hl.indexOf('data-etq="techo"'), 'las cajitas van sobre las líneas y debajo de su texto');
   // cada etiqueta en el color de su línea
   assert(etq.every(e => e.fill === uno(hl, new RegExp('<line data-nivel="' + e['data-etq'] + '"[^>]*>', 'g')).stroke), 'cada etiqueta en el color de SU línea');
   // un rango de target invertido (bajo > alto) no se dibuja: la regla v66 A2
@@ -209,6 +217,12 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   const iSpot = h.indexOf('data-hl="spot"');
   assert(iSpot > h.indexOf('data-hl="cierre_ayer"') && iSpot < h.indexOf('data-hl="apertura_hoy"') && /precio 100\.25/.test(h), 'el precio actual en su sitio (entre cierre ayer 100.27 y apertura 100.22)');
   assert(/target_alto"[\s\S]*?el más optimista/.test(h) && /target_bajo"[\s\S]*?el más pesimista/.test(h), 'target alto y bajo dicen qué son');
+  // la que el gráfico NO dibujó (lejos del precio: se omite para no aplastar las velas) la lista lo dice
+  const lejos = CH.chartSvg({ ...pkD, niveles: { ...NV, ath: 1000 } }, { vista: 'hl', h: 300, w: 400, tf: 'dia', targets: TG });
+  const dib = [...lejos.matchAll(/data-nivel="([^"]*)"/g)].map(m => m[1]);
+  const hL = CH.hlinesLista({ ...pkD, niveles: { ...NV, ath: 1000 } }, TG, 2, dib);
+  assert(!dib.includes('ath') && /data-hl="ath"><span>[^]*?<\/span><span class="fresco">lejos del precio: fuera de este gráfico/.test(hL) && /class="hl fuera" data-hl="ath"/.test(hL), 'un nivel que el gráfico no dibujó: «lejos del precio: fuera de este gráfico»');
+  assert((hL.match(/class="hl fuera"/g) || []).length === 1 && !/fuera de este gráfico/.test(h), 'solo ese; y sin la lista de dibujadas no se marca nada');
 }
 
 // ════════════════ 5. G1 · strikes del gestor: legibles sobre el lienzo y distintos de las edge lines ════════════════
