@@ -7721,7 +7721,7 @@ function nivelesPosicionesChart(abiertas, sym, dec) {
     // las velas, del target y del BLANCO (en el gestor el blanco liso ya es edge line), en raya-punto y con su etiqueta
     const col = call ? CHART_COL.strikeCall : CHART_COL.strikePut;
     lineas.push({ v: k, c: col, lb, k: 'strike', w: 1.6, op: .95, dash: '9 3 2 3', trazo: 'rayaPunto' });
-    leyenda.push({ c: col, txt: lb, k: 'strike', trazo: 'rayaPunto' });
+    leyenda.push({ c: col, txt: lb, k: 'strike', trazo: 'rayaPunto', v: k });   // rev69: v = su precio (¿se dibujó?)
     const gtc = gtcDePosicion(p), corte = corteDe(p.prima_fill, p.stop_pct);
     if (gtc != null) leyenda.push({ c: GCH_COLORES.gtc, txt: `GTC $${gtc.toFixed(2)}`, prima: true, k: 'gtc' });
     if (corte != null) leyenda.push({ c: GCH_COLORES.corte, txt: `corte $${fmtPrima(corte)}`, prima: true, k: 'corte' });
@@ -7804,9 +7804,30 @@ async function cargarChartGestor(forzar) {
 // v67: un elemento de la leyenda del gestor. Las líneas del gráfico (strikes, Bollinger, H-lines) con la muestra del
 // lienzo (muestraLinea) y su nombre en el color del tema; las PRIMAS (no van sobre el precio) como siempre, en su color
 // y punteadas. PURA.
+//   rev69: la línea que el gráfico NO dibujó (l.fuera) va tenue y lo dice: «fuera de este gráfico», como la lista H-LINES.
 function itemLeyendaGestor(l) {
   if (l.prima) return `<span class="prima" style="color:${l.c}" title="prima del contrato (no es un precio del subyacente)"><i></i>${esc(l.txt)}</span>`;
-  return `<span${l.k ? ` data-ley="${esc(l.k)}"` : ''}>${muestraLinea(l.c, l.trazo)}${esc(l.txt)}</span>`;
+  return `<span${l.k ? ` data-ley="${esc(l.k)}"` : ''}${l.fuera ? ' class="fuera"' : ''}>${muestraLinea(l.c, l.trazo)}${esc(l.txt)}${l.fuera ? ' <small class="fresco">fuera de este gráfico</small>' : ''}</span>`;
+}
+// v67: la leyenda del gestor (Andrés 2026-11-01: «bien identificadas») con las MISMAS muestras (muestraLinea, sobre el
+// trocito de lienzo oscuro) y los MISMOS nombres que el gráfico (nivelesChart: «techo hora 401.25», «máx 120 días…»,
+// «target analistas…»): Bollinger, los strikes y las primas de nivelesPosicionesChart y las H-lines de ARRIBA ABAJO por
+// precio; el texto en el color del tema. Las primas siguen como estaban: no van sobre el precio.
+//   rev69 (juez: nombraba strikes y H-lines que el gráfico no dibujó —con 4 h en 5 min la escala es estrecha y el máx/mín,
+// los targets o un strike a más de ±35 % del rango no entran—, sin decirlo, mientras la hoja sí lo dice): con `dibujadas`
+// (nivelesDibujados del svg de al lado: clave y precio de cada línea), la del subyacente que NO se dibujó va marcada
+// «fuera de este gráfico»; sin `dibujadas` (null: no hay gráfico) no se marca nada. PURA.
+function leyendaGestorHtml(leyenda, nv, tg, spotRef, dec, conBB, dibujadas) {
+  const fx = (x) => Number(x).toFixed(dec);
+  const items = [];
+  if (conBB) items.push({ c: CHART_COL.bbBanda, txt: 'Bollinger Bands 20 2', k: 'bb' });
+  (leyenda || []).forEach(l => items.push(l));
+  nivelesChart(nv || {}, tg || null, spotRef, true).sort((a, b) => b.v - a.v)
+    .forEach(o => items.push({ c: o.c, trazo: o.trazo, txt: `${o.nombre} ${fx(o.v)}`, k: o.k, v: o.v }));
+  const dibujada = (l) => dibujadas.some(d => d.k === l.k && d.v === Number(l.v));
+  return items.map(l => (Array.isArray(dibujadas) && !l.prima && l.v != null && !dibujada(l)) ? Object.assign({}, l, { fuera: true }) : l)
+    .map(itemLeyendaGestor).join('')
+    + ((leyenda || []).some(l => l.prima) ? `<span class="fresco">· en punteado, PRIMAS del contrato (no van sobre el precio)</span>` : '');
 }
 function pintarChartGestor() {
   const el = $('#gchSvg'); if (!el) return;
@@ -7829,20 +7850,10 @@ function pintarChartGestor() {
   const svg = chartSvg({ ...pk, ticker: pk.ticker || sym, niveles }, { vista: 'bb', bb: _gch.bb, hlines: true, tf, h: H, w: W, ventana: { start: v.start, end: v.end }, extra: lineas, dec, targets: _targets.por[sym] || null });
   el.innerHTML = svg;
   if (leg) {
-    // v67 (Andrés 2026-11-01: «bien identificadas»): la leyenda del gestor con las MISMAS muestras (muestraLinea, sobre el
-    // trocito de lienzo oscuro) y los MISMOS nombres que el gráfico (nivelesChart: «techo hora 401.25», «máx 120 días…»,
-    // «target analistas…»), las H-lines de arriba abajo por precio; el texto en el color del tema (blanco o amarillo
-    // sobre blanco no se leían en tema claro). Las primas siguen como estaban: no van sobre el precio.
+    // v67: la leyenda con las muestras y los nombres del gráfico (leyendaGestorHtml); rev69: y dice qué línea NO dibujó
     const nv = niveles || {};
-    const fx = (x) => Number(x).toFixed(dec);
-    const items = [];
-    if (_gch.bb) items.push({ c: CHART_COL.bbBanda, txt: 'Bollinger Bands 20 2', k: 'bb' });
-    leyenda.forEach(l => items.push(l));
     const spotRef = nv.spot != null ? nv.spot : Number(pk.velas[pk.velas.length - 1][4]);
-    nivelesChart(nv, _targets.por[sym] || null, spotRef, true).sort((a, b) => b.v - a.v)
-      .forEach(o => items.push({ c: o.c, trazo: o.trazo, txt: `${o.nombre} ${fx(o.v)}`, k: o.k }));
-    leg.innerHTML = items.map(itemLeyendaGestor).join('')
-      + (leyenda.some(l => l.prima) ? `<span class="fresco">· en punteado, PRIMAS del contrato (no van sobre el precio)</span>` : '');
+    leg.innerHTML = leyendaGestorHtml(leyenda, nv, _targets.por[sym] || null, spotRef, dec, _gch.bb, nivelesDibujados(svg));
   }
   if (fr) fr.textContent = (_gch.tfReal && _gch.tfReal !== _gch.tf ? `sin velas de ${gchTfDef(_gch.tf)[2]} min todavía (el worker aún no las publica): se muestra 15 min · ` : '') + chartFrescoTxt(fila, tf);
   // el pie del zoom solo cuando Andrés hizo zoom o arrastró (en reposo, el rango de 4 h ya recorta las 400 velas

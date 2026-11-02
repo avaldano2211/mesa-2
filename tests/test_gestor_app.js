@@ -507,7 +507,7 @@ const TSLA = { id: 9, estado: 'abierta', broker: 'etrade', symbol: 'TSLA', direc
     const _gch = { sym: 'SPY', symManual: false, tf: 'm5', rango: 240, bb: true, view: { count: null, end: null }, pos: [], gen: 0, fila: null, tfReal: null, niveles15: null, pintado: null };
     const fila15 = { symbol: 'SPY', tf: 'm15', payload: { ticker: 'SPY', tf: 'm15', velas: velas(130, 900, 770), niveles: { spot: 770.3, cierre_ayer: 766.2 } }, actualizado_at: new Date().toISOString() };
     const P = construir(['cargarChartGestor', 'pintarChartGestor', 'gchVentana', 'nivelesPosicionesChart', 'reglaGestor', 'acotarGestor', 'nivelGestor', 'markGestor', 'gtcDePosicion', 'gtcLimite', 'planDePct', 'corteDe', 'fmtPrima', 'techoPisoProximos',
-      'itemLeyendaGestor', 'muestraLinea', 'nivelesChart', 'rangoValido'],   // v67: la leyenda con las muestras y nombres del gráfico
+      'itemLeyendaGestor', 'muestraLinea', 'nivelesChart', 'rangoValido', 'leyendaGestorHtml', 'nivelesDibujados'],   // v67: la leyenda con las muestras y nombres del gráfico (rev69: y lo que no dibujó)
       { esc, _gch, _targets: { por: {} }, PLAN_PCT: 35, PLANES: { PLAN_35: { gtcPct: 35 }, PLAN_10: { gtcPct: 10 } }, decDe: () => 2, anchoVista: () => 1200, chartFrescoTxt: () => 'última vela hace 1 min',
         cargarVelasGestor: async (sym, tf) => (tf === 'm15' ? fila15 : null), cargarTargets: async () => ({}), chartSvg: (pk, op) => `<svg data-tf="${op.tf}" data-w="${op.w}" data-h="${op.h}" data-extra="${(op.extra || []).length}"></svg>`,
         $: (s) => (nodes[s] = nodes[s] || nodo({ clientWidth: 1100 })) },

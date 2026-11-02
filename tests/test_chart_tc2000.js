@@ -356,4 +356,41 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   assert(!/hl fuera/.test(lista()), 'en la vista Bollinger (sin las H-lines Sardiñas en el gráfico) la lista no marca nada');
 }
 
+// 11. la leyenda del gestor (Copiloto, 5 min, 4 h): marca «fuera de este gráfico» los strikes y las H-lines que el svg NO
+//     dibujó (juez rev69: con la escala estrecha, «405.00 CALL ×1», «máx 397 días…» y los targets salían como si
+//     estuvieran) y lleva las H-lines de ARRIBA ABAJO por precio
+{
+  const nodos = {};
+  const _gch = { sym: 'TSLA', tf: 'm5', tfReal: 'm5', rango: 240, bb: true, view: { count: null, end: null }, pos: [], fila: null, niveles15: null, pintado: null };
+  const vsG = velas(120, { paso: 300, base: 396, amp: 1 });
+  const nvG = { spot: 396.5, cierre_ayer: 396.1, apertura_hoy: 396.9, techos_hora: [{ p: 397.6 }], pisos_hora: [{ p: 395.2 }], ath: 432, atl: 296, ath_dias: 397 };
+  const tgG = { target: 412, target_alto: 426, target_bajo: 381 };
+  _gch.fila = { payload: { ticker: 'TSLA', tf: 'm5', velas: vsG, niveles: nvG } };
+  const STR = (v, put) => ({ v, c: put ? '#FFA94D' : '#8CFFB5', lb: v.toFixed(2) + (put ? ' PUT' : ' CALL') + ' ×1', k: 'strike', w: 1.6, op: .95, dash: '9 3 2 3', trazo: 'rayaPunto' });
+  const strikes = [STR(395.5, true), STR(405, false)];
+  const leyendaPos = strikes.map(l => ({ c: l.c, txt: l.lb, k: 'strike', trazo: 'rayaPunto', v: l.v })).concat([{ c: '#f5c542', txt: 'GTC $3.65', prima: true, k: 'gtc' }]);
+  const G = construir(['pintarChartGestor', 'gchVentana', 'chartSvg', 'bollingerApp', 'smaApp', 'serieExtM', 'mediasExtM', 'techoPisoProximos', 'chartTiempo', 'rangoValido'].concat(AUX_V67, opc(['leyendaGestorHtml', 'nivelesDibujados'])),
+    { esc, haceCuanto, _gch, _targets: { por: { TSLA: tgG } }, anchoVista: () => 375, chartFrescoTxt: () => '', nivelesPosicionesChart: () => ({ lineas: strikes, leyenda: leyendaPos }),
+      $: (q) => (nodos[q] = nodos[q] || nodo({ clientWidth: 375 })) },
+    { consts: ['CHART_TFS', 'CHART_VISTAS', 'nombreTf', 'nombreVista', 'decDe', 'fmtVol', 'GESTOR_ANCHO_TABLA', 'GCH_TFS', 'GCH_ALTO_MAC', 'GCH_ALTO_IPHONE', 'gchTfDef'].concat(CONST_V67) });
+  G.pintarChartGestor();
+  const svgG = nodos['#gchSvg'].innerHTML, legG = nodos['#gchLeg'].innerHTML;
+  const dib = [...svgG.matchAll(/<line data-nivel="([^"]*)"[^>]*>/g)].map(m => m[1] + (/data-v="([^"]*)"/.exec(m[0]) || [])[1]);
+  const items = [...legG.matchAll(/<span data-ley="([^"]*)"( class="fuera")?>[^]*?<\/i>([^<]*)(?: <small class="fresco">([^<]*)<\/small>)?<\/span>/g)].map(m => ({ k: m[1], fuera: !!m[2], t: m[3], nota: m[4] || '' }));
+  const de = (t) => items.find(x => x.t === t) || {};
+  assert(dib.includes('strike395.5') && !dib.includes('strike405') && !dib.some(d => /^(ath|atl|target)/.test(d)), 'de verdad el gráfico (4 h en 5 min) dibuja el PUT 395.5 y NO el CALL 405, ni el máx/mín ni los targets', JSON.stringify(dib));
+  assert(!de('395.50 PUT ×1').fuera && de('405.00 CALL ×1').fuera && de('405.00 CALL ×1').nota === 'fuera de este gráfico', 'la leyenda marca «fuera de este gráfico» el strike que no se dibujó (405 CALL) y NO el que sí (395.5 PUT)', JSON.stringify(items.filter(x => x.k === 'strike')));
+  const lejos = ['máx 397 días 432.00', 'target alto 426.00', 'target analistas 412.00', 'target bajo 381.00', 'mín 397 días 296.00'];
+  assert(lejos.every(t => de(t).fuera && de(t).nota === 'fuera de este gráfico'), 'y las H-lines lejanas (máx/mín, los tres targets), también', JSON.stringify(items.filter(x => !x.fuera).map(x => x.t)));
+  assert(['techo hora 397.60', 'apertura hoy 396.90', 'cierre ayer 396.10', 'piso hora 395.20'].every(t => de(t).k && !de(t).fuera) && de('Bollinger Bands 20 2').k === 'bb' && !de('Bollinger Bands 20 2').fuera,
+    'las que SÍ se ven (techo, apertura, cierre, piso) y la Bollinger, sin marca', JSON.stringify(items));
+  assert(/GTC \$3\.65/.test(legG) && !/class="prima"[^>]*class="fuera"|fuera[^<]*GTC/.test(legG), 'las primas (no van sobre el precio) nunca se marcan');
+  // de ARRIBA ABAJO por precio (las H-lines; los strikes, delante, con las primas)
+  const precios = items.filter(x => !['bb', 'strike'].includes(x.k)).map(x => Number(/([\d.]+)$/.exec(x.t)[1]));
+  assert(precios.length === 9 && precios.slice(1).every((p, i) => p <= precios[i]), 'las H-lines de la leyenda van de arriba abajo por precio (como el gráfico y la lista H-LINES)', JSON.stringify(precios));
+  // sin gráfico (una vela) no hay nada «fuera»
+  _gch.fila = { payload: { ticker: 'TSLA', tf: 'm5', velas: vsG.slice(-1), niveles: nvG } }; G.pintarChartGestor();
+  assert(!/class="fuera"/.test(nodos['#gchLeg'].innerHTML), 'sin velas para dibujar, la leyenda no marca nada «fuera»');
+}
+
 C.resumen();
