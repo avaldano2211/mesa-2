@@ -946,6 +946,8 @@ function miniChartInforme(sym, fila, hoy, cargando) {
   else if (i0 < 0 || pk.velas.length - i0 < 2) svg = `<div class="vacio">Sin velas de hoy todavía (el gráfico empieza con dos velas de 15 min cerradas)</div>`;
   else {
     // v67: leyenda COMPACTA (sin «AAPL · 15 min»: la cabecera ya dice «hoy · 15 min» y la tarjeta el ticker) en su franja,
+    // con las etiquetas «cierre ayer …» / «apertura hoy …» DENTRO de la leyenda (rev69: sobre el área tapaban las velas de
+    // la apertura, que en el mini son las primeras de la izquierda),
     // y 132 de alto (antes 110 → el piso de 120) para que la franja no le quite alto a las velas de hoy (95 como antes)
     try { svg = chartSvg(pk, { h: 132, w: 380, tf: 'm15', vista: 'bb', ventana: { start: i0, end: pk.velas.length }, dec: decDe(sym), leyenda: 'compacta' }); }
     catch (_) { svg = `<div class="vacio">Chart no disponible (datos inválidos)</div>`; }
@@ -1443,7 +1445,8 @@ function apilarEtiquetas(etqs, alto, yMin, yMax, prioridad) {
 // debajo. (G2) Leyenda arriba a la izquierda, en su franja (pad.t: el área de velas empieza debajo, nunca la pisa):
 // «TSLA · Día · Avg 20 · Avg 40 · Avg 100 · Avg 200», cada nombre en su color, con el valor de la última vela dibujada
 // si cabe; una media sin historia, tenue «Avg 200 —»; Bollinger: «Bollinger Bands 20 2 · Moving Average 20 (punto
-// medio)». op.leyenda === 'compacta' (el mini del Informe) quita el prefijo. Cada H-line con NOMBRE y PRECIO («techo
+// medio)». op.leyenda === 'compacta' (el mini del Informe) quita el prefijo y (rev69) lleva ahí, en la leyenda, las etiquetas de
+// las H-lines: en el mini cualquier etiqueta dentro del área pisaba las velas de la apertura. Cada H-line con NOMBRE y PRECIO («techo
 // hora 401.25», nombres de nivelesChart), a la IZQUIERDA (la derecha es del eje de precios, de la cajita del spot y de
 // las velas más nuevas, las que importan) y apiladas sin esconder ninguna (apilarEtiquetas), con un conector del color
 // de la línea cuando la etiqueta se aparta de ella. El aria-label nombra lo dibujado. Ninguna cuenta cambia: solo el
@@ -1729,8 +1732,16 @@ function chartSvg(pk, op) {
   const PRIORIDAD_ETQ = ['strike', 'extra', 'techo', 'piso', 'cierre_ayer', 'apertura_hoy', 'target', 'ath', 'atl', 'target_alto', 'target_bajo'];
   //    El conector va en DIAGONAL desde el extremo izquierdo de su línea hasta su etiqueta: como el apilado conserva el
   //    orden, dos conectores nunca se cruzan ni se montan (en vertical, todos en la misma columna, no se sabía cuál era cuál)
+  //    v67 rev69 (juez: en el mini del Informe las cajitas de «apertura hoy» y «cierre ayer» tapaban las velas de la
+  //    apertura): con la leyenda COMPACTA (el mini, 380 de ancho) la premisa «a la izquierda están las velas más viejas»
+  //    es FALSA —su ventana empieza en la primera vela de HOY y «apertura hoy» cae por definición sobre la vela 1— y con
+  //    3 o 4 velas cada una ocupa ~80 px: cualquier etiqueta dentro del área pisaría velas que importan. Ahí las etiquetas
+  //    «nombre precio» van en la franja de la LEYENDA (paso 8, en el color de su línea, de arriba abajo por precio), nunca
+  //    sobre las velas; las líneas se dibujan igual. Si no caben todas, la leyenda dice cuántas faltan.
+  const etqEnLeyenda = op.leyenda === 'compacta';
   const xEt = pad.l + 12, xCon = pad.l + 1;
-  const ap = apilarEtiquetas(vis.filter(o => o.lb).map(o => ({ k: o.k, v: o.v, y: Y(o.v), o })), fs + 2, pad.t + fs * 0.8 + 1, yAxis - 3, PRIORIDAD_ETQ);
+  const ap = etqEnLeyenda ? { puestas: [], sinSitio: [] }
+    : apilarEtiquetas(vis.filter(o => o.lb).map(o => ({ k: o.k, v: o.v, y: Y(o.v), o })), fs + 2, pad.t + fs * 0.8 + 1, yAxis - 3, PRIORIDAD_ETQ);
   //    v67 rev (vista previa): cada etiqueta sobre una cajita del lienzo (como las de TC2000): con solo el halo, las líneas
   //    vecinas pasaban por los huecos entre palabras («cierre-ayer-414.30») y se leía a trozos. La cajita acaba 1 px por
   //    encima de la línea de la etiqueta (la línea sigue a la vista, la etiqueta «se apoya» en ella) y mide fs·0.8 + 2,
@@ -1782,6 +1793,19 @@ function chartSvg(pk, op) {
   if (conPref.length) ricas.slice(0, 2).forEach(r => variantes.push(conPref.concat(r, nota)));
   ricas.forEach(r => variantes.push(r.concat(nota)));
   if (!ricas.length) variantes.push(conPref.concat(nota));
+  //    v67 rev69: en el mini (leyenda compacta) las etiquetas de las H-lines van aquí, detrás de las series: primero todas
+  //    con la variante más rica que quepa; si ni con la más corta caben, las primeras (de arriba abajo) y «+N líneas sin
+  //    etiqueta» (G2: «si de verdad no caben, la leyenda lo dice»)
+  const etqLey = etqEnLeyenda ? vis.filter(o => o.lb).map(o => ({ txt: o.lb, c: o.c, ley: 'etq-' + o.k })) : [];
+  if (etqLey.length) {
+    const sinEtq = variantes.splice(0, variantes.length);
+    sinEtq.forEach(v => variantes.push(v.concat(etqLey)));
+    const corta = sinEtq[sinEtq.length - 1] || [];
+    for (let j = etqLey.length - 1; j >= 0; j--) {
+      const r = etqLey.length - j;
+      variantes.push(corta.concat(etqLey.slice(0, j), [{ txt: `+${r} ${r > 1 ? 'líneas' : 'línea'} sin etiqueta`, tenue: true, ley: 'sin-sitio' }]));
+    }
+  }
   const ley = leyendaChartSvg(variantes, pad.l + 2, f1(fs + 3), W - pad.l - 8, fs);
   out += ley.svg;
 

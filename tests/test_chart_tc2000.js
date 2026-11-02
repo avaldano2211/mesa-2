@@ -206,7 +206,11 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   const topVelas = Math.min(...elementos(mini, /<rect class="vela[^"]*"[^>]*>/g).map(v => Number(v.y)));
   const fsM = Number((/font-size:([\d.]+)px/.exec(lyM.style || '') || [])[1]) || 9;
   assert(Number(lyM.y) + fsM * 0.3 < topVelas, 'y la leyenda no pisa ninguna vela (va en su franja, encima)', lyM.y + ' vs ' + topVelas);
-  assert(mini.split('data-etq=').length - 1 === 2 && /cierre ayer 99\.50/.test(mini) && /apertura hoy 100\.20/.test(mini), 'y en el mini también salen las dos etiquetas nativas, con su precio');
+  // rev69: en el mini las etiquetas de las dos líneas nativas van EN LA LEYENDA (sobre el área tapaban las velas de la apertura)
+  const eM = (k) => Lm.find(x => x.k === 'etq-' + k) || {};
+  const nM = (k) => uno(mini, new RegExp('<line data-nivel="' + k + '"[^>]*>', 'g'));
+  assert(eM('cierre_ayer').t === 'cierre ayer 99.50' && eM('apertura_hoy').t === 'apertura hoy 100.20' && eM('cierre_ayer').c === nM('cierre_ayer').stroke && eM('apertura_hoy').c === nM('apertura_hoy').stroke,
+    'y en el mini salen las dos etiquetas nativas, con su precio, en la leyenda y en el color de su línea', JSON.stringify(Lm));
   // aria-label: nombra las líneas dibujadas
   const aria = (/aria-label="([^"]*)"/.exec(hl) || [])[1] || '';
   assert(['SMA 20', 'SMA 200', 'techo hora 100.32', 'piso hora 100.18', 'cierre ayer 100.27', 'apertura hoy 100.22', 'máx 397 días 102.50', 'target analistas 101.80'].every(t => aria.includes(t)),
@@ -296,6 +300,36 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   });
   // con una media dentro de la escala nada cambia (el escenario de siempre: las 4 en su color)
   assert(!/data-fuera/.test(hl), 'con las cuatro medias a la vista, ninguna se marca fuera');
+}
+
+// 9. el mini del Informe: las etiquetas de «apertura hoy» y «cierre ayer» NO tapan las velas de la apertura (su ventana empieza
+//    en la primera vela de HOY; con 3 velas cada una ocupa ~80 px). Juez rev69: «apertura_hoy: tapa 55 % del cuerpo de la vela 1»
+{
+  const ayer0 = Math.floor(Date.parse('2026-10-30T13:30:00Z') / 1000), hoy0 = Math.floor(Date.parse('2026-11-02T14:30:00Z') / 1000), vs = [];
+  for (let i = 0; i < 26; i++) { const o = 100 + Math.sin(i / 3) * .3, c = o + Math.cos(i / 4) * .2; vs.push([ayer0 + i * 900, +o.toFixed(2), +(Math.max(o, c) + .1).toFixed(2), +(Math.min(o, c) - .1).toFixed(2), +c.toFixed(2), 1000]); }
+  vs.push([hoy0, 101.00, 101.70, 100.90, 101.60, 5000], [hoy0 + 900, 101.60, 101.90, 101.20, 101.30, 4000], [hoy0 + 1800, 101.30, 101.80, 101.25, 101.75, 4000]);
+  const pk = { ticker: 'AAPL', tf: 'm15', velas: vs, niveles: { spot: 101.75, cierre_ayer: vs[25][4], apertura_hoy: 101.00 } };
+  const mini = CH.chartSvg(pk, { h: 132, w: 380, tf: 'm15', vista: 'bb', ventana: { start: 26, end: vs.length }, dec: 2, leyenda: 'compacta' });
+  const caja = (e) => ({ x: Number(e.x), y: Number(e.y), w: Number(e.width), h: Number(e.height) });
+  const velasM = elementos(mini, /<rect class="vela[^"]*"[^>]*>/g).map(caja);
+  // todo lo escrito dentro del área de velas: cajitas de etiqueta y textos de etiqueta (a ~0.61 em por carácter)
+  const fsM = 9;
+  const tapas = elementos(mini, /<rect data-fondo-etq="[^"]*"[^>]*>/g).map(caja)
+    .concat([...mini.matchAll(/<text data-etq="[^"]*"[^>]*x="([\d.]+)" y="([\d.]+)"[^>]*>([^<]*)<\/text>/g)].map(m => ({ x: Number(m[1]), y: Number(m[2]) - fsM * 0.8, w: m[3].length * fsM * 0.61, h: fsM })));
+  const pisa = tapas.some(t => velasM.some(b => Math.min(t.x + t.w, b.x + b.w) > Math.max(t.x, b.x) && Math.min(t.y + t.h, b.y + b.h) > Math.max(t.y, b.y)));
+  assert(velasM.length === 3 && !pisa, 'mini a las 10:15 (3 velas de hoy, apertura con hueco): ninguna etiqueta ni cajita pisa una vela', JSON.stringify(tapas));
+  const Lm = [...mini.matchAll(/<tspan data-ley="([^"]*)"[^>]*fill="([^"]*)"[^>]*>([^<]*)<\/tspan>/g)].map(m => ({ k: m[1], c: m[2], t: m[3] }));
+  igual(Lm.filter(x => /^etq-/.test(x.k)).map(x => x.t), ['apertura hoy 101.00', 'cierre ayer ' + vs[25][4].toFixed(2)], 'las dos van en la leyenda, con nombre y precio, de arriba abajo por precio');
+  const lyM = uno(mini, /<text data-leyenda="1"[^>]*>/g);
+  assert(Number(lyM.y) + fsM * 0.3 < Math.min(...velasM.map(b => b.y)), 'y la leyenda va en su franja, encima de las velas');
+  // en un mini estrecho no caben: salen las que caben y la leyenda dice cuántas faltan (nunca se esconden en silencio)
+  const pk4 = { ...pk, velas: vs.map(r => [r[0], r[1] * 100, r[2] * 100, r[3] * 100, r[4] * 100, r[5]]), niveles: { spot: 10175, cierre_ayer: vs[25][4] * 100, apertura_hoy: 10100 } };
+  const est = CH.chartSvg(pk4, { h: 132, w: 320, tf: 'm15', vista: 'bb', ventana: { start: 26, end: vs.length }, dec: 2, leyenda: 'compacta' });
+  const Le = [...est.matchAll(/<tspan data-ley="([^"]*)"[^>]*>([^<]*)<\/tspan>/g)].map(m => ({ k: m[1], t: m[2] }));
+  const nEtq = Le.filter(x => /^etq-/.test(x.k)).length, nota = (Le.find(x => x.k === 'sin-sitio') || {}).t || '';
+  assert(nEtq < 2 && nota === '+' + (2 - nEtq) + ' ' + (2 - nEtq > 1 ? 'líneas' : 'línea') + ' sin etiqueta' && !/data-etq=/.test(est), 'mini estrecho (320) con precios de 5 cifras: la leyenda lleva las que caben y dice «' + nota + '»', JSON.stringify(Le));
+  // fuera del mini, nada cambia: las etiquetas siguen en el área, a la izquierda (sección 2)
+  assert(!/data-ley="etq-/.test(hl) && (hl.match(/data-etq=/g) || []).length === 9, 'en la hoja y las tarjetas las etiquetas siguen junto a sus líneas (solo el mini las lleva a la leyenda)');
 }
 
 C.resumen();
