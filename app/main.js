@@ -1721,11 +1721,13 @@ function chartSvg(pk, op) {
     out += `<line data-nivel="${o.k}" x1="${pad.l}" y1="${f1(Y(o.v))}" x2="${f1(W - pad.r)}" y2="${f1(Y(o.v))}" stroke="${o.c}" stroke-width="${o.w}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ''} opacity="${o.op}"/>`;
   });
   const PRIORIDAD_ETQ = ['strike', 'extra', 'techo', 'piso', 'cierre_ayer', 'apertura_hoy', 'target', 'ath', 'atl', 'target_alto', 'target_bajo'];
-  const xEt = pad.l + 8, xCon = pad.l + 2;
+  //    El conector va en DIAGONAL desde el extremo izquierdo de su línea hasta su etiqueta: como el apilado conserva el
+  //    orden, dos conectores nunca se cruzan ni se montan (en vertical, todos en la misma columna, no se sabía cuál era cuál)
+  const xEt = pad.l + 12, xCon = pad.l + 1;
   const ap = apilarEtiquetas(vis.filter(o => o.lb).map(o => ({ k: o.k, v: o.v, y: Y(o.v), o })), fs + 2, pad.t + fs * 0.8 + 1, yAxis - 3, PRIORIDAD_ETQ);
   ap.puestas.forEach(e => {
     const o = e.o, ym = e.pos - fs * 0.32;
-    if (e.movida) out += `<polyline data-conector="${o.k}" points="${f1(xCon)},${f1(e.y)} ${f1(xCon)},${f1(ym)} ${f1(xEt - 2)},${f1(ym)}" fill="none" stroke="${o.c}" stroke-width="1" opacity=".85"/>`;
+    if (e.movida) out += `<polyline data-conector="${o.k}" points="${f1(xCon)},${f1(e.y)} ${f1(xEt - 2)},${f1(ym)}" fill="none" stroke="${o.c}" stroke-width="1" opacity=".85"/>`;
     out += `<text data-etq="${o.k}" x="${f1(xEt)}" y="${f1(e.pos)}" text-anchor="start" fill="${o.c}" font-weight="700" style="font-size:${fs}px" stroke="${CHART_COL.lienzo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${esc(o.lb)}</text>`;
   });
 
