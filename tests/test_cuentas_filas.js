@@ -96,6 +96,11 @@ const FILLS_T = [
   const R = K.resumenPeriodo(ab, '2026-10-19'), M = K.metricasCuentas(R.ops, '2026-10-19');
   igual([R.util, R.n, M.util, M.n, M.sin_cerrar, M.capital], [144, 0, 144, 0, 1, 200], 'abierta con un tramo cobrado: $144 en la utilidad, 0 operaciones planas y +1 «con dinero sin quedar plana»');
   assert(/0 ops/.test(K.tilesCuentasHtml(M, 'semana')) && /\+1 con dinero aquí que no quedó plana en el período/.test(K.tilesCuentasHtml(M, 'semana')), 'el tile OPERACIONES lo dice: «0 ops» y «+1 con dinero aquí que no quedó plana en el período»');
+  // y debajo de los tiles, SIEMPRE (como el «bajo el día» del Diario), cómo se reparte el período
+  const tl = K.tilesCuentasHtml(M, 'dia'), tl0 = K.tilesCuentasHtml(K.metricasCuentas([], '2026-10-19'), 'dia');
+  assert([tl, tl0].every(h => /<\/div>\s*<div class="fresco"[^>]*>el \$, el capital y las comisiones van por cada venta o vencimiento, en su día de Nueva York \(como el Diario\) · una operación cuenta, con su resultado entero, el día en que quedó plana · el historial la enseña entera<\/div>$/.test(h.trim()))
+    && (tl.match(/class="dcard"/g) || []).length === 8,
+    'bajo los tiles (con o sin operaciones): «el $… va por cada venta o vencimiento, en su día de Nueva York (como el Diario) · una operación cuenta… el día en que quedó plana»; siguen siendo 8 tiles');
 }
 
 // ════════════════ 3. moomoo: la venta a $0 anotada de madrugada tras el vencimiento (v65 rev7) sigue en su día ════════════════

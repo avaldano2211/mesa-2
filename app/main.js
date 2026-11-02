@@ -6252,6 +6252,9 @@ function tilesCuentasHtml(M, periodo) {
   // alguna aportó dinero sin quedar plana en el período, se dice, para que «0 ops» con utilidad no parezca un error
   const k = Number(M.sin_cerrar) || 0;
   const sinCerrar = k ? ` · +${k} con dinero aquí que no ${k > 1 ? 'quedaron planas' : 'quedó plana'} en el período` : '';
+  // v67 (C) · y debajo de los tiles, como el «bajo el día» del Diario, cómo se reparte un período: sin esto, un «Hoy» con
+  // dinero y 0 operaciones, o una operación del historial con más $ que el día, parecían errores
+  const notaPeriodo = 'el $, el capital y las comisiones van por cada venta o vencimiento, en su día de Nueva York (como el Diario) · una operación cuenta, con su resultado entero, el día en que quedó plana · el historial la enseña entera';
   return `<div class="dcards">
     ${t(`UTILIDAD · ${tit}`, usd(M.util), subUtil, colUtil(M.util))}
     ${t('OPERACIONES Y ACIERTOS', `${M.n} ops`, `${M.winrate}% aciertos · ${M.ganadoras} en verde, ${M.perdedoras} en rojo${sinCerrar}`)}
@@ -6261,7 +6264,8 @@ function tilesCuentasHtml(M, periodo) {
     ${t('COMISIONES', M.comisiones != null ? dineroD(M.comisiones) : '—', subCom)}
     ${t('MEJOR / PEOR', `<span style="color:${colUtil(M.mejor)}">${usd(M.mejor)}</span> / <span style="color:${colUtil(M.peor)}">${usd(M.peor)}</span>`, 'la mejor y la peor operación', null, true)}
     ${t('RACHA', r.n ? String(r.n) : '—', r.n ? `${r.n === 1 ? r.tipo.replace(/s$/, '') + ' seguida' : r.tipo + ' seguidas'} hasta la última cerrada` : 'sin racha (la última quedó en $0 o no hay)', r.tipo === 'ganadoras' ? 'var(--verde)' : r.tipo === 'perdedoras' ? 'var(--rojo)' : null)}
-  </div>`;
+  </div>
+  <div class="fresco" style="padding:2px 4px 6px">${notaPeriodo}</div>`;
 }
 // C2 · «Por activo» y «Por bróker», dos tablas lado a lado en la computadora y apiladas en el teléfono.
 function tablasDesgloseCuentasHtml(M) {
