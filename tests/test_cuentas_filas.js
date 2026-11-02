@@ -12,7 +12,7 @@
 'use strict';
 const path = require('path');
 const C = require(path.join(__dirname, 'casa_pruebas.js'))(process.argv[2], 'test_cuentas_filas.js');
-const { FUENTE, assert, igual, construir, existeConst, ymdNY, nodo, sbFalso, esc, usd, BROKER_NOMBRE } = C;
+const { FUENTE, assert, igual, construir, extraer, existeConst, ymdNY, nodo, sbFalso, esc, usd, BROKER_NOMBRE } = C;
 const existe = (n) => new RegExp('^(?:async )?function ' + n + '\\s*\\(', 'm').test(FUENTE);
 
 // Cuentas (unirOperaciones y sus lectores, los períodos y los tiles) y el Diario (el FIFO del libro y el día a día)
@@ -20,7 +20,7 @@ const NOMBRES = ['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes'
   'vencimientoMoomoo', 'filasMoomooVencimiento', 'filasSchwabVencimiento', 'cerradasDesde', 'aportePeriodoCuentas', 'resumenPeriodo', 'metricasCuentas',
   'comisionDelBroker', 'tilesCuentasHtml', 'detalleOpCuentas', 'diaOpNY', 'diaAperturaOp', 'sinHoraIso', 'horaNY', 'fechaNyTransaccion', 'dteEntrada',
   'diasEntre', 'filaVencioCuentas', 'filaPresuntaCuentas', 'spotDeOperacion', 'partesOpCuentas', 'senalDeOperacion', 'spotDeFill', 'peorFuenteSpot',
-  'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diaADia'].filter(existe);
+  'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diaADia', 'marcarLotesAbiertosCuentas'].filter(existe);
 const CONSTS = ['ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT', 'BROKERS_CON_COMISION', 'BROKER_CORTO',
   'CTA_MARGEN_MS', 'dineroD', 'pctD2', 'usd', 'colUtil', 'esc'].filter(existeConst);
 const K = construir(NOMBRES, { ymdNY, hoyNY: () => '2026-11-01' }, { consts: CONSTS });
@@ -177,6 +177,56 @@ const FILLS_T = [
   igual([Rs3.util, Rs3.n, Rs3.ganadoras, Rs3.mejor], [-31.3, 1, 0, -31.3], 'resumenPeriodo dice lo mismo que los tiles');
   // con filas normales nada cambia: el resultado entero es el del grupo (la ficha fusionada de arriba, −$177.78)
   igual([K.resumenPeriodo(u.ops, '2026-10-19').mejor, K.metricasCuentas(K.resumenPeriodo(u.ops, '2026-10-19').ops, '2026-10-19').mejor], [-177.78, -177.78], 'con todas sus filas con fecha: el resultado entero de siempre');
+}
+
+// ════════════════ 6b. v67 rev69 (juez de Cuentas): vendida en parte HOY y el resto abierto en el libro ════════════════
+// broker_trades solo trae la ida y vuelta CERRADA (2 de 3): el grupo nacía 'cerrada' y el «Hoy» decía «1 ops», 1 perdedora y
+// la racha, mientras el Diario decía 0 viajes y 1 lote abierto; al vender el resto al día siguiente la operación se iba de
+// hoy a mañana (el conteo de un día ya pasado cambiaba hacia atrás). Ahora los abiertos del libro (los del Diario) lo marcan.
+{
+  if (typeof K.marcarLotesAbiertosCuentas !== 'function') { assert(false, 'existe marcarLotesAbiertosCuentas (los lotes abiertos del libro en Cuentas)'); }
+  else {
+    const B = { broker: 'tasty', symbol: 'NVDA', direccion: 'CALL', strike: 230, expiracion: '2026-11-06', abierta_at: '2026-11-02T14:40:00Z', prima_fill: 2.00 };
+    const FB = { broker: 'tasty', symbol: 'NVDA', direccion: 'CALL', strike: 230, expiracion: '2026-11-06' };
+    const bt = [{ ...B, contratos: 2, prima_salida: 1.50, cerrada_at: '2026-11-02T15:10:00Z', resultado_usd: -101.28, fees: 1.28, clave_ext: 'a>b' }];
+    const fills = [{ ...FB, lado: 'compra', contratos: 3, precio: 2.00, comision: 1.50, ejecutado_at: '2026-11-02T14:40:00Z', fecha_ny: '2026-11-02', clave_ext: 'a' },
+      { ...FB, lado: 'venta', contratos: 2, precio: 1.50, comision: 0.28, ejecutado_at: '2026-11-02T15:10:00Z', fecha_ny: '2026-11-02', clave_ext: 'b' }];
+    const F = K.emparejarFillsFIFO(copia(fills), '2026-11-02');
+    igual([F.viajes.length, F.abiertos.length], [0, 1], 'el Diario: 0 viajes y 1 lote abierto');
+    const ops = K.marcarLotesAbiertosCuentas(K.unirOperaciones([], copia(bt), copia(fills)).ops, F.abiertos);
+    igual([ops.length, ops[0].estado, ops[0]._lote_abierto], [1, 'cerrada', true], 'el grupo sigue siendo UNO y cerrado para su tarjeta; solo lleva la marca _lote_abierto');
+    const R = K.resumenPeriodo(ops, '2026-11-02'), M = K.metricasCuentas(R.ops, '2026-11-02');
+    igual([R.util, R.n, M.util, M.n, M.perdedoras, M.mejor, M.racha.n, M.sin_cerrar], [-101.28, 0, -101.28, 0, 0, null, 0, 1],
+      'el «Hoy»: −$101.28 de dinero, 0 operaciones planas, ninguna perdedora, sin mejor ni racha y +1 «con dinero sin quedar plana» (antes: 1 ops, 1 perdedora, mejor −$101.28)');
+    const tl = K.tilesCuentasHtml(M, 'dia');
+    assert(/0 ops/.test(tl) && /\+1 con dinero aquí que no quedó plana en el período/.test(tl), 'el tile lo dice: «0 ops» y «+1 con dinero aquí que no quedó plana en el período»');
+    // al día siguiente vende el último: el lunes sigue con 0 operaciones (no cambia hacia atrás) y el martes la cuenta entera
+    const bt2 = bt.concat([{ ...B, contratos: 1, prima_salida: 3.00, cerrada_at: '2026-11-03T15:00:00Z', resultado_usd: 98.86, fees: 1.14, clave_ext: 'a>c' }]);
+    const fills2 = fills.concat([{ ...FB, lado: 'venta', contratos: 1, precio: 3.00, comision: 0.64, ejecutado_at: '2026-11-03T15:00:00Z', fecha_ny: '2026-11-03', clave_ext: 'c' }]);
+    const F2 = K.emparejarFillsFIFO(copia(fills2), '2026-11-03');
+    const ops2 = K.marcarLotesAbiertosCuentas(K.unirOperaciones([], copia(bt2), copia(fills2)).ops, F2.abiertos);
+    const dD = {}; K.diaADia(F2.cerradas, null, null, F2.viajes).forEach(x => { dD[x.fecha_ny] = [x.total, x.ops]; });
+    igual([[delDia(ops2, '2026-11-02').util, delDia(ops2, '2026-11-02').n], [delDia(ops2, '2026-11-03').util, delDia(ops2, '2026-11-03').n]], [dD['2026-11-02'], dD['2026-11-03']],
+      'vendido el resto: Diario = Cuentas por día ({lunes: −$101.28, 0 ops; martes: +$98.86, 1 op}), el lunes ya decía 0 ops');
+    igual(dD, { '2026-11-02': [-101.28, 0], '2026-11-03': [98.86, 1] }, 'y esas son las cifras del Diario');
+    // una compra DESPUÉS del cierre es otra operación: no reabre la que ya quedó plana
+    const bt3 = [{ ...B, contratos: 1, prima_salida: 2.50, cerrada_at: '2026-11-02T15:10:00Z', resultado_usd: 48.86, fees: 1.14, clave_ext: 'p>q' }];
+    const fills3 = [{ ...FB, lado: 'compra', contratos: 1, precio: 2.00, comision: 0.50, ejecutado_at: '2026-11-02T14:40:00Z', fecha_ny: '2026-11-02', clave_ext: 'p' },
+      { ...FB, lado: 'venta', contratos: 1, precio: 2.50, comision: 0.64, ejecutado_at: '2026-11-02T15:10:00Z', fecha_ny: '2026-11-02', clave_ext: 'q' },
+      { ...FB, lado: 'compra', contratos: 1, precio: 2.20, comision: 0.50, ejecutado_at: '2026-11-02T16:00:00Z', fecha_ny: '2026-11-02', clave_ext: 'r' }];
+    const F3 = K.emparejarFillsFIFO(copia(fills3), '2026-11-02');
+    const ops3 = K.marcarLotesAbiertosCuentas(K.unirOperaciones([], copia(bt3), copia(fills3)).ops, F3.abiertos);
+    igual([F3.viajes.length, F3.abiertos.length, !!ops3[0]._lote_abierto, K.resumenPeriodo(ops3, '2026-11-02').n], [1, 1, false, 1],
+      'vuelve a comprar DESPUÉS de quedar plano: el Diario 1 viaje + 1 lote abierto, y Cuentas cuenta la que quedó plana (la nueva compra no la reabre)');
+    // otro bróker u otro contrato con un lote abierto no la toca; sin libro (lectura fallida) todo como antes
+    const otro = [{ ...F.abiertos[0], broker: 'etrade' }, { ...F.abiertos[0], contrato: 'NVDA|CALL|235|2026-11-06' }];
+    const sinLibro = K.unirOperaciones([], copia(bt), null).ops;
+    igual([!!K.marcarLotesAbiertosCuentas(sinLibro, otro)[0]._lote_abierto, K.marcarLotesAbiertosCuentas(sinLibro, []) === sinLibro, K.resumenPeriodo(sinLibro, '2026-11-02').n], [false, true, 1],
+      'un lote abierto de OTRO bróker o de otro strike no la marca; sin abiertos (o sin libro) devuelve lo mismo y cuenta como siempre');
+    // y la vista lo usa: los abiertos del libro (los del Diario, emparejarFillsFIFO) marcan las operaciones de Cuentas
+    assert(/marcarLotesAbiertosCuentas\(unidas, emparejarFillsFIFO\(fillsR\.filas \|\| \[\], hoyNY\(\)\)\.abiertos\)/.test(extraer('vistaCuentasSaldos'))
+      && /if \(!fillsR\.error\)/.test(extraer('vistaCuentasSaldos')), 'vistaCuentasSaldos marca las operaciones con los abiertos del libro (solo si la lectura del libro no falló)');
+  }
 }
 
 // ════════════════ 7. Disciplina: «lo ganado de la semana» por fila (vistaDisciplina cableada) ════════════════

@@ -5651,6 +5651,7 @@ function resumenPeriodo(ops, desde) {
 //     fila sin fecha y la que dice estar abierta: una semana daba −$31.30 de utilidad y a la vez 1 ganadora, 100 % y mejor
 //     +$167.40. Y una fila del bróker que dice estar ABIERTA deja la operación sin quedar plana, como un tramo abierto de
 //     una ficha a mano (unirTramos). Con filas normales (todas con fecha, ninguna abierta) nada cambia: res es el de siempre.
+//     Tampoco queda plano un grupo del bróker al que el libro le ve un lote ABIERTO (`_lote_abierto`, marcarLotesAbiertosCuentas).
 function aportePeriodoCuentas(op, desde) {
   const d0 = String(desde || '');
   const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -5662,7 +5663,7 @@ function aportePeriodoCuentas(op, desde) {
     : (Array.isArray(op._partes_filas) && op._partes_filas.length) ? op._partes_filas : [op];
   const abiertaDentro = !!op && Array.isArray(op._partes_filas) && op._partes_filas.some(t => t && t.estado === 'abierta');
   const dia = cuentan.map(f => ymdNY(f.cerrada_at) || '').sort().pop() || '';
-  const plana = !!op && (op.estado === 'cerrada' || op.estado === 'expirada') && !abiertaDentro && !!dia && dia >= d0;
+  const plana = !!op && (op.estado === 'cerrada' || op.estado === 'expirada') && !abiertaDentro && !op._lote_abierto && !!dia && dia >= d0;
   let res = null;
   if (plana) {
     if (cuentan.length === partes.length) res = num(op.resultado_usd);                     // nada fuera: el de siempre
@@ -5670,6 +5671,38 @@ function aportePeriodoCuentas(op, desde) {
   }
   return { filas, plana, res, cierre: cuentan.map(f => String(f.cerrada_at || '')).sort().pop() || '',
     util: vs.length ? r2(vs.reduce((a, b) => a + b, 0)) : null };
+}
+
+// v67 rev69 (juez de Cuentas: «"Plana" sale del ÚLTIMO cierre del grupo: una operación vendida en parte hoy y abierta en
+// el bróker cuenta como operación cerrada con resultado parcial») · broker_trades solo trae idas y vueltas CERRADAS, así
+// que un grupo del bróker nace 'cerrada' aunque a su contrato le quede un lote abierto. Ejemplo: CALL ×3, 2 vendidos hoy y
+// 1 corriendo. El «Hoy» de Cuentas decía «1 ops», 1 perdedora de −$101.28 y la racha, y el Diario 0 viajes y 1 lote
+// abierto. Al vender el resto al día siguiente, la operación se iba de hoy a mañana y el conteo de un día pasado cambiaba
+// hacia atrás. Con el libro de fills que ya lee vistaCuentasSaldos (los `abiertos` de emparejarFillsFIFO, como el Diario)
+// se marca `_lote_abierto` en el grupo del bróker cuyo bróker + contrato tiene un lote abierto COMPRADO ANTES de su último
+// cierre (o en el mismo instante). Ese grupo no quedó plano: aporta su dinero y todavía no cuenta (aportePeriodoCuentas).
+// Una compra DESPUÉS del cierre es otra operación y no lo reabre. Con un cierre sin hora (sinHoraIso) se compara por día
+// NY. Solo AÑADE el campo, en copias. Sin libro (lectura fallida) no se marca nada y todo sigue como en la v66. PURA.
+function marcarLotesAbiertosCuentas(ops, abiertos) {
+  if (!Array.isArray(ops) || !Array.isArray(abiertos) || !abiertos.length) return ops;
+  const ms = (s) => { const t = Date.parse(s || ''); return Number.isFinite(t) ? t : null; };
+  const lotes = new Map();
+  for (const a of abiertos) {
+    if (!a || !a.broker || !a.contrato) continue;
+    const k = a.broker + '|' + a.contrato;
+    if (!lotes.has(k)) lotes.set(k, []);
+    lotes.get(k).push(a);
+  }
+  return ops.map(op => {
+    if (!op || !Array.isArray(op._partes_filas) || !op._partes_filas.length || !op.cerrada_at) return op;   // solo grupos del bróker
+    const k = claveContrato(op);
+    const ls = k ? lotes.get((op.broker || '') + '|' + k) : null;
+    if (!ls) return op;
+    const sinHora = sinHoraIso(op.cerrada_at), cierre = ms(op.cerrada_at), diaC = diaOpNY(op.cerrada_at);
+    const antes = ls.some(a => sinHora ? (diaOpNY(a.entrada_at) || '9999-99-99') <= diaC
+      : (cierre != null && ms(a.entrada_at) != null && ms(a.entrada_at) <= cierre));
+    return antes ? { ...op, _lote_abierto: true } : op;
+  });
 }
 
 // ---------- v62 · CUENTAS CON TODO EL DETALLE Y A PANTALLA COMPLETA (Andrés 2026-10-11, desde el laptop, viendo la
@@ -6403,7 +6436,11 @@ async function vistaCuentasSaldos() {
   // mejor/peor de Cuentas contradecían a Disciplina, que sí pasa por
   // unirOperaciones. Un cierre PARCIAL también se agrupa: es UNA operación.
   // v62 rev3: con el libro de fills (leído entero, sin error) las filas de E*TRADE sustituidas no se suman dos veces
-  const { ops: todas } = unirOperaciones(posR.data || [], btR.data || [], fillsR.error ? null : fillsR.filas);
+  const { ops: unidas } = unirOperaciones(posR.data || [], btR.data || [], fillsR.error ? null : fillsR.filas);
+  // v67 rev69: un grupo del bróker con un lote aún ABIERTO en el libro (vendido en parte) no cuenta como operación plana
+  // (marcarLotesAbiertosCuentas, con los abiertos del Diario). Sin libro, como siempre.
+  let todas = unidas;
+  if (!fillsR.error) { try { todas = marcarLotesAbiertosCuentas(unidas, emparejarFillsFIFO(fillsR.filas || [], hoyNY()).abiertos); } catch (_) { todas = unidas; } }
   // El historial enseña las operaciones cerradas Y el tramo ya cobrado de una que sigue
   // abierta (una GTC llenada a medias): ese dinero existe, tiene su fecha y antes no
   // aparecía en ninguna parte de esta pantalla.
