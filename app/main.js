@@ -6943,17 +6943,18 @@ function avisoBrokersHtml(lineas) {
       : l.fuente === 'datos' ? `la de tu última operación de ${N} guardada en la Mesa`
       : l.fuente === 'login' ? 'la del último login en este equipo' : '';
     const desdeTxt = f ? `no entran a la Mesa desde el <b>${f}</b>${nd}` : 'no entran a la Mesa';
-    const motivo = l.estado === 'muerto' ? 'E*TRADE rechazó la sesión: vuelve a entrar.'
-      : l.estado === 'otro_dia' ? 'E*TRADE cierra la sesión cada medianoche: falta el login de hoy.'
-      : l.estado === 'caducado' ? 'El login semanal de Schwab caducó: vuelve a entrar.'
-      : `Este equipo no tiene sesión de ${N}.`;
+    const motivo = l.estado === 'muerto' ? 'E*TRADE rechazó la sesión' : l.estado === 'otro_dia' ? 'E*TRADE cierra la sesión cada medianoche'
+      : l.estado === 'caducado' ? 'El login semanal de Schwab caducó' : '';
     let tit;
     if (l.estado === 'sin_equipo') tit = `${N} no está conectado en este equipo`;
-    else if (l.nivel === 'ambar') tit = l.estado === 'otro_dia' ? 'E*TRADE: falta el login de hoy' : l.estado === 'caducado' ? 'Schwab: el login semanal caducó' : `${N} se desconectó`;
+    else if (l.nivel === 'ambar') tit = l.estado === 'otro_dia' ? 'E*TRADE: falta el login de hoy' : l.estado === 'caducado' ? 'Schwab: falta el login semanal' : `${N} se desconectó`;
     else tit = `${N} desconectado`;
+    // ámbar (el primer día): lo de hoy aún no se perdió; rojo: se dice desde cuándo y cuántos días hábiles faltan
     const cuerpo = l.estado === 'sin_equipo'
       ? `lo último de ${N} guardado en la Mesa es del <b>${f || '—'}</b>${nd}; si operaste después, conéctalo aquí para que entre.`
-      : `tus operaciones de ${N} ${desdeTxt}. ${motivo}`;
+      : l.nivel === 'ambar'
+        ? `lo que operes en ${N} no entra a la Mesa hasta que conectes${f ? ` (al día hasta el <b>${f}</b>)` : ''}. ${motivo}.`
+        : `tus operaciones de ${N} ${desdeTxt}. ${motivo}: vuelve a entrar.`;
     return `<div class="avl ${l.nivel === 'ambar' ? 'ambar' : 'rojo'}" data-brk="${b}" data-estado="${esc(l.estado)}">`
       + `<div class="avt"><b class="avtit">${esc(tit)}</b> — ${cuerpo}${fuente && l.estado !== 'sin_equipo' ? `<span class="avf">Fecha: ${fuente}.</span>` : ''}</div>`
       + `<div class="avb"><button type="button" class="avc" onclick="MZ.conectar('${b}')">Conectar ${N}</button>`

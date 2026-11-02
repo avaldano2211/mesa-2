@@ -116,7 +116,14 @@ const corto = (ls) => ls.map(l => [l.broker, l.estado, l.nivel, l.desde, l.fuent
   assert(/^rojo" data-brk="schwab" data-estado="caducado">/.test(lin[1]) && /Schwab desconectado<\/b> — tus operaciones de Schwab no entran a la Mesa desde el <b>mié 28-oct<\/b> \(3 días hábiles\)\. El login semanal de Schwab caducó/.test(lin[1])
     && /Fecha: la de la última sincronización buena en este equipo\./.test(lin[1]) && /MZ\.conectar\('schwab'\)">Conectar Schwab</.test(lin[1]), 'Schwab caducado: su línea, su fecha y su botón', lin[1]);
   const a = P.avisoBrokersHtml(est({ et: { creds: true, dia: '2026-10-30', okSync: '2026-10-30' } }));
-  assert(/^<div class="avl ambar"/.test(a) && /E\*TRADE: falta el login de hoy<\/b>/.test(a) && /\(1 día hábil\)/.test(a) && /cierra la sesión cada medianoche/.test(a), 'el primer día: ámbar, «E*TRADE: falta el login de hoy», «1 día hábil»', a);
+  assert(/^<div class="avl ambar"/.test(a) && /E\*TRADE: falta el login de hoy<\/b> — lo que operes en E\*TRADE no entra a la Mesa hasta que conectes \(al día hasta el <b>vie 30-oct<\/b>\)\. E\*TRADE cierra la sesión cada medianoche\./.test(a)
+    && (a.match(/login de hoy/g) || []).length === 1, 'el primer día: ámbar, «E*TRADE: falta el login de hoy — lo que operes … no entra a la Mesa hasta que conectes (al día hasta el vie 30-oct)», sin repetirse', a);
+  const r6 = P.avisoBrokersHtml(est({ et: { creds: true, dia: '2026-10-23', okSync: '2026-10-23' } }));
+  assert(/E\*TRADE desconectado<\/b> — tus operaciones de E\*TRADE no entran a la Mesa desde el <b>vie 23-oct<\/b> \(6 días hábiles\)\. E\*TRADE cierra la sesión cada medianoche: vuelve a entrar\./.test(r6), 'login de hace días: rojo con su motivo', r6);
+  const am = P.avisoBrokersHtml(est({ et: { creds: true, dia: 'muerto', okSync: HOY } }));
+  assert(/E\*TRADE se desconectó<\/b> — lo que operes en E\*TRADE no entra a la Mesa hasta que conectes \(al día hasta el <b>lun 2-nov<\/b>\)\. E\*TRADE rechazó la sesión\./.test(am), 'muerto hoy tras sincronizar hoy: ámbar «E*TRADE se desconectó»', am);
+  const sa = P.avisoBrokersHtml(est({ sw: { creds: true, vencido: true, okSync: '2026-10-30' } }));
+  assert(/Schwab: falta el login semanal<\/b> — lo que operes en Schwab no entra a la Mesa hasta que conectes \(al día hasta el <b>vie 30-oct<\/b>\)\. El login semanal de Schwab caducó\./.test(sa), 'Schwab caducado con todo al día: ámbar', sa);
   const s = P.avisoBrokersHtml(est({ datos: { etrade: '2026-10-23' } }));
   assert(/E\*TRADE no está conectado en este equipo<\/b> — lo último de E\*TRADE guardado en la Mesa es del <b>vie 23-oct<\/b> \(6 días hábiles\)/.test(s) && /MZ\.conectar\('etrade'\)/.test(s), 'nunca conectado aquí: «E*TRADE no está conectado en este equipo — lo último … es del vie 23-oct»', s);
   const m0 = P.avisoBrokersHtml(est({ et: { creds: true, dia: 'muerto' } }));
