@@ -160,6 +160,23 @@ const FILLS_T = [
   const o2 = K.unirOperaciones([], raras).ops;
   igual(K.cerradasDesde(o2, '2000-01-01').map(t => t.clave_ext), ['c1>v1', 'c1>v2'], 'sin cerrada_at (ni en «todo») y abierta: fuera de todo período');
   igual(K.resumenPeriodo(o2, '2000-01-01').util, -47.28, 'su dinero no aparece en ningún día ni período');
+  // v67 rev69 (juez de Cuentas) · y los tiles NO se contradicen: la fila que dice estar ABIERTA deja la operación sin
+  // quedar plana (como el tramo abierto de una ficha a mano), así que no cuenta como ganadora con un resultado que suma
+  // filas fuera de todo período (antes: −$47.28 de utilidad con 1 ganadora, 100 % y mejor +$61.08)
+  const Mr = K.metricasCuentas(K.resumenPeriodo(o2, '2000-01-01').ops, '2000-01-01');
+  igual([Mr.util, Mr.n, Mr.ganadoras, Mr.winrate, Mr.mejor, Mr.ganancia_bruta, Mr.sin_cerrar], [-47.28, 0, 0, 0, null, 0, 1],
+    'una fila ABIERTA en el grupo: −$47.28 de utilidad, 0 operaciones planas, ninguna ganadora, sin mejor y +1 «con dinero sin quedar plana»');
+  // la fila SIN cerrada_at (la columna lo admite) tampoco entra en el resultado entero: la operación cuenta con lo que
+  // cuentan sus filas con fecha (antes: −$31.30 de utilidad y a la vez 1 ganadora, 100 %, mejor +$167.40 y factor «sin pérdidas»)
+  const E = { broker: 'etrade', symbol: 'AAPL', direccion: 'CALL', strike: 270, expiracion: '2026-10-30', abierta_at: '2026-10-27T14:00:00Z', prima_fill: 1.00 };
+  const o3 = K.unirOperaciones([], [{ ...E, contratos: 1, prima_salida: 0.70, cerrada_at: '2026-10-27T15:00:00Z', resultado_usd: -31.30, fees: 1.30, clave_ext: 'x1' },
+    { ...E, contratos: 1, prima_salida: 3.00, cerrada_at: null, resultado_usd: 198.70, fees: 1.30, clave_ext: 'x2' }], null).ops;
+  const Rs3 = K.resumenPeriodo(o3, '2026-10-26'), Ms3 = K.metricasCuentas(Rs3.ops, '2026-10-26');
+  igual([Ms3.util, Ms3.n, Ms3.ganadoras, Ms3.perdedoras, Ms3.winrate, Ms3.mejor, Ms3.peor, Ms3.ganancia_bruta, Ms3.factor], [-31.3, 1, 0, 1, 0, -31.3, -31.3, 0, 0],
+    'una fila SIN cerrada_at: la semana −$31.30 y UNA perdedora de −$31.30 (mejor = peor = la utilidad), sin ganancia bruta');
+  igual([Rs3.util, Rs3.n, Rs3.ganadoras, Rs3.mejor], [-31.3, 1, 0, -31.3], 'resumenPeriodo dice lo mismo que los tiles');
+  // con filas normales nada cambia: el resultado entero es el del grupo (la ficha fusionada de arriba, −$177.78)
+  igual([K.resumenPeriodo(u.ops, '2026-10-19').mejor, K.metricasCuentas(K.resumenPeriodo(u.ops, '2026-10-19').ops, '2026-10-19').mejor], [-177.78, -177.78], 'con todas sus filas con fecha: el resultado entero de siempre');
 }
 
 // ════════════════ 7. Disciplina: «lo ganado de la semana» por fila (vistaDisciplina cableada) ════════════════

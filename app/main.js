@@ -5623,7 +5623,6 @@ window.MZ = Object.assign(window.MZ || {}, {
 // al período (dinero o cierre: las que mide metricasCuentas); `n` = las que quedaron planas en él.
 function resumenPeriodo(ops, desde) {
   const d0 = String(desde || '');
-  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
   const r2 = (n) => Math.round(n * 100) / 100;
   const enP = [], res = []; let util = 0, n = 0;
   for (const op of (ops || [])) {
@@ -5632,7 +5631,7 @@ function resumenPeriodo(ops, desde) {
     if (!a.filas.length && !a.plana) continue;
     enP.push(op);
     if (a.util != null) util += a.util;
-    if (a.plana) { n++; if (num(op.resultado_usd) != null) res.push(r2(num(op.resultado_usd))); }
+    if (a.plana) { n++; if (a.res != null) res.push(r2(a.res)); }   // v67 rev69: el resultado de las filas que cuentan
   }
   const ganadoras = res.filter(x => x > 0).length;
   return { ops: enP, n, util: r2(util),
@@ -5645,13 +5644,32 @@ function resumenPeriodo(ops, desde) {
 //   · plana: la operación QUEDÓ PLANA en el período —cerrada o expirada, con su cerrada_at (el último cierre del grupo) en
 //     él—. Es cuando cuenta como operación (n, aciertos, mejor/peor, racha) y lo hace con su resultado ENTERO, como un viaje
 //     del Diario. Una abierta con un tramo cobrado (o un grupo sin cerrada_at) aporta su dinero y no cuenta todavía.
+//   · v67 rev69 (juez de Cuentas: «una fila del grupo sin cerrada_at sale de la utilidad pero sigue en el resultado
+//     entero: los tiles se contradicen») · `res` (el resultado ENTERO con el que cuenta) y `cierre` (el instante en que
+//     quedó plana) salen de las MISMAS filas que cuentan en algún período: las de cerradasDesde desde '0000-00-00', con
+//     cerrada_at y sin decir 'abierta'. Antes salían de op.resultado_usd y op.cerrada_at del grupo, que suman también la
+//     fila sin fecha y la que dice estar abierta: una semana daba −$31.30 de utilidad y a la vez 1 ganadora, 100 % y mejor
+//     +$167.40. Y una fila del bróker que dice estar ABIERTA deja la operación sin quedar plana, como un tramo abierto de
+//     una ficha a mano (unirTramos). Con filas normales (todas con fecha, ninguna abierta) nada cambia: res es el de siempre.
 function aportePeriodoCuentas(op, desde) {
   const d0 = String(desde || '');
   const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const r2 = (n) => Math.round(n * 100) / 100;
   const filas = op ? cerradasDesde([op], d0) : [];
   const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
-  const plana = !!op && (op.estado === 'cerrada' || op.estado === 'expirada') && !!op.cerrada_at && (ymdNY(op.cerrada_at) || '') >= d0;
-  return { filas, plana, util: vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) * 100) / 100 : null };
+  const cuentan = op ? cerradasDesde([op], '0000-00-00') : [];
+  const partes = !op ? [] : Array.isArray(op._filas) ? op._filas
+    : (Array.isArray(op._partes_filas) && op._partes_filas.length) ? op._partes_filas : [op];
+  const abiertaDentro = !!op && Array.isArray(op._partes_filas) && op._partes_filas.some(t => t && t.estado === 'abierta');
+  const dia = cuentan.map(f => ymdNY(f.cerrada_at) || '').sort().pop() || '';
+  const plana = !!op && (op.estado === 'cerrada' || op.estado === 'expirada') && !abiertaDentro && !!dia && dia >= d0;
+  let res = null;
+  if (plana) {
+    if (cuentan.length === partes.length) res = num(op.resultado_usd);                     // nada fuera: el de siempre
+    else { const xs = cuentan.map(f => num(f.resultado_usd)).filter(v => v != null); res = xs.length ? r2(xs.reduce((a, b) => a + b, 0)) : null; }
+  }
+  return { filas, plana, res, cierre: cuentan.map(f => String(f.cerrada_at || '')).sort().pop() || '',
+    util: vs.length ? r2(vs.reduce((a, b) => a + b, 0)) : null };
 }
 
 // ---------- v62 · CUENTAS CON TODO EL DETALLE Y A PANTALLA COMPLETA (Andrés 2026-10-11, desde el laptop, viendo la
@@ -5902,10 +5920,10 @@ function metricasCuentas(ops, desde) {
     if (!filas.length && !a.plana) continue;
     const fees = filas.map(f => num(f.fees)).filter(v => v != null);
     const fs = fees.length ? fees.reduce((a, b) => a + b, 0) : null;
-    xs.push({ op, plana: a.plana, util: a.util, res: (a.plana && num(op.resultado_usd) != null) ? r2(num(op.resultado_usd)) : null,
+    xs.push({ op, plana: a.plana, util: a.util, res: a.res != null ? r2(a.res) : null,   // v67 rev69: de las filas que cuentan
       capital: filas.reduce((s, f) => s + (num(f.prima_fill) || 0) * (num(f.contratos) || 0) * 100, 0),
       fees: fs, daCom: comisionDelBroker({ broker: op.broker, fees: fs }),
-      cierre: String(op.cerrada_at || '') });
+      cierre: a.cierre });
   }
   const agregar = (lista) => {
     const planas = lista.filter(x => x.plana);
