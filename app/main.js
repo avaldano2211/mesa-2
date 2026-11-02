@@ -5852,23 +5852,93 @@ window.MZ = Object.assign(window.MZ || {}, {
 // semana del último cierre. Una operación sigue siendo UNA (un grupo), aunque cierre
 // en dos tramos. mejor/peor y los aciertos solo miran las que tienen resultado: un
 // null no es una operación de $0.
+// v67 (C) · El DINERO va por FILA del bróker (cerradasDesde abre también los grupos del bróker): la utilidad del día, la
+// semana, el mes y el año es la del Diario. La OPERACIÓN se cuenta como un viaje del Diario: el día en que queda PLANA y
+// con su resultado ENTERO (aportePeriodoCuentas). Así un día puede llevar $ sin operación cerrada (un tramo vendido de
+// una que vence otro día, la GTC llenada a medias), como dice el Diario «bajo el día». `ops` = todas las que aportan algo
+// al período (dinero o cierre: las que mide metricasCuentas); `n` = las que quedaron planas en él.
 function resumenPeriodo(ops, desde) {
   const d0 = String(desde || '');
-  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
-  const enP = [], res = [];
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const enP = [], res = []; let util = 0, n = 0;
   for (const op of (ops || [])) {
     if (!op) continue;
-    const filas = cerradasDesde([op], d0);
-    if (!filas.length) continue;
+    const a = aportePeriodoCuentas(op, d0);
+    if (!a.filas.length && !a.plana) continue;
     enP.push(op);
-    const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
-    if (vs.length) res.push(Math.round(vs.reduce((a, b) => a + b, 0) * 100) / 100);
+    if (a.util != null) util += a.util;
+    if (a.plana) { n++; if (a.res != null) res.push(r2(a.res)); }   // v67 rev69: el resultado de las filas que cuentan
   }
-  const util = Math.round(res.reduce((a, b) => a + b, 0) * 100) / 100;
-  const ganadoras = res.filter(n => n > 0).length;
-  return { ops: enP, n: enP.length, util,
+  const ganadoras = res.filter(x => x > 0).length;
+  return { ops: enP, n, util: r2(util),
     ganadoras, winrate: res.length ? Math.round(100 * ganadoras / res.length) : 0,
     mejor: res.length ? Math.max(...res) : null, peor: res.length ? Math.min(...res) : null };
+}
+// v67 (C) · Lo que UNA operación (grupo de unirOperaciones) aporta al período que empieza en `desde` (fecha NY), PURO.
+//   · filas: sus filas del bróker / tramos cerrados EN el período (cerradasDesde), cada uno en el día NY de su cerrada_at;
+//     util = la suma de su resultado (null si ninguna lo trae: sin dato no es $0), redondeada como la de siempre.
+//   · plana: la operación QUEDÓ PLANA en el período —cerrada o expirada, con su cerrada_at (el último cierre del grupo) en
+//     él—. Es cuando cuenta como operación (n, aciertos, mejor/peor, racha) y lo hace con su resultado ENTERO, como un viaje
+//     del Diario. Una abierta con un tramo cobrado (o un grupo sin cerrada_at) aporta su dinero y no cuenta todavía.
+//   · v67 rev69 (juez de Cuentas: «una fila del grupo sin cerrada_at sale de la utilidad pero sigue en el resultado
+//     entero: los tiles se contradicen») · `res` (el resultado ENTERO con el que cuenta) y `cierre` (el instante en que
+//     quedó plana) salen de las MISMAS filas que cuentan en algún período: las de cerradasDesde desde '0000-00-00', con
+//     cerrada_at y sin decir 'abierta'. Antes salían de op.resultado_usd y op.cerrada_at del grupo, que suman también la
+//     fila sin fecha y la que dice estar abierta: una semana daba −$31.30 de utilidad y a la vez 1 ganadora, 100 % y mejor
+//     +$167.40. Y una fila del bróker que dice estar ABIERTA deja la operación sin quedar plana, como un tramo abierto de
+//     una ficha a mano (unirTramos). Con filas normales (todas con fecha, ninguna abierta) nada cambia: res es el de siempre.
+//     Tampoco queda plano un grupo del bróker al que el libro le ve un lote ABIERTO (`_lote_abierto`, marcarLotesAbiertosCuentas).
+function aportePeriodoCuentas(op, desde) {
+  const d0 = String(desde || '');
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const filas = op ? cerradasDesde([op], d0) : [];
+  const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
+  const cuentan = op ? cerradasDesde([op], '0000-00-00') : [];
+  const partes = !op ? [] : Array.isArray(op._filas) ? op._filas
+    : (Array.isArray(op._partes_filas) && op._partes_filas.length) ? op._partes_filas : [op];
+  const abiertaDentro = !!op && Array.isArray(op._partes_filas) && op._partes_filas.some(t => t && t.estado === 'abierta');
+  const dia = cuentan.map(f => ymdNY(f.cerrada_at) || '').sort().pop() || '';
+  const plana = !!op && (op.estado === 'cerrada' || op.estado === 'expirada') && !abiertaDentro && !op._lote_abierto && !!dia && dia >= d0;
+  let res = null;
+  if (plana) {
+    if (cuentan.length === partes.length) res = num(op.resultado_usd);                     // nada fuera: el de siempre
+    else { const xs = cuentan.map(f => num(f.resultado_usd)).filter(v => v != null); res = xs.length ? r2(xs.reduce((a, b) => a + b, 0)) : null; }
+  }
+  return { filas, plana, res, cierre: cuentan.map(f => String(f.cerrada_at || '')).sort().pop() || '',
+    util: vs.length ? r2(vs.reduce((a, b) => a + b, 0)) : null };
+}
+
+// v67 rev69 (juez de Cuentas: «"Plana" sale del ÚLTIMO cierre del grupo: una operación vendida en parte hoy y abierta en
+// el bróker cuenta como operación cerrada con resultado parcial») · broker_trades solo trae idas y vueltas CERRADAS, así
+// que un grupo del bróker nace 'cerrada' aunque a su contrato le quede un lote abierto. Ejemplo: CALL ×3, 2 vendidos hoy y
+// 1 corriendo. El «Hoy» de Cuentas decía «1 ops», 1 perdedora de −$101.28 y la racha, y el Diario 0 viajes y 1 lote
+// abierto. Al vender el resto al día siguiente, la operación se iba de hoy a mañana y el conteo de un día pasado cambiaba
+// hacia atrás. Con el libro de fills que ya lee vistaCuentasSaldos (los `abiertos` de emparejarFillsFIFO, como el Diario)
+// se marca `_lote_abierto` en el grupo del bróker cuyo bróker + contrato tiene un lote abierto COMPRADO ANTES de su último
+// cierre (o en el mismo instante). Ese grupo no quedó plano: aporta su dinero y todavía no cuenta (aportePeriodoCuentas).
+// Una compra DESPUÉS del cierre es otra operación y no lo reabre. Con un cierre sin hora (sinHoraIso) se compara por día
+// NY. Solo AÑADE el campo, en copias. Sin libro (lectura fallida) no se marca nada y todo sigue como en la v66. PURA.
+function marcarLotesAbiertosCuentas(ops, abiertos) {
+  if (!Array.isArray(ops) || !Array.isArray(abiertos) || !abiertos.length) return ops;
+  const ms = (s) => { const t = Date.parse(s || ''); return Number.isFinite(t) ? t : null; };
+  const lotes = new Map();
+  for (const a of abiertos) {
+    if (!a || !a.broker || !a.contrato) continue;
+    const k = a.broker + '|' + a.contrato;
+    if (!lotes.has(k)) lotes.set(k, []);
+    lotes.get(k).push(a);
+  }
+  return ops.map(op => {
+    if (!op || !Array.isArray(op._partes_filas) || !op._partes_filas.length || !op.cerrada_at) return op;   // solo grupos del bróker
+    const k = claveContrato(op);
+    const ls = k ? lotes.get((op.broker || '') + '|' + k) : null;
+    if (!ls) return op;
+    const sinHora = sinHoraIso(op.cerrada_at), cierre = ms(op.cerrada_at), diaC = diaOpNY(op.cerrada_at);
+    const antes = ls.some(a => sinHora ? (diaOpNY(a.entrada_at) || '9999-99-99') <= diaC
+      : (cierre != null && ms(a.entrada_at) != null && ms(a.entrada_at) <= cierre));
+    return antes ? { ...op, _lote_abierto: true } : op;
+  });
 }
 
 // ---------- v62 · CUENTAS CON TODO EL DETALLE Y A PANTALLA COMPLETA (Andrés 2026-10-11, desde el laptop, viendo la
@@ -6104,6 +6174,10 @@ function dteEntrada(op) {
 // v62 rev: las comisiones solo de los brókeres que las MANDAN (comisionDelBroker: E*TRADE y tasty, o fees > 0); los que
 // no (moomoo y Schwab con 0, fichas a mano) van en sin_com_brokers para que el tile diga que su P&L va sin descontarlas
 // en vez de presentar el período entero como «neto» y su 0 «no disponible» como $0.00.
+// v67 (C) · Como resumenPeriodo (aportePeriodoCuentas): utilidad, capital, rentabilidad y comisiones por FILA (cada fila del
+// bróker o tramo en el día NY de su cierre, como el Diario); ops, aciertos, verdes/rojas, medias, factor, mejor/peor y
+// racha por OPERACIÓN, el día en que quedó plana y con su resultado entero (como los viajes del Diario). `sin_cerrar` =
+// las que aportan dinero al período sin quedar planas en él (siguen abiertas o su último cierre cae en otro período).
 function metricasCuentas(ops, desde) {
   const d0 = String(desde || '');
   const r2 = (n) => Math.round(n * 100) / 100;
@@ -6111,21 +6185,21 @@ function metricasCuentas(ops, desde) {
   const xs = [];
   for (const op of (ops || [])) {
     if (!op) continue;
-    const filas = cerradasDesde([op], d0);
-    if (!filas.length) continue;
-    const vs = filas.map(f => num(f.resultado_usd)).filter(v => v != null);
+    const a = aportePeriodoCuentas(op, d0), filas = a.filas;
+    if (!filas.length && !a.plana) continue;
     const fees = filas.map(f => num(f.fees)).filter(v => v != null);
     const fs = fees.length ? fees.reduce((a, b) => a + b, 0) : null;
-    xs.push({ op, res: vs.length ? r2(vs.reduce((a, b) => a + b, 0)) : null,
+    xs.push({ op, plana: a.plana, util: a.util, res: a.res != null ? r2(a.res) : null,   // v67 rev69: de las filas que cuentan
       capital: filas.reduce((s, f) => s + (num(f.prima_fill) || 0) * (num(f.contratos) || 0) * 100, 0),
       fees: fs, daCom: comisionDelBroker({ broker: op.broker, fees: fs }),
-      cierre: filas.map(f => f.cerrada_at || '').sort().pop() || '' });
+      cierre: a.cierre });
   }
   const agregar = (lista) => {
-    const res = lista.map(x => x.res).filter(v => v != null);
-    const util = r2(res.reduce((a, b) => a + b, 0)), capital = r2(lista.reduce((s, x) => s + x.capital, 0));
+    const planas = lista.filter(x => x.plana);
+    const res = planas.map(x => x.res).filter(v => v != null);
+    const util = r2(lista.reduce((s, x) => s + (x.util != null ? x.util : 0), 0)), capital = r2(lista.reduce((s, x) => s + x.capital, 0));
     const gan = res.filter(v => v > 0), per = res.filter(v => v < 0);
-    return { ops: lista.length, con_resultado: res.length, ganadoras: gan.length, perdedoras: per.length,
+    return { ops: planas.length, con_resultado: res.length, ganadoras: gan.length, perdedoras: per.length,
       aciertos: res.length ? Math.round(100 * gan.length / res.length) : null, utilidad: util, capital,
       rentabilidad: capital > 0 ? Math.round(util / capital * 10000) / 100 : null, res, gan, per };
   };
@@ -6151,6 +6225,7 @@ function metricasCuentas(ops, desde) {
     }).sort((a, b) => (b.utilidad - a.utilidad) || a.clave.localeCompare(b.clave));
   };
   return { util: T.utilidad, n: T.ops, con_resultado: T.con_resultado, ganadoras: T.ganadoras, perdedoras: T.perdedoras,
+    sin_cerrar: xs.filter(x => !x.plana).length,       // v67 (C): con dinero en el período sin quedar planas en él
     winrate: T.aciertos == null ? 0 : T.aciertos,      // como resumenPeriodo: sin resultados, 0 %
     ganancia_bruta: gb, perdida_bruta: pb,
     gan_media: T.ganadoras ? r2(gb / T.ganadoras) : null, perd_media: T.perdedoras ? r2(pb / T.perdedoras) : null,
@@ -6460,16 +6535,24 @@ function tilesCuentasHtml(M, periodo) {
     : noDan ? `${noDan}: P&L sin descontarlas` : 'lo que bajó cada bróker';
   const subCom = con.length ? `ya descontadas del neto · las da${con.length > 1 ? 'n' : ''} ${esc(lista(con))}${sin.length ? ` (${esc(lista(sin))} no)` : ''}`
     : noDan || 'ningún bróker las reportó en el período';
+  // v67 (C): el dinero va por fila y la operación cuenta el día en que queda plana (como el Diario «bajo el día»): si
+  // alguna aportó dinero sin quedar plana en el período, se dice, para que «0 ops» con utilidad no parezca un error
+  const k = Number(M.sin_cerrar) || 0;
+  const sinCerrar = k ? ` · +${k} con dinero aquí que no ${k > 1 ? 'quedaron planas' : 'quedó plana'} en el período` : '';
+  // v67 (C) · y debajo de los tiles, como el «bajo el día» del Diario, cómo se reparte un período: sin esto, un «Hoy» con
+  // dinero y 0 operaciones, o una operación del historial con más $ que el día, parecían errores
+  const notaPeriodo = 'el $, el capital y las comisiones van por cada venta o vencimiento, en su día de Nueva York (como el Diario) · una operación cuenta, con su resultado entero, el día en que quedó plana · el historial la enseña entera';
   return `<div class="dcards">
     ${t(`UTILIDAD · ${tit}`, usd(M.util), subUtil, colUtil(M.util))}
-    ${t('OPERACIONES Y ACIERTOS', `${M.n} ops`, `${M.winrate}% aciertos · ${M.ganadoras} en verde, ${M.perdedoras} en rojo`)}
+    ${t('OPERACIONES Y ACIERTOS', `${M.n} ops`, `${M.winrate}% aciertos · ${M.ganadoras} en verde, ${M.perdedoras} en rojo${sinCerrar}`)}
     ${t('GANANCIA / PÉRDIDA MEDIA', `<span style="color:${colUtil(M.gan_media)}">${usd(M.gan_media)}</span> / <span style="color:${colUtil(M.perd_media)}">${usd(M.perd_media)}</span>`, 'por ganadora · por perdedora', null, true)}
     ${t('FACTOR DE BENEFICIO', M.factor != null ? M.factor.toFixed(2) : '—', M.factor != null ? `ganado ${usd(M.ganancia_bruta)} ÷ perdido ${usd(-M.perdida_bruta)}` : M.ganadoras ? 'sin pérdidas en el período' : 'sin operaciones con resultado', M.factor == null ? null : M.factor >= 1 ? 'var(--verde)' : 'var(--rojo)')}
     ${t('CAPITAL Y RENTABILIDAD', pctD2(M.rentabilidad), `${usd(M.util)} sobre ${usd(M.capital)} de capital usado`, colUtil(M.rentabilidad))}
     ${t('COMISIONES', M.comisiones != null ? dineroD(M.comisiones) : '—', subCom)}
     ${t('MEJOR / PEOR', `<span style="color:${colUtil(M.mejor)}">${usd(M.mejor)}</span> / <span style="color:${colUtil(M.peor)}">${usd(M.peor)}</span>`, 'la mejor y la peor operación', null, true)}
     ${t('RACHA', r.n ? String(r.n) : '—', r.n ? `${r.n === 1 ? r.tipo.replace(/s$/, '') + ' seguida' : r.tipo + ' seguidas'} hasta la última cerrada` : 'sin racha (la última quedó en $0 o no hay)', r.tipo === 'ganadoras' ? 'var(--verde)' : r.tipo === 'perdedoras' ? 'var(--rojo)' : null)}
-  </div>`;
+  </div>
+  <div class="fresco" style="padding:2px 4px 6px">${notaPeriodo}</div>`;
 }
 // C2 · «Por activo» y «Por bróker», dos tablas lado a lado en la computadora y apiladas en el teléfono.
 function tablasDesgloseCuentasHtml(M) {
@@ -6589,7 +6672,11 @@ async function vistaCuentasSaldos() {
   // mejor/peor de Cuentas contradecían a Disciplina, que sí pasa por
   // unirOperaciones. Un cierre PARCIAL también se agrupa: es UNA operación.
   // v62 rev3: con el libro de fills (leído entero, sin error) las filas de E*TRADE sustituidas no se suman dos veces
-  const { ops: todas } = unirOperaciones(posR.data || [], btR.data || [], fillsR.error ? null : fillsR.filas);
+  const { ops: unidas } = unirOperaciones(posR.data || [], btR.data || [], fillsR.error ? null : fillsR.filas);
+  // v67 rev69: un grupo del bróker con un lote aún ABIERTO en el libro (vendido en parte) no cuenta como operación plana
+  // (marcarLotesAbiertosCuentas, con los abiertos del Diario). Sin libro, como siempre.
+  let todas = unidas;
+  if (!fillsR.error) { try { todas = marcarLotesAbiertosCuentas(unidas, emparejarFillsFIFO(fillsR.filas || [], hoyNY()).abiertos); } catch (_) { todas = unidas; } }
   // El historial enseña las operaciones cerradas Y el tramo ya cobrado de una que sigue
   // abierta (una GTC llenada a medias): ese dinero existe, tiene su fecha y antes no
   // aparecía en ninguna parte de esta pantalla.
@@ -10556,7 +10643,8 @@ function unirOperaciones(posic, trades, fills) {
     g.contratos += c; g._costo += (num(t.prima_fill) || 0) * c; g.resultado_usd += num(t.resultado_usd) || 0;
     // v62: las comisiones del grupo (null si NINGUNA fila las trae: «sin dato» no es $0) y sus filas originales,
     // para el detalle de Cuentas (desglose de tramos y «bruto»). Solo se AÑADEN campos: Disciplina y el Copiloto
-    // leen los de siempre y no cambian.
+    // leen los de siempre y no cambian. v67 (C): cerradasDesde abre estas filas, cada una en el día de su cierre (el
+    // dinero de Cuentas por período y «lo ganado de la semana»); la operación, su tarjeta y su fila siguen agrupadas.
     if (numN(t.fees) != null) g.fees = (g.fees || 0) + numN(t.fees);
     g._partes_filas.push(t);
     if (t.prima_salida != null && num(t.prima_salida) != null) { g._salida += num(t.prima_salida) * c; g._salidaN += c; }
@@ -10595,12 +10683,25 @@ function unirOperaciones(posic, trades, fills) {
 // Filas cerradas (o expiradas) desde `desde` (fecha NY) por fecha de CIERRE, PURA. Una
 // operación agrupada (unirOperaciones) se abre en sus tramos: un cierre parcial cuenta en
 // la semana en que se cerró aunque el resto siga abierto o cierre otra semana.
+// v67 (C, 2026-11-01: «sí, arréglalo y publícalo YA QUE ESTA CERRADO EL MERCADO») · y un grupo del BRÓKER se abre en sus
+// FILAS (_partes_filas, ya leídas: vigentes de E*TRADE, vencimientos de moomoo y de Schwab a su instante), cada una en el
+// día NY de SU cerrada_at, como el Diario pone cada tramo el día de su venta. Hasta la v66 el grupo contaba ENTERO el día
+// de su ÚLTIMO cierre: un CALL ×3 de tasty con dos tramos vendidos el día de la compra y el resto vencido dos días después
+// ponía los tres ese segundo día (y la utilidad de la semana, del mes y «lo ganado de la semana» de Disciplina con él).
+// Una fila de broker_trades es una ida y vuelta CERRADA y no trae `estado`: cuenta salvo que diga lo contrario. Sin
+// cerrada_at no pertenece a ningún período (como cualquier fila).
 function cerradasDesde(ops, desde) {
   const esCerrada = (p) => p.estado === 'cerrada' || p.estado === 'expirada';
   // Sin fecha de cierre no pertenece a NINGÚN período: ymdNY(null) devuelve HOY, así
   // que una fila cerrada sin cerrada_at se colaba en la semana, en el mes y en el año.
   const dia = (p) => (p.cerrada_at ? (ymdNY(p.cerrada_at) || '') : '');
-  return (ops || []).flatMap(p => (p && p._filas) || [p]).filter(p => p && esCerrada(p) && dia(p) >= desde);
+  const filasDe = (p) => {
+    if (!p) return [];
+    if (p._filas) return p._filas.filter(f => f && esCerrada(f));
+    if (Array.isArray(p._partes_filas) && p._partes_filas.length) return p._partes_filas.filter(t => t && (t.estado == null || esCerrada(t)));
+    return esCerrada(p) ? [p] : [];
+  };
+  return (ops || []).flatMap(filasDe).filter(p => dia(p) >= desde);
 }
 
 const TAMANO_PCT = 10;   // doctrina: máximo 10% de la cuenta por operación
@@ -10717,6 +10818,8 @@ async function vistaDisciplina() {
   const semana = ops.filter(p => (p.abierta_fecha_ny || '') >= lun);   // ya viene en orden de apertura
   // Lo ganado de la semana se mide por fecha de CIERRE de cada tramo (igual que Cuentas);
   // el cupo 3/semana sí va por fecha de ENTRADA y cuenta operaciones agrupadas.
+  // v67 (C): y de cada FILA del bróker (cerradasDesde abre también sus grupos): un tramo vendido el viernes y el resto
+  // vencido el lunes ya no se retira entero la semana del lunes. Las reglas rotas siguen juzgando por apertura.
   const cerradasSem = cerradasDesde(ops, lun);
 
   // cupo de la semana (conjunto deduplicado; el excedente = más allá de la 3ª)
