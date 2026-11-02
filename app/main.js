@@ -1816,7 +1816,9 @@ function chartSvg(pk, op) {
     : smaUlt[k] != null ? `SMA ${k}` : `SMA ${k} sin historia`).join(', ')
     : conBB ? (bbDib ? 'Bollinger Bands 20 2 con su punto medio (media de 20)' : 'Bollinger Bands 20 2 sin historia') : '';
   const ariaLineas = vis.map(o => o.lb || `línea ${fP(o.v)}`).join(', ');
-  const aria = (pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + (hl ? 'medias y H-lines' : 'Bollinger') + ariaExt
+  // v68 C: con BB apagado (gestor) el gráfico no dibuja Bollinger: el nombre dice lo que hay (velas y, con op.hlines, H-lines)
+  const ariaVista = hl ? 'medias y H-lines' : conBB ? 'Bollinger' : conHl ? 'velas y H-lines' : 'velas';
+  const aria = (pk.ticker || '') + ' ' + nombreTf(tf) + ' ' + ariaVista + ariaExt
     + (ariaSeries || ariaLineas ? ': ' + [ariaSeries, ariaLineas].filter(Boolean).join('; ') : '');
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"${marcaExt} aria-label="${esc(aria)}" style="display:block;font-family:var(--mono);font-size:9px">` + out + `</svg>`;
 }
@@ -1978,7 +1980,11 @@ function lecturaChart(pk, tf, dec, ext, svg) {
 // es una H-line del gráfico (los demás swings de hora, las referencias de día, el salto), como antes.
 //   dibujadas (v67, opcional): las claves de las H-lines que el gráfico de al lado DIBUJÓ (data-nivel); la que no está se
 // marca «lejos del precio: fuera de este gráfico» (sin la lista, nada se marca).
-function hlinesLista(pk, tg, dec, dibujadas) {
+//   vista (v68 B, opcional): la del gráfico de al lado. En Bollinger el gráfico solo dibuja las líneas NATIVAS (cierre de
+// ayer, apertura de hoy: nivelesChart sin conHl) y la lista enseñaba techo, piso, targets y máx/mín sin decir que ahí no
+// están: la que no se dibujó y no es nativa se marca «no sale en Bollinger — cambia a Medias + H-lines» (con el enlace);
+// una nativa que no cupo sigue siendo «lejos del precio». Misma lógica nivelesDibujados sobre el svg real.
+function hlinesLista(pk, tg, dec, dibujadas, vista) {
   const nv = (pk && pk.niveles) || {};
   const f = (v) => (v == null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(dec);
   const fecha = (ymd) => (ymd && /^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) ? fmtFechaNY(String(ymd) + 'T12:00:00Z') : '';
@@ -2004,11 +2010,15 @@ function hlinesLista(pk, tg, dec, dibujadas) {
     cierre_ayer: () => ayerRango, apertura_hoy: () => '',
   };
   const lineas = nivelesChart(nv, (tg && tg.target != null) ? tg : null, spotRef, true).sort((a, b) => b.v - a.v);
+  const enBB = vista === 'bb' && Array.isArray(dibujadas);
+  const nativas = enBB ? new Set(nivelesChart(nv, null, spotRef, false).map(o => o.k)) : null;
+  const NO_BB = `no sale en Bollinger — <a href="#" onclick="MZ.chartVista('hl');return false">cambia a Medias + H-lines</a>`;
   let h = '', spotPuesto = !(spotRef > 0) || !lineas.length;
   lineas.forEach(o => {
     if (!spotPuesto && spotRef > o.v) { h += `<div class="hl mut" data-hl="spot"><span>— precio ${esc(f(spotRef))} —</span><span class="fresco"></span></div>`; spotPuesto = true; }
     const fuera = Array.isArray(dibujadas) && !dibujadas.includes(o.k);
-    const sb = [fuera ? 'lejos del precio: fuera de este gráfico' : '', SUB[o.k] ? SUB[o.k]() : ''].filter(Boolean).join(' · ');
+    const motivo = !fuera ? '' : (enBB && !nativas.has(o.k)) ? NO_BB : 'lejos del precio: fuera de este gráfico';
+    const sb = [motivo, SUB[o.k] ? SUB[o.k]() : ''].filter(Boolean).join(' · ');
     h += `<div class="hl${fuera ? ' fuera' : ''}" data-hl="${esc(o.k)}"><span>${muestraLinea(o.c, o.trazo)}${esc(o.nombre)} ${esc(f(o.v))}</span><span class="fresco">${sb}</span></div>`;
   });
   if (!spotPuesto) h += `<div class="hl mut" data-hl="spot"><span>— precio ${esc(f(spotRef))} —</span><span class="fresco"></span></div>`;
@@ -2109,8 +2119,9 @@ function pintarChart(fila, tg) {
   $('#chLectura').innerHTML = lecturaChart(pk, tf, dec, ext === true && /data-ext="1"/.test(svg), svg);
   // v67: en Medias + H-lines la lista dice qué línea NO cabe en este gráfico (un nivel lejano no aplasta las velas: se omite)
   //   rev69: solo si de verdad hay gráfico (nivelesDibujados da null con el aviso «Sin velas todavía…»)
-  const dib = vista === 'hl' ? nivelesDibujados(svg) : null;
-  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec, dib ? dib.map(x => x.k) : null);
+  //   v68 B: también en Bollinger, donde el gráfico solo dibuja cierre de ayer y apertura: lo demás «no sale en Bollinger»
+  const dib = nivelesDibujados(svg);
+  $('#chHlines').innerHTML = hlinesLista(pk, tg, dec, dib ? dib.map(x => x.k) : null, vista);
   // el editor de target se rellena también si los targets llegaron DESPUÉS de
   // abrir la hoja (sin pisar lo que se esté escribiendo)
   [['tgT', tg && tg.target], ['tgA', tg && tg.target_alto], ['tgB', tg && tg.target_bajo],

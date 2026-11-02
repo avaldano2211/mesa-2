@@ -353,7 +353,10 @@ const bb = CH.chartSvg({ ...pkD, tf: 'm15', velas: velas(90) }, { vista: 'bb', h
   H.pintarChart({ payload: { ...pkD, velas: pkD.velas.slice(0, 3).concat([[1, 2]]) } }, TG);
   assert(/Sin velas todavía/.test(nodos['#chSvg'].innerHTML) && !/hl fuera/.test(lista()), 'tampoco con una fila de vela mal formada');
   H_VISTA.v = 'bb'; H.pintarChart({ payload: pkLejos }, TG);
-  assert(!/hl fuera/.test(lista()), 'en la vista Bollinger (sin las H-lines Sardiñas en el gráfico) la lista no marca nada');
+  // v68 B (spec70): en Bollinger el gráfico no dibuja las H-lines Sardiñas y la lista YA lo dice («no sale en Bollinger»);
+  // la v67 no marcaba nada y la lista enseñaba techo, piso y targets como si estuvieran (test_v68_chart.js lo prueba entero)
+  assert(/class="hl fuera" data-hl="techo"/.test(lista()) && /no sale en Bollinger/.test(lista()) && !/class="hl fuera" data-hl="cierre_ayer"/.test(lista()),
+    'v68: en la vista Bollinger la lista marca lo que ese gráfico no dibuja («no sale en Bollinger»), no las nativas dibujadas');
 }
 
 // 11. la leyenda del gestor (Copiloto, 5 min, 4 h): marca «fuera de este gráfico» los strikes y las H-lines que el svg NO
