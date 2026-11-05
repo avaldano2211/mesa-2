@@ -32,7 +32,7 @@ const NOMBRES = ['liquidezDeFila', 'edadLiquidez', 'nombreContratoGfv', 'gfvComp
 const faltan = NOMBRES.filter(n => !tiene(n));
 if (faltan.length) { C.falla('no existe la liquidez de moomoo ni el aviso de good faith (faltan: ' + faltan.join(', ') + ')'); C.resumen(); }
 
-const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'edadLiquidezDe', 'compraTrasLectura', 'nombreContratoGfv', 'comprasLibroHoy', 'gfvComprasHoy', 'gfvResumen', 'lineasLiquidezHtml',
+const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'edadLiquidezDe', 'compraTrasLectura', 'saludLiquidez', 'nombreContratoGfv', 'comprasLibroHoy', 'gfvComprasHoy', 'gfvResumen', 'lineasLiquidezHtml',
   'tarjetaLiquidezHtml', 'montoGfv', 'motivoGfv', 'cuantosGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaGfvHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
 const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_TRAS_COMPRA_MS', 'LIQ_VIEJO_MIN', 'MOTIVO_GFV'] });
 
@@ -244,6 +244,31 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
     // la base y Realtime no escriben la zona igual: el orden es por instante
     const G9 = P.gfvComprasHoy([COMPRA({ clave_fill: 'b', ejecutado_at: '2026-11-04T10:00:00-05:00' })], HOY, { libro: [{ clave: 'a', at: '2026-11-04T14:59:00+00:00', ms: MS('2026-11-04T14:59:00Z'), contratos: 1, symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07' }] });
     igual(G9.porContrato['moomoo|SPY|CALL|585|2026-11-07'].lotes.map(l => l.clave), ['a', 'b'], 'orden de ejecución por INSTANTE (09:59 antes que 10:00 aunque el texto diga otra cosa)');
+  }
+  // R6 (revisión «la verdad»): el latido dice que la simulación del servidor no cuadra con moomoo (compró acciones, que no
+  // están en fills): las 'liquidada' de hoy no se dan por buenas
+  {
+    const AH = MS('2026-11-04T16:00:00Z');
+    const HB = (liq, o) => Object.assign({ latido_at: '2026-11-04T15:59:30Z', detalle: { liquidez: liq } }, o || {});
+    const LIQ = (o) => Object.assign({ ultima_lectura_at: '2026-11-04T15:59:00Z', efectivo_liquidado_ok: true, tipo_cuenta: 'CASH', compras_hoy: 2, no_liquidadas_hoy: 0, descuadre: false, ultimo_error: null }, o || {});
+    igual([P.saludLiquidez(HB(LIQ({ descuadre: true })), HOY, AH), P.saludLiquidez(HB(LIQ()), HOY, AH), P.saludLiquidez(HB(LIQ({ ultimo_error: 'lectura push: tope de frecuencia' })), HOY, AH)],
+      [{ descuadre: true, error: null }, null, { descuadre: false, error: 'lectura push: tope de frecuencia' }], 'saludLiquidez: el descuadre de hoy y el último error del latido');
+    igual([P.saludLiquidez(HB(LIQ({ descuadre: true, ultima_lectura_at: '2026-11-03T20:00:00Z' })), HOY, AH), P.saludLiquidez(HB(LIQ({ descuadre: true }), { latido_at: '2026-11-04T15:40:00Z' }), HOY, AH),
+      P.saludLiquidez({ latido_at: '2026-11-04T15:59:30Z', detalle: {} }, HOY, AH), P.saludLiquidez(null, HOY, AH)], [null, null, null, null],
+      '… el descuadre de una lectura de AYER no vale hoy; un latido de hace > 10 min o sin detalle.liquidez: nada');
+    const compras = [COMPRA({ clave_fill: 'mm-1', estado: 'liquidada', no_liquidado_usd: 0, libre_desde: HOY, contratos: 1, monto_usd: 500 }),
+      COMPRA({ clave_fill: 'mm-2', symbol: 'QQQ', strike: 520, no_liquidado_usd: 80, contratos: 1 })];
+    const Gd = P.gfvComprasHoy(compras, HOY, { dudoso: true });
+    const gd = P.gfvResumen(Gd.porContrato['moomoo|SPY|CALL|585|2026-11-07'], 1), gq = P.gfvResumen(Gd.porContrato['moomoo|QQQ|CALL|520|2026-11-07'], 1);
+    igual([gd.nivel, gd.motivo, gq.nivel, gq.sinMonto, P.gfvResumen(P.gfvComprasHoy(compras, HOY).porContrato['moomoo|SPY|CALL|585|2026-11-07'], 1)], ['ambar', 'descuadre', 'rojo', true, null],
+      'con descuadre: la «liquidada» pasa a «no sé» (sin él, nada); la «no_liquidada» sigue en rojo pero sin monto (la cuenta del servidor no cuadra)');
+    assert(P.insigniaGfvHtml(gd).includes('No sé si la pagaste con dinero sin liquidar (el cálculo del servidor no cuadra con moomoo)') && P.insigniaGfvHtml(gq).includes('(no sé cuánto sin liquidar)')
+      && /gfvav nose/.test(P.avisoVentaGfvHtml(gd)), 'la insignia y el cuadro de venta de la «liquidada» dicen el «no sé»; la otra, «no sé cuánto»');
+    const tD = txt(P.tarjetaLiquidezHtml(P.liquidezDeFila(ROW()), Gd, { ...CTX, salud: { descuadre: true, error: 'no pude escribir compras_no_liquidadas (HTTP 500)' } }));
+    assert(tD.includes('⚠ El cálculo del servidor no cuadra con el liquidado de moomoo (¿compraste acciones u otra cosa que no está en el libro?): no sé qué compras de hoy usaron dinero sin liquidar — mira Settled Cash en moomoo antes de vender algo comprado hoy.')
+      && tD.includes('⚠ El servidor avisa un fallo con la liquidez (no pude escribir compras_no_liquidadas (HTTP 500)): lo de aquí puede no estar al día'), 'la tarjeta dice el descuadre y el último error del servidor', tD);
+    assert(!/El cálculo del servidor|avisa un fallo/.test(txt(P.tarjetaLiquidezHtml(P.liquidezDeFila(ROW()), G0, CTX))), 'sin salud del latido: ni una línea de más');
+    assert(/&lt;b&gt;/.test(P.tarjetaLiquidezHtml(P.liquidezDeFila(ROW()), G0, { ...CTX, salud: { descuadre: false, error: '<b>x' } })), 'el error del latido pasa por esc()');
   }
   // escape
   const hX = P.tarjetaLiquidezHtml(L, P.gfvComprasHoy([COMPRA({ symbol: '<img src=x onerror=alert(1)>', estado: 'no_liquidada' })], HOY), CTX);
@@ -523,6 +548,13 @@ function armarCarga(rutas, op) {
       { broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '${MANANA}', contrato: 'SPY|CALL|585|${MANANA}', contratos: 1, prima: 2, costo: 200, fecha_ny: '${HOYR}', dias_abiertos: 0, vence_en: 1 }], [], [])`);
     igual((hA.match(/class="gfv"/g) || []).length, 1, 'Diario: la insignia en el lote de HOY de moomoo (ni en el del lunes del mismo contrato ni en el de E*TRADE)');
     assert(hA.indexOf('class="gfv"') > hA.indexOf("entró " + Z.mod.ev(`fechaCorta('${HOYR}')`)), '… y es la del lote que entró hoy');
+    // el latido trae el descuadre de hoy: la tarjeta lo dice en sitio y el cuadro de venta ya no afirma el monto
+    Z.mod.ev("_hbUltimo = { latido_at: new Date().toISOString(), detalle: { liquidez: { descuadre: true, ultima_lectura_at: new Date().toISOString(), ultimo_error: null } } }");
+    Z.mod.ev('pintarLiquidezEnSitio()');
+    assert(/El cálculo del servidor no cuadra con el liquidado de moomoo/.test(Z.nodos['#liq_lineas'].innerHTML), 'módulo: con el descuadre del latido, la tarjeta lo dice (en sitio)');
+    const avD = Z.mod.ev('avisoVentaGfv(gestorFila(7))');
+    assert(/No la vendas hoy/.test(avD) && !/\$300\.00/.test(avD), 'módulo: con el descuadre, el cuadro de venta sigue avisando pero sin afirmar el monto', avD);
+    Z.mod.ev('_hbUltimo = null');
   }
   // b) en la computadora (tabla del gestor): la insignia arriba del detalle de la fila
   {
