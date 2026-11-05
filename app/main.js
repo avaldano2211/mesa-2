@@ -2967,6 +2967,7 @@ function tarjetaPosicion(p, br, hoy, grupo) {
   return `<div class="card${dormida ? ' dormida' : ''}"${tocado ? ' style="border-color:rgba(242,109,95,.6)"' : ''}>
     <div class="fila"><h3>${dormida ? '🔕 ' : ''}${esc(p.symbol)} ${esc(p.direccion)}${p.strike ? ' ' + esc(p.strike) : ''}</h3>
       <span class="fresco">×${esc(p.contratos)} · ${esc(p.broker || '—')}</span></div>
+    ${p.broker === 'moomoo' && typeof insigniaGfvDe === 'function' ? `<div class="gfvw" id="g_gfv_${Number(p.id)}">${insigniaGfvDe(p)}</div>` : ''}
     <div class="mut mono" id="g_dist_${Number(p.id)}" style="margin-top:4px;font-size:11.5px">${celdaDistHtml(p)}</div>
     <div class="fila" style="margin-top:6px">
       <span class="mut">fill <b class="mono" style="color:var(--tx)">$${esc(p.prima_fill)}</b></span>
@@ -5446,6 +5447,7 @@ function tarjetaSinRegistrar(br, plan, hoy, lect) {
   return `<div class="card" style="border-style:dashed;border-color:rgba(231,181,77,.55)">
     <div class="fila"><h3>${esc(br.symbol)} ${esc(br.direccion)} ${esc(br.strike)}</h3>
       <span class="chip c-vig">SIN REGISTRAR</span></div>
+    ${br.broker === 'moomoo' && typeof insigniaGfvDe === 'function' ? `<div class="gfvw" id="g_bgfv_${claveSlug(br.clave)}">${insigniaGfvDe(br)}</div>` : ''}
     <div class="fila" style="margin-top:6px">
       <span class="mut">×${esc(br.contratos)} · ${esc(BROKER_NOMBRE[br.broker] || br.broker)}</span>
       <span class="mut">costo medio <b class="mono" style="color:var(--tx)">$${esc(br.prima_fill != null ? Number(br.prima_fill).toFixed(2) : '—')}</b></span></div>
@@ -7613,8 +7615,9 @@ function filaGestor(p, br, hoy, grupo) {
     <td class="gsalta" id="g_salta_${id}" style="min-width:150px">${saltaHtml(n, r, gestorVigilado())}</td>
     <td>${activoGestorHtml(p, r)}</td>
     <td>${botonVenderGestor(p)}</td></tr>`;
-  // fila de detalle: lo que la 2.0 ya tenía en la tarjeta
-  h += `<tr class="gdet"><td colspan="10">
+  // fila de detalle: lo que la 2.0 ya tenía en la tarjeta (v69: arriba, en moomoo, la insignia de good faith; su contenedor
+  // va siempre en moomoo para que el repintado en sitio la ponga o la quite)
+  h += `<tr class="gdet"><td colspan="10">${p.broker === 'moomoo' && typeof insigniaGfvDe === 'function' ? `<div class="gfvw" id="g_gfv_${id}">${insigniaGfvDe(p)}</div>` : ''}
     <span class="mono">fill <b style="color:var(--tx)">$${esc(costo > 0 ? costo.toFixed(2) : p.prima_fill)}</b> · límite GTC <b style="color:var(--oro)">$${esc(p.gtc_limite != null ? Number(p.gtc_limite).toFixed(2) : '—')}</b> (+${esc(pct)}%)${corte != null ? ` · corte -${esc(Number(p.stop_pct))}% <b style="color:var(--rojo)">$${esc(fmtPrima(corte))}</b>` : ''}</span>
     ${avisoCorteHtml(p, corte, tocado, operable)}
     <div id="g_vivo_${Number(p.id)}">${pnlVivo(p)}</div>
@@ -7643,7 +7646,7 @@ function filaSinRegistrar(br, plan, hoy, lect) {
     <td class="mono">${costo != null ? esc(costo.toFixed(2)) : '—'}<span class="gsub2">pagaste ${costo != null ? dineroD(costo * qty * 100) : '—'}</span></td>
     <td class="mono" id="g_bmark_${claveSlug(br.clave)}">${celdaMarkHtml(mark, qty, br.valor_actual)}</td>
     <td class="mono" id="g_bpnl_${claveSlug(br.clave)}" style="color:${col}">${celdaPnlHtml(pnl, pnlPct, col, esVivo(br) ? ETIQUETA_EN_VIVO : ETIQUETA_DEL_BROKER)}</td>
-    <td colspan="3" style="white-space:normal;max-width:380px"><span class="mut" style="font-size:11px">La Mesa no la conoce: sin ficha no hay trailing, ni avisos, ni corte, ni Disciplina. Adoptarla solo crea la ficha: <b>no compra nada ni manda ninguna orden</b>.</span></td>
+    <td colspan="3" style="white-space:normal;max-width:380px">${br.broker === 'moomoo' && typeof insigniaGfvDe === 'function' ? `<div class="gfvw" id="g_bgfv_${claveSlug(br.clave)}">${insigniaGfvDe(br)}</div>` : ''}<span class="mut" style="font-size:11px">La Mesa no la conoce: sin ficha no hay trailing, ni avisos, ni corte, ni Disciplina. Adoptarla solo crea la ficha: <b>no compra nada ni manda ninguna orden</b>.</span></td>
     <td>—</td>
     <td>${viejo
       ? `<span class="fresco">${lect && lect.fotoVieja ? 'foto del worker de ' + esc((lect && lect.txt) || 'hace rato') + ': no se adopta hasta que la refresque' : 'lectura de ' + esc((lect && lect.txt) || 'hace rato') + ': preguntando de nuevo…'}</span>`
@@ -8292,6 +8295,7 @@ function abrirVentaFuera(p, mark) {
   m.innerHTML = `<div class="hoja">
     <h3 style="margin:0 0 2px">Vender en ${esc(nombre)}</h3>
     <div class="mut">La Mesa no manda órdenes a ${esc(nombre)}${b === 'moomoo' ? ' (el servidor no puede operar tu cuenta)' : ''}: aquí te deja el ticket listo y <b>la venta la confirmas tú en la app de ${esc(nombre)}</b>. Cuando se llene, registra la salida.</div>
+    ${b === 'moomoo' && typeof avisoVentaGfv === 'function' ? avisoVentaGfv(p) : ''}
     <div class="gtcprev" style="text-align:left;font-size:12.5px;line-height:1.5" id="vfTicket">${esc(ticket)}</div>
     <div class="fresco">precio = último mark que vio la Mesa${mark != null ? '' : ' (sin mark: pon tú el precio)'} · revisa el bid en ${esc(nombre)} antes de confirmar</div>
     <div class="dos" style="margin-top:8px">
@@ -12447,7 +12451,7 @@ function seccionAbiertosDiario(abiertos, comparacion, huerfanas) {
   if (!(abiertos || []).length) h += `<div class="card vacio">Ningún contrato abierto según las ejecuciones guardadas.</div>`;
   else h += `<div class="card" style="padding:4px 13px 8px">${abiertos.map(a => `<div class="fila" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start">
       <div><b style="font-size:13.5px">${esc(a.symbol)} ${esc(a.direccion)} ${esc(a.strike)}</b> <span class="fresco">${esc(fechaCorta(a.expiracion))}</span>
-        <div class="fresco">${esc(BROKER_CORTO[a.broker] || a.broker)} · entró ${esc(fechaCorta(a.fecha_ny))}${a.dias_abiertos != null ? ` · ${a.dias_abiertos} d abierto` : ''}</div></div>
+        <div class="fresco">${esc(BROKER_CORTO[a.broker] || a.broker)} · entró ${esc(fechaCorta(a.fecha_ny))}${a.dias_abiertos != null ? ` · ${a.dias_abiertos} d abierto` : ''}</div>${a.broker === 'moomoo' && typeof insigniaGfvDe === 'function' ? insigniaGfvDe(a) : ''}</div>
       <div class="mono" style="text-align:right;flex:none"><b>×${esc(a.contratos)} @ $${esc(Number(a.prima).toFixed(2))}</b>
         <div class="fresco">costó ${dineroD(a.costo)} · <span style="${a.vence_en != null && a.vence_en <= 0 ? 'color:var(--rojo);font-weight:700' : ''}">${a.vence_en == null ? 'sin vencimiento' : a.vence_en === 0 ? 'VENCE HOY' : a.vence_en < 0 ? 'vencido' : 'vence en ' + a.vence_en + ' d'}</span></div>${a.vence_en != null && a.vence_en < 0 ? '' : `
         <a href="#" class="lnk" onclick="MZ.calcDeAbierto('${esc(a.broker + '|' + a.contrato)}');return false" style="font-family:var(--sans);font-weight:600;text-decoration:none" title="Calculadora de limit y stop con las compras abiertas de este contrato">Calcular limit</a>`}</div></div>`).join('')}
@@ -12816,7 +12820,9 @@ async function vistaDiario(forzar) {
   const hoy = hoyNY();
   const gen = ++_diario.gen;
   carteraDesdeCache();
-  const [fillsR, posR, btR] = await Promise.all([leerFillsTodos(), sb.from('posiciones').select('*'), sb.from('broker_trades').select('*'), notasCargar()]);
+  // v69: + la liquidez de moomoo (la misma caché del Copiloto) para la insignia de good faith de los abiertos
+  const [fillsR, posR, btR] = await Promise.all([leerFillsTodos(), sb.from('posiciones').select('*'), sb.from('broker_trades').select('*'), notasCargar(),
+    typeof cargarLiquidez === 'function' ? cargarLiquidez() : null]);
   if (typeof avisoAnotarTrades === 'function') avisoAnotarTrades(btR);                                                 // v68 A: la franja, con lo ya leído
   if (gen !== _diario.gen) return;                                       // llegó otra pasada mientras cargaba
   if ((location.hash.replace('#/', '') || 'informe') !== 'cuentas' || _cuentasVista !== 'diario') return;
