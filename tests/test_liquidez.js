@@ -36,7 +36,11 @@ const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadL
   'tarjetaLiquidezHtml', 'montoGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaGfvHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
 const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_VIEJO_MIN'] });
 
-const HOY = '2026-11-04';                 // miércoles
+const HOY = '2026-11-04';                 // miércoles (las secciones PURAS: la hora entra como argumento)
+// Las secciones que corren con el reloj de VERDAD (ctxLiquidez usa Date.now, cargarModuloEntero el día real) usan el día NY
+// real y el siguiente hábil: con un HOY fijo, `hace 2x s` solo era verde el 4-nov (revisión de seguridad, fecha_falsa.js).
+const HOYR = ymdNY();
+const MANANA = (() => { const d = new Date(HOYR + 'T12:00:00Z'); do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6); return d.toISOString().slice(0, 10); })();
 const MS = (iso) => Date.parse(iso);
 const AHORA = MS('2026-11-04T19:52:00Z');  // 14:52 ET
 // Un row moomoo de cuenta_snapshots con la 0022 (cuenta de efectivo, números inventados)
@@ -283,10 +287,12 @@ function armarCarga(rutas, op) {
     const _cart = { moomoo: { estado: 'ok', items: [{ broker: 'moomoo', symbol: 'TSLA', direccion: 'CALL', strike: 450, expiracion: '2026-11-07', clave: 'moomoo|TSLA|CALL|450|2026-11-07' }] } };
     let enCop = true;
     const W = construir(['pintarLiquidezEnSitio', 'ctxLiquidez', 'gfvDe', 'insigniaGfvDe'].concat(PURAS), {
-      esc, ymdNY, $, hoyNY: () => HOY, sesionNY: () => 'regular', _hbUltimo: null, enCopilotoAhora: () => enCop, _gestor, _cart,
+      esc, ymdNY, $, hoyNY: () => HOYR, sesionNY: () => 'regular', _hbUltimo: null, enCopilotoAhora: () => enCop, _gestor, _cart,
       itemsCartera: (c) => (c.moomoo.items || []), claveSlug: (k) => String(k || '').replace(/[^A-Za-z0-9]/g, '_'),
     }, { consts: ['_liq', 'dineroD', 'LIQ_RUIDO_USD', 'LIQ_VIEJO_MIN'] });
-    Object.assign(W._liq, { L: P.liquidezDeFila(ROW({ liquidado_at: new Date(Date.now() - 20000).toISOString() })), compras: [], hoy: HOY });
+    Object.assign(W._liq, { L: P.liquidezDeFila(ROW({ liquidado_at: new Date(Date.now() - 20000).toISOString() })), compras: [], hoy: HOYR });
+    const HOY4 = (o) => COMPRA(Object.assign({ fecha_ny: HOYR, libre_desde: MANANA }, o || {}));   // compras de HOY (el día real)
+    const LIBRE4 = P.fechaCortaAviso(MANANA);
     const cont = N('liq_moomoo'); const g7 = N('g_gfv_7'); const g8 = N('g_gfv_8'); const gb = N('g_bgfv_moomoo_TSLA_CALL_450_2026_11_07');
     igual(W.pintarLiquidezEnSitio(), 3, 'sin la tarjeta pintada todavía: el contenedor y las dos insignias de moomoo (nunca las de E*TRADE)');
     assert(/Liquidez moomoo · cuenta de efectivo/.test(cont.innerHTML) && vistaSets === 0, 'la tarjeta aparece EN SITIO (en #liq_moomoo), sin tocar #vista');
@@ -294,13 +300,13 @@ function armarCarga(rutas, op) {
     // ya pintada: llega una compra sin liquidar del contrato de la ficha 7 y otra del de la cartera
     const lin = N('liq_lineas'), ed = N('liq_edad');
     W._liq.pintadas = null;
-    W._liq.compras = [COMPRA(), COMPRA({ clave_fill: 'mm-4', symbol: 'TSLA', strike: 450, no_liquidado_usd: 80 })];
+    W._liq.compras = [HOY4(), HOY4({ clave_fill: 'mm-4', symbol: 'TSLA', strike: 450, no_liquidado_usd: 80 })];
     W._liq.por = null;
     const setsCont = cont.sets;
     W.pintarLiquidezEnSitio();
     igual([cont.sets, lin.sets, ed.sets], [setsCont, 1, 1], 'con la tarjeta ya en pantalla: solo sus LÍNEAS (role=status) y su edad, el contenedor no se rehace');
     assert(/SPY 585C/.test(lin.innerHTML) && /TSLA 450C/.test(lin.innerHTML) && /hace 2\d s/.test(ed.innerHTML), 'las líneas rojas nuevas y la edad al día');
-    igual(g7.innerHTML, '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">jue 5-nov</span> ($200.00 sin liquidar)</span>', 'la ficha de moomoo (strike «585.00» del libro) lleva su insignia');
+    igual(g7.innerHTML, '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">' + LIBRE4 + '</span> ($200.00 sin liquidar)</span>', 'la ficha de moomoo (strike «585.00» del libro) lleva su insignia');
     assert(/\$80\.00 sin liquidar/.test(gb.innerHTML) && g8.sets === 0, 'lo que el bróker tiene sin registrar también; la ficha de E*TRADE del mismo contrato, no');
     W.pintarLiquidezEnSitio();
     igual([lin.sets, ed.sets], [1, 2], 'sin cambios: las líneas NO se reescriben (el lector de pantalla no repite), la edad sí');
@@ -312,14 +318,12 @@ function armarCarga(rutas, op) {
     igual([W.pintarLiquidezEnSitio(), vistaSets], [0, 0], 'fuera del Copiloto no toca nada; #vista NUNCA');
     // gfvDe: solo moomoo, solo CASH, por contrato
     enCop = true;
-    W._liq.L = P.liquidezDeFila(ROW()); W._liq.por = null; W._liq.compras = [COMPRA()];
+    W._liq.L = P.liquidezDeFila(ROW()); W._liq.por = null; W._liq.compras = [HOY4()];
     igual([!!W.gfvDe({ broker: 'moomoo', symbol: 'spy', direccion: 'call', strike: 585, expiracion: '2026-11-07T00:00:00' }), W.gfvDe({ broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07' }),
       W.gfvDe({ broker: 'moomoo', symbol: 'SPY', direccion: 'PUT', strike: 585, expiracion: '2026-11-07' }), W.gfvDe(null)], [true, null, null, null], 'gfvDe: el MISMO contrato de moomoo (mayúsculas, strike, fecha); otro bróker, otro lado o nada → null');
   }
 
   // ════════════════ 5. el módulo ENTERO ════════════════
-  const MANANA = (() => { const d = new Date(ymdNY() + 'T12:00:00Z'); do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6); return d.toISOString().slice(0, 10); })();
-  const HOYR = ymdNY();
   function armarModulo(rutas, op) {
     op = op || {};
     const llamadas = [];
