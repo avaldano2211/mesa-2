@@ -7422,7 +7422,7 @@ function insigniaGfvHtml(g) {
     : `<span class="gfv nose">⚠ No sé si pagaste con dinero sin liquidar ${cuantosGfv(g)} comprados hoy (${motivoGfv(g)}) · mira Settled Cash en moomoo antes de venderlos hoy · lo más viejo sale primero (FIFO)</span>`;
 }
 // El mismo aviso en el cuadro «Vender en moomoo» (es donde se decide la venta). «La compraste hoy» solo si TODO lo que tiene
-// es de hoy; si hay contratos de antes, cuáles no se venden hoy (el ticket es por la posición entera). PURA.
+// es de hoy; si hay contratos de antes, cuáles no se venden hoy (y que revise la cantidad del ticket). PURA.
 function avisoVentaGfvHtml(g) {
   if (!g || !g.nivel) return '';
   const gfv = 'puede contar como <b>good faith violation</b> (cuenta de efectivo).';
@@ -7430,7 +7430,7 @@ function avisoVentaGfvHtml(g) {
     if (!g.libre) return '';
     const m = montoGfv(g);
     if (g.todo) return `<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy</b>: la compraste hoy con ${m ? esc(m) + ' de' : ''} dinero sin liquidar y queda libre desde el ${fechaGfvHtml(g.libre)}. Venderla antes ${gfv}</div>`;
-    return `<div class="aviso gfvav" role="alert">⚠ <b>Hoy no vendas ${cuantosGfv(g)} que compraste hoy</b>: los pagaste${m ? ` (${esc(m)})` : ''} con dinero sin liquidar y quedan libres desde el ${fechaGfvHtml(g.libre)}. Una venta se lleva primero lo más viejo (FIFO): el ticket de abajo es por la posición entera, así que hoy vende solo lo que tenías de antes. Vender los de hoy antes ${gfv}</div>`;
+    return `<div class="aviso gfvav" role="alert">⚠ <b>Hoy no vendas ${cuantosGfv(g)} que compraste hoy</b>: los pagaste${m ? ` (${esc(m)})` : ''} con dinero sin liquidar y quedan libres desde el ${fechaGfvHtml(g.libre)}. Una venta se lleva primero lo más viejo (FIFO): hoy vende solo lo que tenías de antes (revisa la cantidad del ticket). Vender los de hoy antes ${gfv}</div>`;
   }
   return `<div class="aviso gfvav nose" role="alert">⚠ <b>No sé si ${g.todo ? 'la pagaste' : `pagaste ${cuantosGfv(g)} que compraste hoy`} con dinero sin liquidar</b> (${motivoGfv(g)}): mira Settled Cash en moomoo antes de ${g.todo ? 'venderla' : 'venderlos'} hoy. Si se pagó con dinero sin liquidar, venderla antes de que se liquide ${gfv}</div>`;
 }
