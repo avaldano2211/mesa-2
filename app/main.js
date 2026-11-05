@@ -7134,6 +7134,7 @@ const LIQ_TTL_SIN_MS = 10 * 60000;     // sin row de moomoo (o cuenta MARGIN): u
 const LIQ_TTL_SQL_MS = 15 * 60000;     // sin la sql 0022 (el row no trae tipo_cuenta): se vuelve a mirar cada 15 min
 const LIQ_TTL_ERR_MS = 60000;          // una lectura que falló: al minuto (el ruta() de 60 s)
 const LIQ_RUIDO_USD = 1;               // ≤ $1 de diferencia es ruido de tasas (el mismo umbral del worker)
+const LIQ_MISMA_LECTURA_MS = 5000;     // efectivo (capturado_at) y liquidado (liquidado_at) a ≤ 5 s: la MISMA lectura
 const LIQ_VIEJO_MIN = 30, LIQ_HORA_MIN = 5;   // > 30 min: «dato viejo» en ámbar · en sesión, > 5 min: la HORA del dato
 // L: la liquidez normalizada (liquidezDeFila) · compras: las filas de compras_no_liquidadas de `hoy` · ts/ttl: la caché ·
 // enVuelo/despues: una lectura a la vez y como mucho UNA más encadenada (Realtime durante una lectura) · canal: los canales
@@ -7143,8 +7144,11 @@ const _liq = { L: null, compras: [], hoy: '', ts: 0, ttl: 0, enVuelo: null, desp
   timer: null, canal: false, por: null, porHoy: '', pintadas: null };
 // El row moomoo de cuenta_snapshots → lo que pinta la tarjeta. null sin row; { sinColumnas: true } si el row no trae la clave
 // tipo_cuenta (la 0022 no está aplicada). Un número que falta (N/A en OpenD → null en la base) se queda en null: «no sé»,
-// nunca 0. Sin liquidar = efectivo − liquidado (las dos cifras salen de la MISMA accinfo_query del worker); si el efectivo
-// queda por debajo del liquidado más allá del ruido, las cifras no casan y tampoco se inventa. PURA.
+// nunca 0. Sin liquidar = efectivo − liquidado SOLO si las dos cifras son de la MISMA lectura: el worker escribe el efectivo
+// con el liquidado (liquidado_at ≥ capturado_at), pero con LIQUIDEZ=0, con el worker 0.1.12 o con otro escritor del row
+// (origen 'mac'), el efectivo de las 10:30 de HOY convivía con el liquidado de AYER y la resta era un número inventado.
+// capturado_at más nuevo que liquidado_at (más de 5 s) o sin una de las dos horas → mezcla → «no sé». Si el efectivo queda
+// por debajo del liquidado más allá del ruido, las cifras no casan y tampoco se inventa. PURA.
 function liquidezDeFila(fila) {
   if (!fila || typeof fila !== 'object') return null;
   if (!('tipo_cuenta' in fila)) return { sinColumnas: true };
@@ -7152,12 +7156,14 @@ function liquidezDeFila(fila) {
   const ymd = (v) => { const s = String(v || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
   const t = String(fila.tipo_cuenta || '').toUpperCase();
   const liquidado = n(fila.efectivo_liquidado), efectivo = n(fila.efectivo);
+  const msL = Date.parse(fila.liquidado_at || ''), msC = Date.parse(fila.capturado_at || '');
+  const mezcla = liquidado != null && efectivo != null && !(Number.isFinite(msL) && Number.isFinite(msC) && msC <= msL + LIQ_MISMA_LECTURA_MS);
   let sinLiquidar = null;
-  if (liquidado != null && efectivo != null) {
+  if (liquidado != null && efectivo != null && !mezcla) {
     const d = Math.round((efectivo - liquidado) * 100) / 100;
     if (d >= -LIQ_RUIDO_USD) sinLiquidar = Math.max(0, d);
   }
-  return { sinColumnas: false, tipo: (t === 'CASH' || t === 'MARGIN') ? t : null, liquidado, efectivo, sinLiquidar,
+  return { sinColumnas: false, tipo: (t === 'CASH' || t === 'MARGIN') ? t : null, liquidado, efectivo, sinLiquidar, mezcla,
     poder: n(fila.poder_compra), saldo: n(fila.saldo_neto), at: fila.liquidado_at || null, capturadoAt: fila.capturado_at || null,
     inicio: n(fila.liquidado_inicio), inicioFecha: ymd(fila.liquidado_inicio_fecha), liberaEl: ymd(fila.se_libera_el) };
 }
@@ -7230,13 +7236,29 @@ function lineasLiquidezHtml(L, G, ctx) {
     h += `<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation</b>: ${g.vendidas.map(c => `${esc(nombreContratoGfv(c))} (vendida a las ${esc(hora(c.vendida_antes_at))}, libre desde el ${libreHtml(c.libre_desde)})`).join(' · ')}. Si se repite, moomoo puede limitar la cuenta 90 días a solo dinero liquidado.</div>`;
   }
   // 2) las cifras (un hueco se dice: un «no sé» nunca se pinta como $0)
-  h += `<div class="liqfila">Liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b> <span class="liqd">— lo que compres hasta esto lo puedes vender hoy</span>`
-    : '<b>no sé</b> <span class="liqd">— moomoo no dio el dato (Settled Cash): míralo en su app antes de vender algo comprado hoy</span>'}</div>`;
   const sl = L.sinLiquidar;
-  h += `<div class="liqfila">Sin liquidar ${sl == null ? '<b>no sé</b> <span class="liqd">— a esta lectura le falta el efectivo o el liquidado</span>'
-    : sl < 0.005 ? `<b class="mono">${dineroD(0)}</b> <span class="liqd">— todo tu efectivo está liquidado</span>`
-    : `<b class="mono">${dineroD(sl)}</b> <span class="liqd">— se libera el ${L.liberaEl && L.liberaEl > hoy ? fechaGfvHtml(L.liberaEl) : 'próximo día hábil'}</span>`}</div>`;
-  h += `<div class="liqfila">Poder de compra ${L.poder != null ? `<b class="mono">${dineroD(L.poder)}</b>` : '<b>sin dato</b>'}</div>`;
+  const diaL = L.at ? ymdNY(L.at) : '';
+  if (hoy && diaL !== hoy) {
+    // La lectura es de OTRO día NY (worker u OpenD caídos de noche o el fin de semana, LIQUIDEZ=0): el liquidado de ayer no
+    // es el de hoy (lo vendido ayer ya se liquidó) y «se libera el próximo día hábil» sería mañana cuando, según el propio
+    // dato, ya se liberó. Las cifras se dicen como DE ESA LECTURA, nunca como de hoy.
+    const cuando = diaL ? `es del ${esc(fechaCortaAviso(diaL))} a las ${esc(horaNY(Date.parse(L.at)))}` : 'no tiene hora';
+    h += `<div class="liqfila">Liquidado hoy <b>no sé</b> <span class="liqd">— la última lectura de moomoo ${cuando}: mira Settled Cash en su app antes de vender algo comprado hoy</span></div>`;
+    const libre = !L.liberaEl ? ' (no sé cuándo se libera)'
+      : L.liberaEl <= hoy ? `, que se liberaba el ${fechaGfvHtml(L.liberaEl)} (ya debería estar liquidado)` : `, que se libera el ${fechaGfvHtml(L.liberaEl)}`;
+    h += `<div class="fresco">según esa lectura: liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b>` : 'no sé'} · sin liquidar ${sl == null ? 'no sé'
+      : sl < 0.005 ? `<b class="mono">${dineroD(0)}</b>` : `<b class="mono">${dineroD(sl)}</b>${libre}`} · poder de compra ${L.poder != null ? `<b class="mono">${dineroD(L.poder)}</b>` : 'sin dato'}</div>`;
+  } else {
+    h += `<div class="liqfila">Liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b> <span class="liqd">— lo que compres hasta esto lo puedes vender hoy</span>`
+      : '<b>no sé</b> <span class="liqd">— moomoo no dio el dato (Settled Cash): míralo en su app antes de vender algo comprado hoy</span>'}</div>`;
+    // se_libera_el es el siguiente hábil del día de la lectura (> hoy); sin él, «el próximo día hábil»; uno ≤ hoy en una
+    // lectura de hoy no casa: «no sé cuándo»
+    const libre = !L.liberaEl ? 'se libera el próximo día hábil' : L.liberaEl > hoy ? `se libera el ${fechaGfvHtml(L.liberaEl)}` : 'no sé cuándo se libera';
+    h += `<div class="liqfila">Sin liquidar ${sl == null ? `<b>no sé</b> <span class="liqd">— ${L.mezcla ? 'el efectivo y el liquidado de esta fila son de lecturas distintas' : 'a esta lectura le falta el efectivo o el liquidado'}</span>`
+      : sl < 0.005 ? `<b class="mono">${dineroD(0)}</b> <span class="liqd">— todo tu efectivo está liquidado</span>`
+      : `<b class="mono">${dineroD(sl)}</b> <span class="liqd">— ${libre}</span>`}</div>`;
+    h += `<div class="liqfila">Poder de compra ${L.poder != null ? `<b class="mono">${dineroD(L.poder)}</b>` : '<b>sin dato</b>'}</div>`;
+  }
   if (L.inicio != null && L.inicioFecha === hoy) h += `<div class="fresco">al empezar el día: ${dineroD(L.inicio)} liquidado</div>`;
   // 3) una línea roja por compra de hoy que todavía no se puede vender
   (g.abiertas || []).forEach(c => {

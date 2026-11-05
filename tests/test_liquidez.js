@@ -34,7 +34,7 @@ if (faltan.length) { C.falla('no existe la liquidez de moomoo ni el aviso de goo
 
 const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'nombreContratoGfv', 'gfvComprasHoy', 'lineasLiquidezHtml',
   'tarjetaLiquidezHtml', 'montoGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaGfvHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
-const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_VIEJO_MIN'] });
+const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN'] });
 
 const HOY = '2026-11-04';                 // miércoles (las secciones PURAS: la hora entra como argumento)
 // Las secciones que corren con el reloj de VERDAD (ctxLiquidez usa Date.now, cargarModuloEntero el día real) usan el día NY
@@ -154,6 +154,40 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   // dato viejo y de otro día
   const hOld = P.tarjetaLiquidezHtml(P.liquidezDeFila(ROW({ liquidado_at: '2026-11-04T00:52:00Z', liquidado_inicio_fecha: '2026-11-03' })), G0, CTX);
   assert(/<span id="liq_edad" class="liqedad viejo">dato del mar 3-nov a las 19:52 · dato viejo<\/span>/.test(hOld) && !/al empezar el día/.test(hOld), 'dato de ayer: ámbar «dato viejo» con su fecha y hora; el inicio de AYER no se presenta como de hoy');
+  // revisión «la verdad del dato»: una lectura de OTRO día NY no se presenta como de hoy (R1 y caso_viejo de los revisores)
+  {
+    const ROWV = (o) => ROW(Object.assign({ efectivo: 4000, saldo_neto: 4000, poder_compra: 4000, efectivo_liquidado: 80, liquidado_inicio: null, liquidado_inicio_fecha: null }, o));
+    const t = (row, hoy, ahoraIso) => txt(P.tarjetaLiquidezHtml(P.liquidezDeFila(row), P.gfvComprasHoy([], hoy), { hoy, ahoraMs: MS(ahoraIso), enSesion: false }));
+    // jue 5-nov 9:00 ET con la lectura del mié 19:52 (se_libera_el = jue)
+    const r1 = t(ROWV({ capturado_at: '2026-11-05T00:52:00Z', liquidado_at: '2026-11-05T00:52:00Z', se_libera_el: '2026-11-05' }), '2026-11-05', '2026-11-05T14:00:00Z');
+    assert(!/próximo día hábil/.test(r1) && !/lo puedes vender hoy/.test(r1), 'lectura de AYER: ni «se libera el próximo día hábil» ni «lo puedes vender hoy» (eran de hoy y falsas)', r1);
+    assert(r1.includes('Liquidado hoy no sé — la última lectura de moomoo es del mié 4-nov a las 19:52: mira Settled Cash en su app antes de vender algo comprado hoy'), '… dice «Liquidado hoy no sé» y de cuándo es la lectura', r1);
+    assert(r1.includes('según esa lectura: liquidado $80.00 · sin liquidar $3,920.00, que se liberaba el jue 5-nov (ya debería estar liquidado) · poder de compra $4,000.00'), '… y las cifras como DE ESA LECTURA: lo no liquidado se liberaba hoy (ya debería estar liquidado)', r1);
+    // lun 9-nov 8:40 ET con la lectura del vie 6-nov 19:50 (OpenD caído el fin de semana), se_libera_el = lun
+    const cv = t(ROWV({ efectivo: 1000, saldo_neto: 1000, poder_compra: 1000, capturado_at: '2026-11-07T00:50:00Z', liquidado_at: '2026-11-07T00:50:00Z', se_libera_el: '2026-11-09' }), '2026-11-09', '2026-11-09T13:40:00Z');
+    assert(cv.includes('sin liquidar $920.00, que se liberaba el lun 9-nov (ya debería estar liquidado)') && !/próximo día hábil/.test(cv), 'lunes con la lectura del viernes: «se liberaba el lun 9-nov (ya debería estar liquidado)», nunca «el próximo día hábil» (= martes)', cv);
+    // sáb 7-nov con la lectura del vie: se libera el lunes (todavía no)
+    const sa = t(ROWV({ capturado_at: '2026-11-07T00:50:00Z', liquidado_at: '2026-11-07T00:50:00Z', se_libera_el: '2026-11-09' }), '2026-11-07', '2026-11-07T15:00:00Z');
+    assert(sa.includes('sin liquidar $3,920.00, que se libera el lun 9-nov ·'), 'sábado con la lectura del viernes: «que se libera el lun 9-nov»', sa);
+    const sn = t(ROWV({ capturado_at: '2026-11-05T00:52:00Z', liquidado_at: '2026-11-05T00:52:00Z', se_libera_el: null }), '2026-11-05', '2026-11-05T14:00:00Z');
+    assert(sn.includes('(no sé cuándo se libera)'), 'de otro día y sin se_libera_el: «no sé cuándo se libera»', sn);
+    // una lectura de HOY con se_libera_el ≤ hoy no casa: «no sé cuándo» (y «el próximo día hábil» solo sin el dato)
+    assert(txt(P.tarjetaLiquidezHtml(P.liquidezDeFila(ROW({ se_libera_el: HOY })), G0, CTX)).includes('Sin liquidar $3,807.63 — no sé cuándo se libera'), 'lectura de hoy con se_libera_el = hoy: «no sé cuándo se libera»');
+  }
+  // R2: el efectivo de HOY con el liquidado de AYER (LIQUIDEZ=0 o el worker 0.1.12 tras la 0022: brokers_sync escribe el
+  // saldo cada 30 min sin las columnas de liquidez) → la resta sería inventada
+  {
+    const mez = P.liquidezDeFila(ROW({ efectivo: 3000, saldo_neto: 3000, poder_compra: 3000, efectivo_liquidado: 80, capturado_at: '2026-11-05T15:30:00Z', liquidado_at: '2026-11-04T20:00:00Z' }));
+    igual([mez.mezcla, mez.sinLiquidar, mez.liquidado], [true, null, 80], 'capturado_at (efectivo) más nuevo que liquidado_at: mezcla → sin liquidar «no sé» (el liquidado se queda, con su hora)');
+    const r2 = txt(P.tarjetaLiquidezHtml(mez, P.gfvComprasHoy([], '2026-11-05'), { hoy: '2026-11-05', ahoraMs: MS('2026-11-05T15:31:00Z'), enSesion: true }));
+    assert(!/2,920/.test(r2) && r2.includes('sin liquidar no sé'), 'R2: ni $2,920.00 inventados ni «lo puedes vender hoy» con el liquidado de ayer', r2);
+    const mezHoy = P.liquidezDeFila(ROW({ capturado_at: '2026-11-04T19:58:00Z', liquidado_at: '2026-11-04T19:51:48Z' }));
+    assert(txt(P.tarjetaLiquidezHtml(mezHoy, G0, CTX)).includes('Sin liquidar no sé — el efectivo y el liquidado de esta fila son de lecturas distintas'), 'mezcla dentro del día: «son de lecturas distintas»');
+    igual([P.liquidezDeFila(ROW({ capturado_at: '2026-11-04T19:30:00Z', liquidado_at: '2026-11-04T19:51:48Z' })).sinLiquidar,
+      P.liquidezDeFila(ROW({ capturado_at: '2026-11-04T19:51:52Z', liquidado_at: '2026-11-04T19:51:48Z' })).sinLiquidar,
+      P.liquidezDeFila(ROW({ liquidado_at: null })).sinLiquidar], [3807.63, 3807.63, null],
+      'la foto del worker escribe efectivo + liquidado sin capturado_at (capturado más viejo): misma lectura; ≤ 5 s de diferencia: misma; sin liquidado_at: no se sabe');
+  }
   // escape
   const hX = P.tarjetaLiquidezHtml(L, P.gfvComprasHoy([COMPRA({ symbol: '<img src=x onerror=alert(1)>', estado: 'no_liquidada' })], HOY), CTX);
   assert(!/<img/.test(hX) && /&lt;IMG SRC=X ONERROR=ALERT\(1\)&gt;/.test(hX), 'todo texto dinámico pasa por esc()');
@@ -188,7 +222,7 @@ function armarCarga(rutas, op) {
   const M = construir(['cargarLiquidez', 'suscribirLiquidez', 'liquidezDeFila', 'textoErrorTabla', 'liquidezCambio'], {
     sb, hoyNY: () => reloj.hoy, sesionActiva: op.sinSesion ? null : { user: { id: 'u1' } }, enCopilotoAhora: () => op.copiloto !== false,
     pintarLiquidezEnSitio: () => { reg.pintados++; return 1; }, setTimeout: (f, ms) => { reg.timers.push({ f, ms }); return reg.timers.length; }, clearTimeout: () => {},
-  }, { consts: ['_liq', 'LIQ_TTL_MS', 'LIQ_TTL_SIN_MS', 'LIQ_TTL_SQL_MS', 'LIQ_TTL_ERR_MS', 'LIQ_RUIDO_USD'] });
+  }, { consts: ['_liq', 'LIQ_TTL_MS', 'LIQ_TTL_SIN_MS', 'LIQ_TTL_SQL_MS', 'LIQ_TTL_ERR_MS', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS'] });
   return { M, sb, canales, reloj, reg, de: (t) => sb.llamadas.filter(l => l.tabla === t) };
 }
 (async () => {
@@ -289,7 +323,7 @@ function armarCarga(rutas, op) {
     const W = construir(['pintarLiquidezEnSitio', 'ctxLiquidez', 'gfvDe', 'insigniaGfvDe'].concat(PURAS), {
       esc, ymdNY, $, hoyNY: () => HOYR, sesionNY: () => 'regular', _hbUltimo: null, enCopilotoAhora: () => enCop, _gestor, _cart,
       itemsCartera: (c) => (c.moomoo.items || []), claveSlug: (k) => String(k || '').replace(/[^A-Za-z0-9]/g, '_'),
-    }, { consts: ['_liq', 'dineroD', 'LIQ_RUIDO_USD', 'LIQ_VIEJO_MIN'] });
+    }, { consts: ['_liq', 'dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN'] });
     Object.assign(W._liq, { L: P.liquidezDeFila(ROW({ liquidado_at: new Date(Date.now() - 20000).toISOString() })), compras: [], hoy: HOYR });
     const HOY4 = (o) => COMPRA(Object.assign({ fecha_ny: HOYR, libre_desde: MANANA }, o || {}));   // compras de HOY (el día real)
     const LIBRE4 = P.fechaCortaAviso(MANANA);
