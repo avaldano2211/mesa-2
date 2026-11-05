@@ -2374,6 +2374,7 @@ async function vistaCopiloto(hb) {
     }),
     cargarPlanUsuario(),
     cargarOcultas(senP),
+    cargarLiquidez(),             // v69: la liquidez de moomoo (caché de 30 s; sin moomoo, UNA consulta barata cada 10 min)
   ]);
   const libroCop = await libroParaUnir();   // v62 rev4: caché de 60 s compartida con el Diario y Cuentas
   if (typeof avisoAnotarTrades === 'function') avisoAnotarTrades(bt);                    // v68 A: la franja mira las ejecuciones ya leídas (sin pedir nada)
@@ -2416,6 +2417,12 @@ async function vistaCopiloto(hb) {
     <button class="btnsec" style="padding:12px" onclick="MZ.abrirFill()">+ Registrar una operación</button>
     ${botonOrden(pl, { proposito: 'entrada' }, '+ Nueva orden')}</div>`;
 
+  // v69: la liquidez de moomoo (cuenta de efectivo) justo encima de las posiciones. El contenedor va siempre (vacío sin
+  // tarjeta: :empty lo oculta) para que Realtime la pinte en sitio aunque aparezca después.
+  const ctxL = ctxLiquidez(), gfvL = gfvComprasHoy(_liq.compras, ctxL.hoy);
+  const liqHtml = tarjetaLiquidezHtml(_liq.L, gfvL, ctxL);
+  h += `<div id="liq_moomoo">${liqHtml}</div>`;
+
   // posiciones abiertas: el libro CASADO contra lo que dicen los brókeres (v50).
   // Nunca «no hay nada» cuando en realidad no se pudo preguntar (B7).
   gestorEstadoDelLatido(hb);                 // ¿el worker vigila los niveles del gestor? (detalle.gestor)
@@ -2438,6 +2445,9 @@ async function vistaCopiloto(hb) {
   // están en _gestor.filas) y el gráfico sigue su camino; el redibujo entero llega al soltar el campo.
   if (copilotoEnUso()) { (_gestor.filas || []).forEach(p => pintarSaltaEnSitio(p.id)); }
   else pintarConservandoFoco($('#vista'), h);
+  // v69: sin repintar #vista, la liquidez y sus insignias van EN SITIO; repintado, se anotan las líneas que quedaron en
+  // #liq_lineas (el repintado en sitio solo las vuelve a escribir si cambian)
+  if (copilotoEnUso()) pintarLiquidezEnSitio(); else _liq.pintadas = liqHtml ? lineasLiquidezHtml(_liq.L, gfvL, ctxL) : null;
   gchWire();
   cargarChartGestor(false);
   // Cartera del bróker: se pregunta DESPUÉS de dibujar (B8) — rápido con mercado
@@ -7094,6 +7104,287 @@ function avisoOcultar(b) {
   pintarAvisoBrokers();
 }
 window.MZ = Object.assign(window.MZ || {}, { avisoOcultar });
+
+// ---------- v69 · LIQUIDEZ DE MOOMOO y aviso de GOOD FAITH (spec71, 2026-11-04) ----------
+// La cuenta REAL de moomoo de Andrés es de EFECTIVO (acc_type CASH). Comprar con dinero sin liquidar está permitido; VENDER
+// esa compra antes de que se liquide el dinero con que se pagó es una good faith violation (GFV), y si se repite moomoo puede
+// dejar la cuenta 90 días operando solo con dinero liquidado. El worker 0.1.13 (sql 0022) escribe en el row moomoo de
+// cuenta_snapshots el «Settled Cash» (efectivo_liquidado = avl_withdrawal_cash), el tipo de cuenta, la hora de ESA lectura
+// (liquidado_at) y cuándo se libera lo no liquidado (se_libera_el, con el calendario NYSE del worker); y en
+// compras_no_liquidadas, una fila por compra de moomoo de hoy con cuánto se pagó con dinero sin liquidar y desde qué día
+// queda libre para vender (vendida_antes_at = se vendió antes: posible GFV). La app solo LEE:
+//   · Copiloto: la tarjeta «Liquidez moomoo · cuenta de efectivo» (SOLO con tipo_cuenta 'CASH') y, en cada posición de
+//     moomoo con una compra de hoy pagada con dinero sin liquidar, la insignia roja «⚠ No la vendas hoy · good faith»
+//     (también en el cuadro «Vender en moomoo», que es donde se decide la venta).
+//   · Diario (abiertos): la misma insignia con lo ya leído. Cuentas: «liquidado $X» junto al saldo de moomoo.
+// Robusta sin la 0022: el row se lee con select('*') (sin nombrar columnas nuevas: ni un 400 en la consola) y, si no trae la
+// clave tipo_cuenta, la app sigue igual que la v68 — sin tarjeta, sin la segunda consulta y sin canales nuevos. Un usuario
+// sin moomoo (los amigos) hace UNA consulta barata (su row moomoo, acotada por RLS) cada 10 min y no ve nada nuevo. Los
+// canales de Realtime (cuenta_snapshots y compras_no_liquidadas, solo INSERT/UPDATE: los DELETE no pasan por RLS) se abren
+// solo para quien tiene la cuenta CASH, y sus eventos repintan EN SITIO (#liq_moomoo y las insignias), nunca #vista: no se
+// cierra un cuadro ni se pierde el foco de un parámetro que se teclea. Lo que no se sabe se dice («no sé»); un dato lleva
+// su hora y, pasados 30 min (o de otro día), «dato viejo» en ámbar. Nada aquí escribe en la base ni manda órdenes.
+const LIQ_TTL_MS = 30000;              // con cuenta CASH: como mucho una relectura cada 30 s (Realtime adelanta lo que cambie)
+const LIQ_TTL_SIN_MS = 10 * 60000;     // sin row de moomoo (o cuenta MARGIN): una consulta barata cada 10 min
+const LIQ_TTL_SQL_MS = 15 * 60000;     // sin la sql 0022 (el row no trae tipo_cuenta): se vuelve a mirar cada 15 min
+const LIQ_TTL_ERR_MS = 60000;          // una lectura que falló: al minuto (el ruta() de 60 s)
+const LIQ_RUIDO_USD = 1;               // ≤ $1 de diferencia es ruido de tasas (el mismo umbral del worker)
+const LIQ_VIEJO_MIN = 30, LIQ_HORA_MIN = 5;   // > 30 min: «dato viejo» en ámbar · en sesión, > 5 min: la HORA del dato
+// L: la liquidez normalizada (liquidezDeFila) · compras: las filas de compras_no_liquidadas de `hoy` · ts/ttl: la caché ·
+// enVuelo/despues: una lectura a la vez y como mucho UNA más encadenada (Realtime durante una lectura) · canal: los canales
+// de Realtime ya abiertos · por/porHoy: las insignias por contrato (gfvComprasHoy) del día · pintadas: las líneas que hay en
+// #liq_lineas ahora (el repintado en sitio solo las cambia si cambian: role=status anuncia cada cambio)
+const _liq = { L: null, compras: [], hoy: '', ts: 0, ttl: 0, enVuelo: null, despues: null, err: null, errCompras: null, sinColumnas: false,
+  timer: null, canal: false, por: null, porHoy: '', pintadas: null };
+// El row moomoo de cuenta_snapshots → lo que pinta la tarjeta. null sin row; { sinColumnas: true } si el row no trae la clave
+// tipo_cuenta (la 0022 no está aplicada). Un número que falta (N/A en OpenD → null en la base) se queda en null: «no sé»,
+// nunca 0. Sin liquidar = efectivo − liquidado (las dos cifras salen de la MISMA accinfo_query del worker); si el efectivo
+// queda por debajo del liquidado más allá del ruido, las cifras no casan y tampoco se inventa. PURA.
+function liquidezDeFila(fila) {
+  if (!fila || typeof fila !== 'object') return null;
+  if (!('tipo_cuenta' in fila)) return { sinColumnas: true };
+  const n = (v) => { if (v == null || v === '' || typeof v === 'boolean') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const ymd = (v) => { const s = String(v || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
+  const t = String(fila.tipo_cuenta || '').toUpperCase();
+  const liquidado = n(fila.efectivo_liquidado), efectivo = n(fila.efectivo);
+  let sinLiquidar = null;
+  if (liquidado != null && efectivo != null) {
+    const d = Math.round((efectivo - liquidado) * 100) / 100;
+    if (d >= -LIQ_RUIDO_USD) sinLiquidar = Math.max(0, d);
+  }
+  return { sinColumnas: false, tipo: (t === 'CASH' || t === 'MARGIN') ? t : null, liquidado, efectivo, sinLiquidar,
+    poder: n(fila.poder_compra), saldo: n(fila.saldo_neto), at: fila.liquidado_at || null, capturadoAt: fila.capturado_at || null,
+    inicio: n(fila.liquidado_inicio), inicioFecha: ymd(fila.liquidado_inicio_fecha), liberaEl: ymd(fila.se_libera_el) };
+}
+// La EDAD de la lectura de liquidez (liquidado_at), dicha: «hace 12 s» · «hace 3 min» · en sesión, pasados 5 min, «dato de
+// las 10:42» · fuera de ella «hace 25 min» / «hace 3 h» · de OTRO día NY, «dato del mar 3-nov a las 19:52» (el liquidado de
+// ayer no es el de hoy: lo vendido ayer ya se liquidó). viejo = más de 30 min, de otro día o sin hora → ámbar y «dato
+// viejo». PURA (la hora de ahora y la sesión entran como argumentos).
+function edadLiquidez(at, ahoraMs, enSesion, hoy) {
+  const ms = Date.parse(at || '');
+  if (!Number.isFinite(ms)) return { txt: 'sin la hora de la lectura', viejo: true };
+  const ahora = Number.isFinite(ahoraMs) ? ahoraMs : Date.now();
+  const dia = ymdNY(new Date(ms).toISOString());
+  if (hoy && dia && dia !== hoy) return { txt: `dato del ${fechaCortaAviso(dia)} a las ${horaNY(ms)}`, viejo: true };
+  const seg = Math.max(0, (ahora - ms) / 1000), min = seg / 60;
+  const viejo = min > LIQ_VIEJO_MIN;
+  if (seg < 60) return { txt: `hace ${Math.floor(seg)} s`, viejo };
+  if (min <= LIQ_HORA_MIN) return { txt: `hace ${Math.floor(min)} min`, viejo };
+  if (enSesion) return { txt: `dato de las ${horaNY(ms)}`, viejo };
+  return { txt: min < 60 ? `hace ${Math.floor(min)} min` : `hace ${Math.floor(min / 60)} h`, viejo };
+}
+function edadLiquidezHtml(e) { return e ? esc(e.txt) + (e.viejo ? ' · dato viejo' : '') : ''; }
+function claseEdadLiquidez(e) { return 'liqedad' + (e && e.viejo ? ' viejo' : ''); }
+// «SPY 580C» (el nombre corto del contrato, el mismo del aviso push del worker). PURA.
+function nombreContratoGfv(c) {
+  const sym = String((c && c.symbol) || '?').toUpperCase();
+  const k = Number(c && c.strike);
+  const d = String((c && c.direccion) || '').toUpperCase().startsWith('P') ? 'P' : 'C';
+  return (c && c.strike != null && c.strike !== '' && Number.isFinite(k) && k > 0) ? `${sym} ${k}${d}` : sym;
+}
+// Las compras de moomoo de `hoy` (filas de compras_no_liquidadas) repartidas para pintar. PURA.
+//   abiertas:     'no_liquidada' que aún no se pueden vender (libre_desde > hoy) y no se han vendido → «no la vendas hoy»
+//   vendidas:     'no_liquidada' con una venta registrada HOY antes de liberarse (vendida_antes_at) → posible GFV
+//   desconocidas: 'desconocido' (el worker arrancó a media sesión sin el liquidado del inicio: no se sabe, y se dice)
+//   porContrato:  { claveCartera: { usd, sinMonto, libre, n } } con TODAS las 'no_liquidada' aún no libres (vendidas o no:
+//                 si queda parte de esa compra abierta, sigue sin poder venderse) → la insignia de cada posición
+// Una 'liquidada' no se pinta. El umbral de $1 de tasas ya lo aplicó el worker al decidir el estado.
+function gfvComprasHoy(compras, hoy) {
+  const out = { abiertas: [], vendidas: [], desconocidas: [], porContrato: {} };
+  (Array.isArray(compras) ? compras : []).forEach(c => {
+    if (!c || c.broker !== 'moomoo' || String(c.fecha_ny || '').slice(0, 10) !== hoy) return;
+    if (c.estado === 'desconocido') { out.desconocidas.push(c); return; }
+    if (c.estado !== 'no_liquidada') return;
+    const libre = String(c.libre_desde || '').slice(0, 10);
+    if (!(libre > hoy)) return;                                   // ya libre (o sin fecha): nada que avisar
+    const vendida = !!c.vendida_antes_at && ymdNY(c.vendida_antes_at) === hoy;
+    (vendida ? out.vendidas : out.abiertas).push(c);
+    const k = claveCartera({ ...c, broker: 'moomoo' });
+    if (!k) return;
+    const nl = (c.no_liquidado_usd == null || c.no_liquidado_usd === '') ? null : Number(c.no_liquidado_usd);
+    const g = out.porContrato[k] || (out.porContrato[k] = { usd: 0, sinMonto: false, libre, n: 0 });
+    if (nl != null && Number.isFinite(nl)) g.usd = Math.round((g.usd + nl) * 100) / 100; else g.sinMonto = true;
+    if (libre > g.libre) g.libre = libre;
+    g.n++;
+  });
+  return out;
+}
+// Las líneas de la tarjeta (dentro de #liq_lineas, role=status): la venta que pudo ser GFV, las tres cifras, el liquidado al
+// empezar el día, una línea roja por compra que no se puede vender hoy, el «no sé» de las desconocidas y los errores. PURA.
+function lineasLiquidezHtml(L, G, ctx) {
+  const c0 = ctx || {}, hoy = c0.hoy || '';
+  const g = G || {};
+  const num = (v) => { if (v == null || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const hora = (iso) => { const ms = Date.parse(iso || ''); return Number.isFinite(ms) ? horaNY(ms) : ''; };
+  const libreTxt = (ymd) => fechaCortaAviso(String(ymd || '').slice(0, 10)) || 'próximo día hábil';
+  let h = '';
+  // 1) lo más grave primero: hoy se vendió una compra pagada con dinero sin liquidar antes de liberarse
+  if ((g.vendidas || []).length) {
+    h += `<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation</b>: ${g.vendidas.map(c => `${esc(nombreContratoGfv(c))} (vendida a las ${esc(hora(c.vendida_antes_at))}, libre desde el ${esc(libreTxt(c.libre_desde))})`).join(' · ')}. Si se repite, moomoo puede limitar la cuenta 90 días a solo dinero liquidado.</div>`;
+  }
+  // 2) las cifras (un hueco se dice: un «no sé» nunca se pinta como $0)
+  h += `<div class="liqfila">Liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b> <span class="liqd">— lo que compres hasta esto lo puedes vender hoy</span>`
+    : '<b>no sé</b> <span class="liqd">— moomoo no dio el dato (Settled Cash): míralo en su app antes de vender algo comprado hoy</span>'}</div>`;
+  const sl = L.sinLiquidar;
+  h += `<div class="liqfila">Sin liquidar ${sl == null ? '<b>no sé</b> <span class="liqd">— a esta lectura le falta el efectivo o el liquidado</span>'
+    : sl < 0.005 ? `<b class="mono">${dineroD(0)}</b> <span class="liqd">— todo tu efectivo está liquidado</span>`
+    : `<b class="mono">${dineroD(sl)}</b> <span class="liqd">— se libera el ${esc(L.liberaEl && L.liberaEl > hoy ? fechaCortaAviso(L.liberaEl) : 'próximo día hábil')}</span>`}</div>`;
+  h += `<div class="liqfila">Poder de compra ${L.poder != null ? `<b class="mono">${dineroD(L.poder)}</b>` : '<b>sin dato</b>'}</div>`;
+  if (L.inicio != null && L.inicioFecha === hoy) h += `<div class="fresco">al empezar el día: ${dineroD(L.inicio)} liquidado</div>`;
+  // 3) una línea roja por compra de hoy que todavía no se puede vender
+  (g.abiertas || []).forEach(c => {
+    const nl = num(c.no_liquidado_usd), monto = num(c.monto_usd), n = num(c.contratos), hh = hora(c.ejecutado_at);
+    h += `<div class="liqal">⚠ <b>${esc(nombreContratoGfv(c))}</b>${n ? ` ×${esc(n)}` : ''}${hh ? ` · ${esc(hh)}` : ''} · ${nl != null ? `${dineroD(nl)} de ${dineroD(monto)} sin liquidar` : `${dineroD(monto)}: no sé cuánto sin liquidar`} — <b>no la vendas hoy</b>: libre desde el ${esc(libreTxt(c.libre_desde))}</div>`;
+  });
+  if ((g.desconocidas || []).length) h += `<div class="liqam">⚠ No sé si tus compras de hoy usaron dinero sin liquidar (el servidor arrancó a media sesión): mira Settled Cash en moomoo.</div>`;
+  if (c0.errCompras) h += `<div class="liqam">No pude leer tus compras de hoy (${esc(c0.errCompras)}): mira Settled Cash en moomoo antes de vender algo comprado hoy.</div>`;
+  if (c0.err) h += `<div class="fresco">no pude volver a leer la liquidez (${esc(c0.err)}): las cifras son de la última lectura</div>`;
+  h += `<div class="fresco">Cuenta de efectivo: comprar con dinero sin liquidar está permitido; vender esa compra antes de que ese dinero se liquide (el día hábil siguiente) es una good faith violation.</div>`;
+  return h;
+}
+// La tarjeta «Liquidez moomoo · cuenta de efectivo»: '' salvo con la cuenta CASH (sin row, MARGIN, tipo desconocido o sin la
+// 0022 no hay tarjeta). La edad va en la cabecera (#liq_edad) y las líneas en #liq_lineas (role=status, aria-live cortés):
+// el repintado en sitio cambia cada una por su lado. PURA.
+function tarjetaLiquidezHtml(L, G, ctx) {
+  if (!L || L.sinColumnas || L.tipo !== 'CASH') return '';
+  const c0 = ctx || {};
+  const e = edadLiquidez(L.at, c0.ahoraMs, c0.enSesion, c0.hoy);
+  return `<div class="card liq"><div class="fila liqcab"><h3>Liquidez moomoo · cuenta de efectivo</h3><span id="liq_edad" class="${claseEdadLiquidez(e)}">${edadLiquidezHtml(e)}</span></div>`
+    + `<div id="liq_lineas" role="status" aria-live="polite">${lineasLiquidezHtml(L, G, c0)}</div></div>`;
+}
+// «$122.83» · «al menos $50.00» (alguna compra sin monto) · null (ninguna con monto: no se sabe cuánto). PURA.
+function montoGfv(g) {
+  if (!g) return null;
+  if (!g.sinMonto) return dineroD(g.usd);
+  return g.usd > 0 ? 'al menos ' + dineroD(g.usd) : null;
+}
+// La insignia roja de una posición de moomoo con compras de hoy pagadas con dinero sin liquidar (g = porContrato). PURA.
+function insigniaGfvHtml(g) {
+  if (!g || !g.libre) return '';
+  const m = montoGfv(g);
+  return `<span class="gfv">⚠ No la vendas hoy · good faith · libre desde ${esc(fechaCortaAviso(g.libre))} (${esc(m || 'no sé cuánto')} sin liquidar)</span>`;
+}
+// El mismo aviso en el cuadro «Vender en moomoo» (es donde se decide la venta). PURA.
+function avisoVentaGfvHtml(g) {
+  if (!g || !g.libre) return '';
+  const m = montoGfv(g);
+  return `<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy</b>: la compraste hoy con ${m ? esc(m) + ' de' : ''} dinero sin liquidar y queda libre desde el ${esc(fechaCortaAviso(g.libre))}. Venderla antes puede contar como <b>good faith violation</b> (cuenta de efectivo).</div>`;
+}
+// Cuentas: «liquidado $79.17» junto al saldo de moomoo, solo con la cuenta CASH y con el dato (en una cuenta de margen lo
+// retirable no es lo liquidado); viejo → su edad y «dato viejo». PURA.
+function liquidadoCuentaHtml(c, ahoraMs, hoy) {
+  const L = liquidezDeFila(c);
+  if (!L || L.sinColumnas || L.tipo !== 'CASH' || L.liquidado == null) return '';
+  const e = edadLiquidez(L.at, ahoraMs, false, hoy);
+  return `<div class="fresco liqcta${e.viejo ? ' viejo' : ''}">liquidado <b class="mono">${dineroD(L.liquidado)}</b>${e.viejo ? ` · ${esc(e.txt)} · dato viejo` : ''}</div>`;
+}
+function ctxLiquidez() {
+  return { hoy: hoyNY(), ahoraMs: Date.now(), enSesion: sesionNY(_hbUltimo) === 'regular', err: _liq.err, errCompras: _liq.errCompras };
+}
+// La insignia de un contrato (posición del libro o ítem de la cartera): solo moomoo, solo con la cuenta CASH leída, con las
+// compras de HOY (al cambiar el día NY se recalcula y lo de ayer ya está libre). Lee _liq (no es pura).
+function gfvDe(x) {
+  if (!x || (x.broker || 'etrade') !== 'moomoo' || !_liq.L || _liq.L.tipo !== 'CASH') return null;
+  const hoy = hoyNY();
+  if (!_liq.por || _liq.porHoy !== hoy) { _liq.por = gfvComprasHoy(_liq.compras, hoy).porContrato; _liq.porHoy = hoy; }
+  const k = claveCartera({ ...x, broker: 'moomoo' });
+  return (k && _liq.por[k]) || null;
+}
+function insigniaGfvDe(x) { return insigniaGfvHtml(gfvDe(x)); }
+function avisoVentaGfv(p) { return avisoVentaGfvHtml(gfvDe(p)); }
+// Lee el row moomoo de cuenta_snapshots y, SOLO con la cuenta CASH, las compras_no_liquidadas de hoy. Caché: 30 s con la
+// cuenta CASH, 10 min sin moomoo o MARGIN, 15 min sin la 0022, 1 min tras un fallo (lo leído antes se queda, con su hora:
+// jamás se presenta como fresco). Nunca rechaza. Devuelve true si la lectura salió sin error.
+function cargarLiquidez(forzar) {
+  if (_liq.enVuelo) {
+    if (!forzar) return _liq.enVuelo;
+    return _liq.despues || (_liq.despues = _liq.enVuelo.then(() => { _liq.despues = null; return cargarLiquidez(true); }));
+  }
+  const hoy = hoyNY();
+  if (!forzar && _liq.ts && Date.now() - _liq.ts < _liq.ttl && _liq.hoy === hoy) return Promise.resolve(true);
+  _liq.enVuelo = (async () => {
+    let L = _liq.L, compras = _liq.hoy === hoy ? _liq.compras : [], ttl = LIQ_TTL_SIN_MS, err = null, errCompras = null, sinColumnas = false;
+    try {
+      const r = await sb.from('cuenta_snapshots').select('*').eq('broker', 'moomoo').maybeSingle();
+      if (r && r.error) { err = textoErrorTabla(r.error, 'cuenta_snapshots'); ttl = LIQ_TTL_ERR_MS; }
+      else {
+        const fila = Array.isArray(r && r.data) ? r.data[0] : (r && r.data);
+        L = liquidezDeFila(fila);
+        if (L && L.sinColumnas) { sinColumnas = true; L = null; compras = []; ttl = LIQ_TTL_SQL_MS; }
+        else if (!L || L.tipo !== 'CASH') compras = [];
+        else {
+          ttl = LIQ_TTL_MS;
+          const rc = await sb.from('compras_no_liquidadas').select('*').eq('broker', 'moomoo').eq('fecha_ny', hoy).order('ejecutado_at', { ascending: true });
+          if (rc && rc.error) { errCompras = textoErrorTabla(rc.error, 'compras_no_liquidadas'); ttl = LIQ_TTL_ERR_MS; }
+          else compras = (rc && rc.data) || [];
+        }
+      }
+    } catch (e) { err = String((e && e.message) || e || 'error').slice(0, 90); ttl = LIQ_TTL_ERR_MS; }
+    Object.assign(_liq, { L, compras, hoy, ts: Date.now(), ttl, err, errCompras, sinColumnas, por: null, porHoy: '' });
+    if (L && L.tipo === 'CASH') suscribirLiquidez();
+    return !err && !errCompras;
+  })().finally(() => { _liq.enVuelo = null; });
+  return _liq.enVuelo;
+}
+// Realtime de la liquidez, en sus PROPIOS canales (como mesa2-broker y mesa2-fills: si uno falla, lo demás sigue) y solo para
+// quien tiene la cuenta CASH. Solo INSERT y UPDATE (pasan por RLS: cada usuario recibe solo lo suyo).
+function suscribirLiquidez() {
+  if (_liq.canal || !sb || typeof sb.channel !== 'function') return;
+  _liq.canal = true;
+  try {
+    sb.channel('mesa2-liquidez')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'cuenta_snapshots' }, liquidezCambio)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cuenta_snapshots' }, liquidezCambio)
+      .subscribe();
+    sb.channel('mesa2-gfv')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'compras_no_liquidadas' }, liquidezCambio)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'compras_no_liquidadas' }, liquidezCambio)
+      .subscribe();
+  } catch (_) {}
+}
+// Un evento de moomoo (el row de cuenta_snapshots o una compra) → la caché ya no es lo último; con el Copiloto a la vista se
+// relee y se repinta EN SITIO (800 ms de debounce: el worker escribe la liquidez y las compras seguidas). Los demás brókeres
+// de cuenta_snapshots (E*TRADE desde este equipo, tasty cada 30 min) no tocan nada.
+function liquidezCambio(payload) {
+  const fila = (payload && (payload.new || payload.old)) || null;
+  if (!fila || fila.broker !== 'moomoo') return;
+  _liq.ts = 0;
+  clearTimeout(_liq.timer);
+  _liq.timer = setTimeout(() => {
+    if (!sesionActiva || !enCopilotoAhora()) return;
+    cargarLiquidez(true).then(() => pintarLiquidezEnSitio()).catch(() => {});
+  }, 800);
+}
+// Repintado EN SITIO (sin innerHTML de #vista, como pintarVivoEnSitio): la tarjeta (#liq_moomoo; si ya está, solo su edad y,
+// si cambiaron, sus líneas) y las insignias de las posiciones de moomoo (#g_gfv_<id> del libro, #g_bgfv_<clave> de lo que el
+// bróker tiene sin registrar). Devuelve cuántos sitios tocó.
+function pintarLiquidezEnSitio() {
+  if (!enCopilotoAhora()) return 0;
+  let n = 0;
+  const ctx = ctxLiquidez();
+  const G = gfvComprasHoy(_liq.compras, ctx.hoy);
+  const cont = $('#liq_moomoo');
+  if (cont) {
+    const html = tarjetaLiquidezHtml(_liq.L, G, ctx);
+    const lin = $('#liq_lineas'), ed = $('#liq_edad');
+    if (html && lin && ed) {
+      const e = edadLiquidez(_liq.L.at, ctx.ahoraMs, ctx.enSesion, ctx.hoy);
+      ed.className = claseEdadLiquidez(e); ed.innerHTML = edadLiquidezHtml(e);
+      const nuevas = lineasLiquidezHtml(_liq.L, G, ctx);
+      if (nuevas !== _liq.pintadas) { lin.innerHTML = nuevas; _liq.pintadas = nuevas; }   // role=status: solo se anuncia lo que CAMBIÓ
+    } else { cont.innerHTML = html; _liq.pintadas = html ? lineasLiquidezHtml(_liq.L, G, ctx) : null; }
+    n++;
+  }
+  (_gestor.filas || []).forEach(p => {
+    if (!p || p.broker !== 'moomoo') return;
+    const el = $('#g_gfv_' + Number(p.id)); if (el) { el.innerHTML = insigniaGfvDe(p); n++; }
+  });
+  itemsCartera(_cart).forEach(it => {
+    if (!it || it.broker !== 'moomoo' || !it.clave) return;
+    const el = $('#g_bgfv_' + claveSlug(it.clave)); if (el) { el.innerHTML = insigniaGfvDe(it); n++; }
+  });
+  return n;
+}
 
 // ---------- GESTOR DE POSICIONES (v55): el de la mesa vieja, contra los contratos C1/C2 ----------
 // Columnas de `posiciones` (sql 0018): modo_salida (trailing | fijo), trail_pct, arm_pct,

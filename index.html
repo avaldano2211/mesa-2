@@ -242,6 +242,26 @@
   .avl .avc{background:var(--oro);color:#0B0E14;border:0;border-radius:9px;padding:8px 12px;font:700 12.5px var(--sans);cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
   .avl .avo{background:transparent;color:var(--tx2);border:1px solid var(--tx3);border-radius:9px;padding:8px 10px;font:600 12px var(--sans);cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
   @media (min-width:900px){#app.ancho .avbrk{margin:2px 24px 4px}}
+  /* v69 (spec71): la liquidez de moomoo (cuenta de efectivo) y el aviso de good faith. Rojo y ámbar del texto con --avrojo y
+     --avoro (AA en claro sobre el fondo teñido, como la franja de brókeres). Todo se parte a 375 px: ni la tarjeta ni la
+     insignia desbordan de lado (overflow-wrap) y la cifra no se separa de su etiqueta en mitad del número (nowrap en <b>). */
+  #liq_moomoo:empty{display:none}
+  .liq .liqcab{align-items:baseline;flex-wrap:wrap;gap:2px 10px}
+  .liq .liqcab h3{flex:1 1 220px;min-width:0}
+  .liqedad{font-size:10.5px;color:var(--tx3);white-space:nowrap}
+  .liqedad.viejo{color:var(--avoro);font-weight:700;white-space:normal}
+  .liqfila{font-size:13px;line-height:1.5;margin-top:5px;color:var(--tx2);overflow-wrap:anywhere}
+  .liqfila b{color:var(--tx);font-size:14px;white-space:nowrap}
+  .liqfila .liqd{font-size:12px;color:var(--tx2)}
+  .liqal,.liqam,.gfv{overflow-wrap:anywhere;line-height:1.4;border-radius:10px}
+  .liqal{margin-top:8px;padding:8px 10px;font-size:12.5px;color:var(--avrojo);background:rgba(242,109,95,.10);border:1px solid rgba(242,109,95,.5)}
+  .liqam{margin-top:8px;padding:8px 10px;font-size:12.5px;color:var(--avoro);background:rgba(231,181,77,.10);border:1px solid rgba(231,181,77,.55)}
+  .liq .fresco{margin-top:7px;line-height:1.45}
+  .gfvw:empty{display:none}
+  .gfvw{margin:4px 0 2px}
+  .gfv{display:inline-block;max-width:100%;padding:4px 9px;font-size:11.5px;font-weight:700;white-space:normal;color:var(--avrojo);background:rgba(242,109,95,.12);border:1px solid rgba(242,109,95,.55)}
+  .aviso.gfvav{color:var(--avrojo);background:rgba(242,109,95,.10);border-color:rgba(242,109,95,.5)}
+  .liqcta.viejo{color:var(--avoro)}
   /* rev70: con la franja fija de «versión nueva» a la vista (top 64 px, z 70) la de brókeres empieza DEBAJO: le tapaba el título */
   body.con-vernueva #avisoBrk:not(:empty){margin-top:calc(var(--vernueva-alto,48px) + 8px)}
   /* rev68 (revisor de A1): con la franja a la vista (body.con-vernueva, --vernueva-alto = su alto medido), el cuadro abierto
