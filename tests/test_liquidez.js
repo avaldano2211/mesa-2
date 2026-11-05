@@ -154,7 +154,7 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   assert(/<div class="liqal">⚠ <b>SPY 585C<\/b>/.test(hP), '… con la clase roja');
   // desconocidas, venta que pudo ser GFV, errores
   const hD = P.tarjetaLiquidezHtml(L, P.gfvComprasHoy([COMPRA({ estado: 'desconocido', no_liquidado_usd: null })], HOY), CTX);
-  assert(txt(hD).includes('No sé si tus compras de hoy usaron dinero sin liquidar (el servidor arrancó a media sesión): mira Settled Cash en moomoo'), 'desconocido: «no sé si tus compras de hoy usaron dinero sin liquidar … mira Settled Cash en moomoo»');
+  assert(txt(hD).includes('No sé si tus compras de hoy usaron dinero sin liquidar (el servidor no puede saberlo): mira Settled Cash en moomoo'), 'desconocido: «no sé si tus compras de hoy usaron dinero sin liquidar … mira Settled Cash en moomoo»');
   assert(/class="liqam"/.test(hD) && !/class="liqal"/.test(hD), '… en ámbar, sin inventar una línea roja');
   const hV = P.tarjetaLiquidezHtml(L, P.gfvComprasHoy([COMPRA({ vendida_antes_at: '2026-11-04T16:20:00Z' })], HOY), CTX);
   assert(/<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation<\/b>: SPY 585C \(vendida a las 11:20, libre desde el <span class="liqf">jue 5-nov<\/span>\)/.test(hV), 'vendida antes de liberarse: aviso ROJO «hoy hubo una venta que puede contar como good faith violation»', hV.slice(0, 400));
@@ -214,6 +214,8 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
     const lib = P.comprasLibroHoy([FILL(), FILL({ clave_ext: 'v1', lado: 'venta' }), FILL({ clave_ext: 'e1', broker: 'etrade' }), FILL({ clave_ext: 'ay', fecha_ny: '2026-11-03', ejecutado_at: '2026-11-03T15:00:00Z' }),
       FILL({ clave_ext: '' }), FILL({ clave_ext: 'c0', contratos: 0 }), FILL({ clave_ext: 'sinat', ejecutado_at: null }), FILL({ clave_ext: 'mm-920', ejecutado_at: '2026-11-04 14:20:00+00', fecha_ny: null }), null], HOY);
     igual(lib.map(f => f.clave), ['mm-920', 'mm-931'], 'comprasLibroHoy: solo compras de moomoo de HOY con clave, instante y contratos (como las lee el worker), por instante');
+    igual(P.comprasLibroHoy([FILL({ clave_ext: 'px0', precio: null }), FILL({ clave_ext: 'px1', precio: '' }), FILL({ clave_ext: 'px2', precio: 'x' }), FILL({ clave_ext: 'px3', precio: '0.05' })], HOY).map(f => f.clave), ['px3'],
+      'comprasLibroHoy: sin precio el worker no la evalúa → la app tampoco la cuenta como «sin evaluar» (precio en texto sí vale)');
     const L5 = P.liquidezDeFila(ROW({ efectivo: 3000, saldo_neto: 3000, poder_compra: 3000, efectivo_liquidado: 500, capturado_at: '2026-11-04T14:00:00Z', liquidado_at: '2026-11-04T14:30:31Z',
       liquidado_inicio: 500, liquidado_inicio_fecha: HOY }));
     const C5 = { hoy: HOY, ahoraMs: MS('2026-11-04T14:40:00Z'), enSesion: true };
@@ -281,7 +283,7 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   igual(P.insigniaGfvHtml(ROJO({ usd: 0, sinMonto: true, libre: '2026-11-09' })), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">lun 9-nov</span> (no sé cuánto sin liquidar)</span>', 'sin monto: «no sé cuánto» (viernes → lunes)');
   igual(P.insigniaGfvHtml(ROJO({ todo: false, m: 1, usd: 200 })), '<span class="gfv">⚠ Good faith: hoy no vendas los ×1 comprados hoy · libres desde <span class="liqf">jue 5-nov</span> ($200.00 sin liquidar) · lo más viejo sale primero (FIFO)</span>',
     'una posición con contratos de ANTES: no «no la vendas», sino cuáles no se venden hoy (los de hoy; FIFO)');
-  igual(P.insigniaGfvHtml({ nivel: 'ambar', m: 2, todo: true, motivo: 'desconocido' }), '<span class="gfv nose">⚠ No sé si la pagaste con dinero sin liquidar (el servidor arrancó a media sesión) · mira Settled Cash en moomoo antes de venderla hoy</span>',
+  igual(P.insigniaGfvHtml({ nivel: 'ambar', m: 2, todo: true, motivo: 'desconocido' }), '<span class="gfv nose">⚠ No sé si la pagaste con dinero sin liquidar (el servidor no puede saberlo) · mira Settled Cash en moomoo antes de venderla hoy</span>',
     'una compra «desconocido»: insignia ÁMBAR con el «no sé» (antes callaba)');
   igual([P.insigniaGfvHtml(null), P.insigniaGfvHtml(ROJO({ libre: null })), P.insigniaGfvHtml({ usd: 1 })], ['', '', ''], 'sin compra (o sin día de liberación): nada');
   const av = P.avisoVentaGfvHtml(ROJO({ usd: 200 }));
@@ -290,13 +292,40 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   assert(!/la compraste hoy/.test(avV) && avV.includes('Hoy no vendas los ×1 que compraste hoy: los pagaste ($200.00) con dinero sin liquidar y quedan libres desde el jue 5-nov') && /hoy vende solo lo que tenías de antes/.test(avV),
     'con contratos de antes: el cuadro ya no dice «la compraste hoy» (era falso para esa entrada) y dice qué no vender hoy', avV);
   const avA = P.avisoVentaGfvHtml({ nivel: 'ambar', m: 1, todo: true, motivo: 'desconocido' });
-  assert(/^<div class="aviso gfvav nose" role="alert">⚠ <b>No sé si la pagaste con dinero sin liquidar<\/b> \(el servidor arrancó a media sesión\): mira Settled Cash en moomoo antes de venderla hoy/.test(avA), 'el cuadro de venta con una compra «desconocido»: ámbar, «no sé si la pagaste…»', avA);
+  assert(/^<div class="aviso gfvav nose" role="alert">⚠ <b>No sé si la pagaste con dinero sin liquidar<\/b> \(el servidor no puede saberlo\): mira Settled Cash en moomoo antes de venderla hoy/.test(avA), 'el cuadro de venta con una compra «desconocido»: ámbar, «no sé si la pagaste…»', avA);
   igual(P.avisoVentaGfvHtml(null), '', 'sin compra sin liquidar: el cuadro de siempre');
   // Cuentas
   igual(P.liquidadoCuentaHtml(ROW(), AHORA, HOY), '<div class="fresco liqcta">liquidado <b class="mono">$63.42</b></div>', 'Cuentas: «liquidado $63.42» junto al saldo');
   assert(/liqcta viejo">liquidado <b class="mono">\$63\.42<\/b> · hace 3 h · dato viejo/.test(P.liquidadoCuentaHtml(ROW({ liquidado_at: '2026-11-04T16:00:00Z' }), AHORA, HOY)), '… viejo: con su edad y «dato viejo»');
   igual([P.liquidadoCuentaHtml(ROW({ efectivo_liquidado: null }), AHORA, HOY), P.liquidadoCuentaHtml(ROW({ tipo_cuenta: 'MARGIN' }), AHORA, HOY),
     P.liquidadoCuentaHtml({ broker: 'moomoo', saldo_neto: 10 }, AHORA, HOY), P.liquidadoCuentaHtml(null, AHORA, HOY)], ['', '', '', ''], 'sin dato, cuenta de margen o sin la 0022: nada');
+}
+
+// v69 rev: una compra de un día ANTERIOR que aún no se libera (el banco no liquida en Veterans/Columbus Day: lo de ayer
+// sigue sin poder venderse hoy) y una «desconocido» vendida hoy (el worker ya avisó esa venta: la app no la calla)
+{
+  const AYER = '2026-11-03';
+  const txt = (s) => s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&');
+  const G2 = P.gfvComprasHoy([                                                                                                 // en el orden de la consulta (ejecutado_at)
+    COMPRA({ clave_fill: 'mm-a1', fecha_ny: AYER, ejecutado_at: '2026-11-03T15:00:00Z', libre_desde: '2026-11-06' }),           // de ayer, aún no libre
+    COMPRA({ clave_fill: 'mm-a2', fecha_ny: AYER, ejecutado_at: '2026-11-03T15:30:00Z', libre_desde: '2026-11-06', vendida_antes_at: '2026-11-04T15:00:00Z' }), // de ayer, vendida hoy
+    COMPRA({ clave_fill: 'mm-a3', fecha_ny: AYER, ejecutado_at: '2026-11-03T16:00:00Z', estado: 'liquidada', no_liquidado_usd: 0, libre_desde: '2026-11-06' }), // de ayer, pagada con liquidado
+    COMPRA({ clave_fill: 'mm-a4', fecha_ny: AYER, ejecutado_at: '2026-11-03T16:30:00Z', libre_desde: HOY }),                     // de ayer, ya libre hoy
+    COMPRA(),                                                                                                                  // la de hoy
+    COMPRA({ clave_fill: 'mm-a5', fecha_ny: '2026-11-05', ejecutado_at: '2026-11-05T15:00:00Z', libre_desde: '2026-11-06' }),    // de un día POSTERIOR
+    COMPRA({ clave_fill: 'mm-d1', symbol: 'NVDA', strike: 210, estado: 'desconocido', no_liquidado_usd: null, vendida_antes_at: '2026-11-04T17:00:00Z' }),
+  ], HOY);
+  igual(G2.abiertas.map(c => c.clave_fill), ['mm-a1', 'mm-1'], 'una no_liquidada de AYER con libre_desde > hoy sigue «no la vendas hoy» (feriado bancario)');
+  igual(G2.vendidas.map(c => c.clave_fill), ['mm-a2', 'mm-d1'], '… la de ayer vendida hoy antes de liberarse es posible GFV; y una «desconocido» vendida hoy tampoco se calla');
+  igual(G2.desconocidas.map(c => c.clave_fill), ['mm-d1'], 'la «desconocido» vendida sigue diciendo «no sé»');
+  igual(G2.porContrato['moomoo|SPY|CALL|585|2026-11-07'].lotes.map(l => [l.clave, l.estado]), [['mm-a1', 'riesgo'], ['mm-a2', 'riesgo'], ['mm-1', 'riesgo']],
+    'FIFO: las de ayer primero (por su instante); fuera la liquidada de ayer, la ya libre y la de un día posterior');
+  igual([G2.porClave['mm-a3'], G2.porClave['mm-a4'], G2.porClave['mm-a5']], [undefined, undefined, undefined], 'ni la liquidada de ayer, ni la ya libre, ni la de mañana tienen lote');
+  const h2 = P.lineasLiquidezHtml(P.liquidezDeFila(ROW()), G2, CTX), t2 = txt(h2);
+  igual(t2.split('comprada el ').length - 1, 1, 'la línea roja de la compra de AYER dice «comprada el …»; la de hoy no');
+  assert(t2.includes('comprada el ' + P.fechaCortaAviso(AYER)), '«comprada el ' + P.fechaCortaAviso(AYER) + '»', t2.slice(0, 400));
+  assert(/good faith violation/.test(t2) && t2.includes('NVDA 210C'), 'la venta de la «desconocido» sale en el aviso de la venta', t2.slice(0, 400));
+  assert(t2.includes('No sé si tus compras de hoy usaron dinero sin liquidar (el servidor no puede saberlo)'), '… y el «no sé» sigue');
 }
 
 // ════════════════ 3. cargarLiquidez con un supabase de juguete ════════════════
@@ -344,8 +373,8 @@ function armarCarga(rutas, op) {
   {
     const K = armarCarga({ cuenta_snapshots: { data: ROW(), error: null }, compras_no_liquidadas: { data: [COMPRA()], error: null } });
     igual(await K.M.cargarLiquidez(), true, 'CASH: lectura buena');
-    igual(K.de('compras_no_liquidadas').map(l => JSON.stringify(l.cadena)), ['[["select",["*"]],["eq",["broker","moomoo"]],["eq",["fecha_ny","2026-11-04"]],["order",["ejecutado_at",{"ascending":true}]]]'],
-      'las compras de moomoo de HOY (fecha_ny = hoyNY()), en orden de ejecución');
+    igual(K.de('compras_no_liquidadas').map(l => JSON.stringify(l.cadena)), ['[["select",["*"]],["eq",["broker","moomoo"]],["or",["fecha_ny.eq.2026-11-04,and(estado.eq.no_liquidada,libre_desde.gt.2026-11-04)"]],["order",["ejecutado_at",{"ascending":true}]]]'],
+      'las compras de moomoo de HOY y las de antes que aún no se liberan (fecha_ny = hoyNY() o no_liquidada con libre_desde > hoy), en orden de ejecución');
     igual([K.M._liq.L.liquidado, K.M._liq.compras.length, K.M._liq.ttl, K.M._liq.hoy], [63.42, 1, 30000, HOY], 'la caché: liquidez, compras, 30 s');
     igual(K.canales.map(c => [c.nombre, c.suscrito, c.regs.map(r => r.event + ':' + r.table)]), [
       ['mesa2-liquidez', true, ['INSERT:cuenta_snapshots', 'UPDATE:cuenta_snapshots']],
@@ -357,7 +386,7 @@ function armarCarga(rutas, op) {
     // el día cambia: se relee aunque la caché sea joven, y las compras de ayer no se arrastran
     K.reloj.hoy = '2026-11-05';
     await K.M.cargarLiquidez();
-    assert(K.de('compras_no_liquidadas').slice(-1)[0].cadena.some(x => x[0] === 'eq' && x[1][1] === '2026-11-05'), 'al cambiar el día NY se piden las compras del día nuevo');
+    assert(K.de('compras_no_liquidadas').slice(-1)[0].cadena.some(x => x[0] === 'or' && x[1][0] === 'fecha_ny.eq.2026-11-05,and(estado.eq.no_liquidada,libre_desde.gt.2026-11-05)'), 'al cambiar el día NY se piden las compras del día nuevo');
   }
   // e) fallos: lo leído se queda (con su hora), no rechaza, se reintenta al minuto
   {

@@ -7202,8 +7202,8 @@ function comprasLibroHoy(filas, hoy) {
   const out = [];
   (Array.isArray(filas) ? filas : []).forEach(f => {
     if (!f || f.broker !== 'moomoo' || f.lado !== 'compra' || f.clave_ext == null || f.clave_ext === '') return;
-    const ms = Date.parse(f.ejecutado_at || ''), n = Number(f.contratos);
-    if (!Number.isFinite(ms) || !(n > 0)) return;
+    const ms = Date.parse(f.ejecutado_at || ''), n = Number(f.contratos), px = f.precio == null || f.precio === '' ? NaN : Number(f.precio);
+    if (!Number.isFinite(ms) || !(n > 0) || !Number.isFinite(px)) return;           // sin precio el worker no la evalúa
     if ((String(f.fecha_ny || '').slice(0, 10) || ymdNY(f.ejecutado_at)) !== hoy) return;
     out.push({ clave: String(f.clave_ext), at: String(f.ejecutado_at), ms, contratos: n, symbol: f.symbol, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion });
   });
@@ -7212,7 +7212,8 @@ function comprasLibroHoy(filas, hoy) {
 // Las compras de moomoo de `hoy` (filas de compras_no_liquidadas) repartidas para pintar. PURA.
 //   abiertas:     'no_liquidada' que aún no se pueden vender (libre_desde > hoy) y no se han vendido → «no la vendas hoy»
 //   vendidas:     'no_liquidada' con una venta registrada HOY antes de liberarse (vendida_antes_at) → posible GFV
-//   desconocidas: 'desconocido' (el worker arrancó a media sesión sin el liquidado del inicio: no se sabe, y se dice)
+//   desconocidas: 'desconocido' (sin el liquidado del inicio o con descuadre: no se sabe, y se dice)
+//   (una 'no_liquidada' de un día ANTERIOR con libre_desde > hoy también entra: abierta o vendida hoy)
 //   porContrato:  { claveCartera: { lotes } } con TODAS las compras de hoy de ese contrato, en orden de ejecución
 //   porClave:     { clave_fill: lote } — el lote de UNA compra (el Diario lista un lote por compra, con su clave_ext)
 // lote = { clave, at, contratos, estado, motivo, usd, libre }; estado:
@@ -7235,16 +7236,20 @@ function gfvComprasHoy(compras, hoy, extra) {
   const num = (v) => { if (v == null || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
   const lotes = [];
   (Array.isArray(compras) ? compras : []).forEach(c => {
-    if (!c || c.broker !== 'moomoo' || String(c.fecha_ny || '').slice(0, 10) !== hoy) return;
-    const libre = String(c.libre_desde || '').slice(0, 10);
+    if (!c || c.broker !== 'moomoo') return;
+    const libre = String(c.libre_desde || '').slice(0, 10), dia = String(c.fecha_ny || '').slice(0, 10);
+    // una compra de OTRO día solo cuenta si es 'no_liquidada' y aún no se libera (Veterans/Columbus Day: el banco no
+    // liquida y lo de ayer sigue sin poder venderse hoy); va primero en el FIFO por su instante
+    if (dia !== hoy && !(dia < hoy && c.estado === 'no_liquidada' && libre > hoy)) return;
     let estado = 'libre', motivo = null;
+    const vendida = !!c.vendida_antes_at && ymdNY(c.vendida_antes_at) === hoy;
     if (c.estado === 'no_liquidada' && libre > hoy) {                // aún no libre (sin fecha: nada que avisar)
       estado = 'riesgo';
-      const vendida = !!c.vendida_antes_at && ymdNY(c.vendida_antes_at) === hoy;
       (vendida ? out.vendidas : out.abiertas).push(c);
     } else if (c.estado === 'desconocido' || !['liquidada', 'no_liquidada'].includes(c.estado)) {
       estado = 'nose'; motivo = 'desconocido';
       out.desconocidas.push(c);
+      if (vendida) out.vendidas.push(c);                             // el worker ya avisó esa venta: no se calla
     } else if (x.dudoso && c.estado === 'liquidada') { estado = 'nose'; motivo = 'descuadre'; }
     const nl = x.dudoso ? null : num(c.no_liquidado_usd), n = num(c.contratos);
     lotes.push({ clave: String(c.clave_fill == null ? '' : c.clave_fill), at: String(c.ejecutado_at || ''), ms: Date.parse(c.ejecutado_at || ''), contratos: n != null && n > 0 ? n : null,
@@ -7337,9 +7342,10 @@ function lineasLiquidezHtml(L, G, ctx) {
   // 3) una línea roja por compra de hoy que todavía no se puede vender
   (g.abiertas || []).forEach(c => {
     const nl = num(c.no_liquidado_usd), monto = num(c.monto_usd), n = num(c.contratos), hh = hora(c.ejecutado_at);
-    h += `<div class="liqal">⚠ <b>${esc(nombreContratoGfv(c))}</b>${n ? ` ×${esc(n)}` : ''}${hh ? ` · ${esc(hh)}` : ''} · ${nl != null ? `${dineroD(nl)} de ${dineroD(monto)} sin liquidar` : `${dineroD(monto)}: no sé cuánto sin liquidar`} — <b>no la vendas hoy</b>: libre desde el ${libreHtml(c.libre_desde)}</div>`;
+    const dia = String(c.fecha_ny || '').slice(0, 10), previa = dia && hoy && dia < hoy ? ` · comprada el ${esc(fechaCortaAviso(dia))}` : '';
+    h += `<div class="liqal">⚠ <b>${esc(nombreContratoGfv(c))}</b>${n ? ` ×${esc(n)}` : ''}${previa}${hh ? ` · ${esc(hh)}` : ''} · ${nl != null ? `${dineroD(nl)} de ${dineroD(monto)} sin liquidar` : `${dineroD(monto)}: no sé cuánto sin liquidar`} — <b>no la vendas hoy</b>: libre desde el ${libreHtml(c.libre_desde)}</div>`;
   });
-  if ((g.desconocidas || []).length) h += `<div class="liqam">⚠ No sé si tus compras de hoy usaron dinero sin liquidar (el servidor arrancó a media sesión): mira Settled Cash en moomoo.</div>`;
+  if ((g.desconocidas || []).length) h += `<div class="liqam">⚠ No sé si tus compras de hoy usaron dinero sin liquidar (el servidor no puede saberlo): mira Settled Cash en moomoo.</div>`;
   // compras del libro que el servidor aún no evaluó (si no se pudieron leer las compras, ya lo dice la línea de errCompras)
   const se = g.sinEvaluar || [];
   if (se.length && !c0.errCompras) {
@@ -7402,7 +7408,7 @@ function montoGfv(g) {
   return g.usd > 0 ? 'al menos ' + dineroD(g.usd) : null;
 }
 // Por qué no se sabe (lote 'nose'). PURA.
-const MOTIVO_GFV = { desconocido: 'el servidor arrancó a media sesión', sin_evaluar: 'el servidor aún no ha evaluado esa compra',
+const MOTIVO_GFV = { desconocido: 'el servidor no puede saberlo', sin_evaluar: 'el servidor aún no ha evaluado esa compra',
   sin_leer: 'no pude leer tus compras de hoy', descuadre: 'el cálculo del servidor no cuadra con moomoo' };
 function motivoGfv(g) { return esc((g && MOTIVO_GFV[g.motivo]) || 'no hay dato'); }
 // «los ×2» (contratos de hoy desde la primera con problema) o «los» si no se sabe cuántos. PURA.
@@ -7509,7 +7515,8 @@ function cargarLiquidez(forzar) {
         else if (!L || L.tipo !== 'CASH') compras = [];
         else {
           ttl = LIQ_TTL_MS;
-          const rc = await sb.from('compras_no_liquidadas').select('*').eq('broker', 'moomoo').eq('fecha_ny', hoy).order('ejecutado_at', { ascending: true });
+          const rc = await sb.from('compras_no_liquidadas').select('*').eq('broker', 'moomoo')
+            .or(`fecha_ny.eq.${hoy},and(estado.eq.no_liquidada,libre_desde.gt.${hoy})`).order('ejecutado_at', { ascending: true });
           if (rc && rc.error) { errCompras = textoErrorTabla(rc.error, 'compras_no_liquidadas'); ttl = LIQ_TTL_ERR_MS; }
           else compras = (rc && rc.data) || [];
         }
