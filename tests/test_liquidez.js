@@ -32,9 +32,9 @@ const NOMBRES = ['liquidezDeFila', 'edadLiquidez', 'nombreContratoGfv', 'gfvComp
 const faltan = NOMBRES.filter(n => !tiene(n));
 if (faltan.length) { C.falla('no existe la liquidez de moomoo ni el aviso de good faith (faltan: ' + faltan.join(', ') + ')'); C.resumen(); }
 
-const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'nombreContratoGfv', 'gfvComprasHoy', 'lineasLiquidezHtml',
-  'tarjetaLiquidezHtml', 'montoGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaGfvHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
-const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN'] });
+const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'nombreContratoGfv', 'gfvComprasHoy', 'gfvResumen', 'lineasLiquidezHtml',
+  'tarjetaLiquidezHtml', 'montoGfv', 'motivoGfv', 'cuantosGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaGfvHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
+const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN', 'MOTIVO_GFV'] });
 
 const HOY = '2026-11-04';                 // miércoles (las secciones PURAS: la hora entra como argumento)
 // Las secciones que corren con el reloj de VERDAD (ctxLiquidez usa Date.now, cargarModuloEntero el día real) usan el día NY
@@ -97,11 +97,28 @@ const COMPRA = (o) => Object.assign({ user_id: 'u1', broker: 'moomoo', clave_fil
   igual(G.abiertas.map(c => c.clave_fill), ['mm-1', 'mm-2'], 'abiertas: las «no_liquidada» de hoy aún no libres y sin vender');
   igual(G.vendidas.map(c => c.clave_fill), ['mm-4'], 'vendidas: la que se vendió HOY antes de liberarse (posible GFV)');
   igual(G.desconocidas.map(c => c.clave_fill), ['mm-5'], 'desconocidas: el worker no supo el liquidado del inicio');
-  igual(G.porContrato, { 'moomoo|SPY|CALL|585|2026-11-07': { usd: 255.5, sinMonto: false, libre: '2026-11-05', n: 2 }, 'moomoo|TSLA|CALL|450|2026-11-07': { usd: 200, sinMonto: false, libre: '2026-11-05', n: 1 } },
-    'por contrato: la suma sin liquidar y el día en que queda libre (la vendida también: si queda parte abierta, sigue sin poder venderse); nada de liquidadas, de ayer, de otro bróker ni ya libres');
-  igual(P.gfvComprasHoy([COMPRA({ no_liquidado_usd: null }), COMPRA({ clave_fill: 'x', no_liquidado_usd: 40 })], HOY).porContrato['moomoo|SPY|CALL|585|2026-11-07'],
-    { usd: 40, sinMonto: true, libre: '2026-11-05', n: 2 }, 'una compra sin monto se anota (sinMonto): nunca se inventa');
-  igual(P.gfvComprasHoy(null, HOY), { abiertas: [], vendidas: [], desconocidas: [], porContrato: {} }, 'sin filas: nada');
+  const lotesDe = (k) => (G.porContrato[k] ? G.porContrato[k].lotes.map(l => [l.clave, l.estado, l.contratos, l.usd, l.libre, l.motivo]) : null);
+  igual(Object.keys(G.porContrato).sort(), ['moomoo|AAPL|CALL|270|2026-11-07', 'moomoo|NVDA|CALL|210|2026-11-07', 'moomoo|QQQ|CALL|520|2026-11-07', 'moomoo|SPY|CALL|585|2026-11-07', 'moomoo|TSLA|CALL|450|2026-11-07'],
+    'por contrato: TODAS las compras de hoy de moomoo (nada de ayer ni de otro bróker)');
+  igual(lotesDe('moomoo|SPY|CALL|585|2026-11-07'), [['mm-1', 'riesgo', 2, 200, '2026-11-05', null], ['mm-2', 'riesgo', 2, 55.5, '2026-11-05', null]], 'SPY: dos compras en riesgo, en orden de ejecución');
+  igual([lotesDe('moomoo|QQQ|CALL|520|2026-11-07')[0][1], lotesDe('moomoo|AAPL|CALL|270|2026-11-07')[0][1], lotesDe('moomoo|NVDA|CALL|210|2026-11-07')[0][1], lotesDe('moomoo|NVDA|CALL|210|2026-11-07')[0][5], lotesDe('moomoo|TSLA|CALL|450|2026-11-07')[0][1]],
+    ['libre', 'libre', 'nose', 'desconocido', 'riesgo'], 'liquidada y ya libre → libre; desconocido → «no sé» (con su motivo); la vendida sigue en riesgo (si queda parte, tampoco se vende hoy)');
+  igual([G.porClave['mm-4'].estado, G.porClave['mm-6'], G.porClave['mm-7']], ['riesgo', undefined, undefined], 'por clave (el lote del Diario): la compra de hoy; ni la de ayer ni la de otro bróker');
+  // el resumen de una posición: FIFO (lo más viejo sale primero)
+  const R = (k, n) => P.gfvResumen(G.porContrato[k], n);
+  igual(R('moomoo|SPY|CALL|585|2026-11-07', 4), { nivel: 'rojo', m: 4, todo: true, usd: 255.5, sinMonto: false, libre: '2026-11-05', motivo: null }, 'resumen SPY con ×4 (todo de hoy): rojo, «no la vendas hoy», $255.50 sin liquidar');
+  igual([R('moomoo|SPY|CALL|585|2026-11-07', 5).todo, R('moomoo|SPY|CALL|585|2026-11-07', 5).m, R('moomoo|SPY|CALL|585|2026-11-07', null).todo], [false, 4, false],
+    'con ×5 (uno de ANTES) no es «todo»: hoy no se venden los ×4 de hoy, el viejo sí (FIFO); sin saber cuántos tiene, tampoco se afirma «todo»');
+  igual([R('moomoo|QQQ|CALL|520|2026-11-07', 1), R('moomoo|NVDA|CALL|210|2026-11-07', 2).nivel, R('moomoo|NVDA|CALL|210|2026-11-07', 2).motivo], [null, 'ambar', 'desconocido'],
+    'liquidada: nada que avisar; desconocido: ámbar con su motivo (antes no salía en la insignia ni en el cuadro de venta)');
+  const fifo = { lotes: [{ estado: 'libre', contratos: 1 }, { estado: 'riesgo', contratos: 1, usd: 200, libre: '2026-11-05' }, { estado: 'libre', contratos: 2 }] };
+  igual([P.gfvResumen(fifo, 3).m, P.gfvResumen(fifo, 3).todo, P.gfvResumen(fifo, 4).todo], [3, true, false],
+    'FIFO: la liquidada de hoy ANTES de la de riesgo se puede vender; la de DESPUÉS no (para llegar a ella hay que vender la de riesgo)');
+  igual(P.gfvComprasHoy([COMPRA({ no_liquidado_usd: null }), COMPRA({ clave_fill: 'x', no_liquidado_usd: 40 })], HOY).porContrato['moomoo|SPY|CALL|585|2026-11-07'].lotes.map(l => l.usd),
+    [null, 40], 'una compra sin monto se anota sin monto: nunca se inventa');
+  igual(P.gfvResumen(P.gfvComprasHoy([COMPRA({ no_liquidado_usd: null }), COMPRA({ clave_fill: 'x', no_liquidado_usd: 40 })], HOY).porContrato['moomoo|SPY|CALL|585|2026-11-07'], 4),
+    { nivel: 'rojo', m: 4, todo: true, usd: 40, sinMonto: true, libre: '2026-11-05', motivo: null }, '… y el resumen lo dice (sinMonto: «al menos»)');
+  igual(P.gfvComprasHoy(null, HOY), { abiertas: [], vendidas: [], desconocidas: [], porContrato: {}, porClave: {} }, 'sin filas: nada');
   igual(P.gfvComprasHoy([COMPRA({ vendida_antes_at: '2026-11-03T16:00:00Z' })], HOY).vendidas.length, 0, 'una venta de otro día no es «de hoy»');
   igual([P.montoGfv({ usd: 122.83, sinMonto: false }), P.montoGfv({ usd: 50, sinMonto: true }), P.montoGfv({ usd: 0, sinMonto: true }), P.montoGfv(null)],
     ['$122.83', 'al menos $50.00', null, null], 'el monto de la insignia: exacto, «al menos» o null (no se sabe)');
@@ -143,6 +160,7 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   assert(/<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation<\/b>: SPY 585C \(vendida a las 11:20, libre desde el <span class="liqf">jue 5-nov<\/span>\)/.test(hV), 'vendida antes de liberarse: aviso ROJO «hoy hubo una venta que puede contar como good faith violation»', hV.slice(0, 400));
   assert(hV.indexOf('Hoy hubo una venta') < hV.indexOf('Liquidado'), '… lo primero de la tarjeta');
   assert(!/\b[0-9]+ violaci/i.test(txt(hV)) && /puede limitar la cuenta 90 días/.test(hV), 'no afirma cuántas violaciones disparan la restricción (no está confirmado)');
+  assert(txt(hV).includes('Si te queda parte de esa compra, tampoco la vendas antes de ese día.'), 'venta parcial (R4): la línea de la GFV dice que lo que queda de esa compra tampoco se vende hoy', txt(hV));
   const hE = P.tarjetaLiquidezHtml(L, G0, { ...CTX, errCompras: 'la tabla compras_no_liquidadas aún no está en la base (migración pendiente)', err: 'sin red' });
   assert(/No pude leer tus compras de hoy \(la tabla compras_no_liquidadas/.test(hE) && /no pude volver a leer la liquidez \(sin red\): las cifras son de la última lectura/.test(hE), 'los fallos de lectura se dicen (y lo leído antes se presenta como de antes)');
   // huecos: «no sé», jamás $0
@@ -192,13 +210,23 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   const hX = P.tarjetaLiquidezHtml(L, P.gfvComprasHoy([COMPRA({ symbol: '<img src=x onerror=alert(1)>', estado: 'no_liquidada' })], HOY), CTX);
   assert(!/<img/.test(hX) && /&lt;IMG SRC=X ONERROR=ALERT\(1\)&gt;/.test(hX), 'todo texto dinámico pasa por esc()');
 
-  // la insignia
-  igual(P.insigniaGfvHtml({ usd: 255.5, sinMonto: false, libre: '2026-11-05', n: 2 }), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">jue 5-nov</span> ($255.50 sin liquidar)</span>',
+  // la insignia (g = gfvResumen)
+  const ROJO = (o) => Object.assign({ nivel: 'rojo', m: 2, todo: true, usd: 255.5, sinMonto: false, libre: '2026-11-05', motivo: null }, o || {});
+  igual(P.insigniaGfvHtml(ROJO()), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">jue 5-nov</span> ($255.50 sin liquidar)</span>',
     'la insignia: «⚠ No la vendas hoy · good faith · libre desde jue 5-nov ($X sin liquidar)»');
-  igual(P.insigniaGfvHtml({ usd: 0, sinMonto: true, libre: '2026-11-09', n: 1 }), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">lun 9-nov</span> (no sé cuánto sin liquidar)</span>', 'sin monto: «no sé cuánto» (viernes → lunes)');
-  igual([P.insigniaGfvHtml(null), P.insigniaGfvHtml({ usd: 1 })], ['', ''], 'sin compra (o sin día de liberación): nada');
-  const av = P.avisoVentaGfvHtml({ usd: 200, sinMonto: false, libre: '2026-11-05' });
+  igual(P.insigniaGfvHtml(ROJO({ usd: 0, sinMonto: true, libre: '2026-11-09' })), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">lun 9-nov</span> (no sé cuánto sin liquidar)</span>', 'sin monto: «no sé cuánto» (viernes → lunes)');
+  igual(P.insigniaGfvHtml(ROJO({ todo: false, m: 1, usd: 200 })), '<span class="gfv">⚠ Good faith: hoy no vendas los ×1 comprados hoy · libres desde <span class="liqf">jue 5-nov</span> ($200.00 sin liquidar) · lo más viejo sale primero (FIFO)</span>',
+    'una posición con contratos de ANTES: no «no la vendas», sino cuáles no se venden hoy (los de hoy; FIFO)');
+  igual(P.insigniaGfvHtml({ nivel: 'ambar', m: 2, todo: true, motivo: 'desconocido' }), '<span class="gfv nose">⚠ No sé si la pagaste con dinero sin liquidar (el servidor arrancó a media sesión) · mira Settled Cash en moomoo antes de venderla hoy</span>',
+    'una compra «desconocido»: insignia ÁMBAR con el «no sé» (antes callaba)');
+  igual([P.insigniaGfvHtml(null), P.insigniaGfvHtml(ROJO({ libre: null })), P.insigniaGfvHtml({ usd: 1 })], ['', '', ''], 'sin compra (o sin día de liberación): nada');
+  const av = P.avisoVentaGfvHtml(ROJO({ usd: 200 }));
   assert(/^<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy<\/b>: la compraste hoy con \$200\.00 de dinero sin liquidar y queda libre desde el <span class="liqf">jue 5-nov<\/span>\. Venderla antes puede contar como <b>good faith violation<\/b>/.test(av), 'el aviso del cuadro «Vender en moomoo»', av);
+  const avV = txt(P.avisoVentaGfvHtml(ROJO({ todo: false, m: 1, usd: 200 })));
+  assert(!/la compraste hoy/.test(avV) && avV.includes('Hoy no vendas los ×1 que compraste hoy: los pagaste ($200.00) con dinero sin liquidar y quedan libres desde el jue 5-nov') && /hoy vende solo lo que tenías de antes/.test(avV),
+    'con contratos de antes: el cuadro ya no dice «la compraste hoy» (era falso para esa entrada) y dice qué no vender hoy', avV);
+  const avA = P.avisoVentaGfvHtml({ nivel: 'ambar', m: 1, todo: true, motivo: 'desconocido' });
+  assert(/^<div class="aviso gfvav nose" role="alert">⚠ <b>No sé si la pagaste con dinero sin liquidar<\/b> \(el servidor arrancó a media sesión\): mira Settled Cash en moomoo antes de venderla hoy/.test(avA), 'el cuadro de venta con una compra «desconocido»: ámbar, «no sé si la pagaste…»', avA);
   igual(P.avisoVentaGfvHtml(null), '', 'sin compra sin liquidar: el cuadro de siempre');
   // Cuentas
   igual(P.liquidadoCuentaHtml(ROW(), AHORA, HOY), '<div class="fresco liqcta">liquidado <b class="mono">$63.42</b></div>', 'Cuentas: «liquidado $63.42» junto al saldo');
@@ -317,13 +345,13 @@ function armarCarga(rutas, op) {
     let vistaSets = 0;
     const $ = (s) => { if (s === '#vista') return { set innerHTML(v) { vistaSets++; }, get innerHTML() { return ''; } }; return nodos[s] || null; };
     const N = (id) => { const n = nodo(); let ih = ''; n.sets = 0; Object.defineProperty(n, 'innerHTML', { set(v) { ih = v; n.sets++; }, get() { return ih; } }); nodos['#' + id] = n; return n; };
-    const _gestor = { filas: [{ id: 7, broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: '585.00', expiracion: '2026-11-07' }, { id: 8, broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07' }] };
-    const _cart = { moomoo: { estado: 'ok', items: [{ broker: 'moomoo', symbol: 'TSLA', direccion: 'CALL', strike: 450, expiracion: '2026-11-07', clave: 'moomoo|TSLA|CALL|450|2026-11-07' }] } };
+    const _gestor = { filas: [{ id: 7, broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: '585.00', expiracion: '2026-11-07', contratos: 2 }, { id: 8, broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07', contratos: 2 }] };
+    const _cart = { moomoo: { estado: 'ok', items: [{ broker: 'moomoo', symbol: 'TSLA', direccion: 'CALL', strike: 450, expiracion: '2026-11-07', contratos: 2, clave: 'moomoo|TSLA|CALL|450|2026-11-07' }] } };
     let enCop = true;
-    const W = construir(['pintarLiquidezEnSitio', 'ctxLiquidez', 'gfvDe', 'insigniaGfvDe'].concat(PURAS), {
+    const W = construir(['pintarLiquidezEnSitio', 'ctxLiquidez', 'gfvActual', 'gfvDe', 'gfvLoteDe', 'insigniaGfvDe'].concat(PURAS), {
       esc, ymdNY, $, hoyNY: () => HOYR, sesionNY: () => 'regular', _hbUltimo: null, enCopilotoAhora: () => enCop, _gestor, _cart,
       itemsCartera: (c) => (c.moomoo.items || []), claveSlug: (k) => String(k || '').replace(/[^A-Za-z0-9]/g, '_'),
-    }, { consts: ['_liq', 'dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN'] });
+    }, { consts: ['_liq', 'dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN', 'MOTIVO_GFV'] });
     Object.assign(W._liq, { L: P.liquidezDeFila(ROW({ liquidado_at: new Date(Date.now() - 20000).toISOString() })), compras: [], hoy: HOYR });
     const HOY4 = (o) => COMPRA(Object.assign({ fecha_ny: HOYR, libre_desde: MANANA }, o || {}));   // compras de HOY (el día real)
     const LIBRE4 = P.fechaCortaAviso(MANANA);
@@ -355,6 +383,22 @@ function armarCarga(rutas, op) {
     W._liq.L = P.liquidezDeFila(ROW()); W._liq.por = null; W._liq.compras = [HOY4()];
     igual([!!W.gfvDe({ broker: 'moomoo', symbol: 'spy', direccion: 'call', strike: 585, expiracion: '2026-11-07T00:00:00' }), W.gfvDe({ broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07' }),
       W.gfvDe({ broker: 'moomoo', symbol: 'SPY', direccion: 'PUT', strike: 585, expiracion: '2026-11-07' }), W.gfvDe(null)], [true, null, null, null], 'gfvDe: el MISMO contrato de moomoo (mayúsculas, strike, fecha); otro bróker, otro lado o nada → null');
+    // R3 (revisión «la verdad»): el lunes compró 1 con dinero liquidado; hoy 1 más con $200 sin liquidar. El aviso es de la
+    // COMPRA de hoy, no del contrato: la ficha del lunes no puede decir «no la vendas hoy» ni «la compraste hoy»
+    W._liq.compras = [HOY4({ contratos: 1, monto_usd: 300, no_liquidado_usd: 200 })];
+    const fichaLunes = { id: 9, broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07', contratos: 1, abierta_at: '2026-11-02T15:00:00Z' };
+    _cart.moomoo.items.push({ broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07', contratos: 2, clave: 'moomoo|SPY|CALL|585|2026-11-07' });
+    const gL = W.gfvDe(fichaLunes);
+    igual([gL.nivel, gL.m, gL.todo], ['rojo', 1, false], 'la ficha del lunes con el bróker en ×2: los ×1 de hoy no se venden hoy, el del lunes sí (FIFO: sale primero)');
+    assert(/hoy no vendas los ×1 comprados hoy/.test(W.insigniaGfvDe(fichaLunes)) && !/No la vendas hoy/.test(W.insigniaGfvDe(fichaLunes)), '… y su insignia lo dice así (no «No la vendas hoy»)', W.insigniaGfvDe(fichaLunes));
+    igual(W.gfvDe(_cart.moomoo.items[1]).todo, false, 'lo mismo en el ítem de la cartera (×2): no «no la vendas»');
+    // el Diario lista un lote POR COMPRA (clave_ext = clave_fill): el aviso va solo en el de hoy
+    const loteLunes = { broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07', contratos: 1, fecha_ny: '2026-11-02', clave_ext: 'D-LUNES' };
+    const loteHoy = Object.assign({}, loteLunes, { fecha_ny: HOYR, clave_ext: 'mm-1' });
+    igual([W.gfvLoteDe(loteLunes), W.gfvLoteDe(loteHoy) && W.gfvLoteDe(loteHoy).todo, W.gfvLoteDe(loteHoy) && W.gfvLoteDe(loteHoy).usd], [null, true, 200],
+      'Diario: el lote del lunes NO lleva el aviso de la compra de hoy; el de hoy sí («no la vendas hoy», $200)');
+    _cart.moomoo.items.pop();
+    igual(W.gfvDe(fichaLunes).todo, true, 'sin leer la cartera, con la ficha (×1, no sabe del refuerzo de hoy): «no la vendas hoy» (lo prudente)');
   }
 
   // ════════════════ 5. el módulo ENTERO ════════════════
@@ -423,9 +467,11 @@ function armarCarga(rutas, op) {
     Z.mod.ev('abrirVentaFuera(gestorFila(7), 2.9)');
     assert(/<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy<\/b>: la compraste hoy con \$300\.00 de dinero sin liquidar/.test(hojaHtml), 'el cuadro «Vender en moomoo» dice «No la vendas hoy» antes del ticket', hojaHtml.slice(0, 500));
     // el Diario: la insignia en «abiertos según el libro»
-    const hA = Z.mod.ev(`seccionAbiertosDiario([{ broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '${MANANA}', contrato: 'SPY|CALL|585|${MANANA}', contratos: 2, prima: 2.56, costo: 512, fecha_ny: '${HOYR}', dias_abiertos: 0, vence_en: 1 },
+    const hA = Z.mod.ev(`seccionAbiertosDiario([{ broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '${MANANA}', contrato: 'SPY|CALL|585|${MANANA}', contratos: 1, prima: 2, costo: 200, fecha_ny: '2026-11-02', dias_abiertos: 2, vence_en: 1, clave_ext: 'D-LUNES' },
+      { broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '${MANANA}', contrato: 'SPY|CALL|585|${MANANA}', contratos: 2, prima: 2.56, costo: 512, fecha_ny: '${HOYR}', dias_abiertos: 0, vence_en: 1, clave_ext: 'mm-1' },
       { broker: 'etrade', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '${MANANA}', contrato: 'SPY|CALL|585|${MANANA}', contratos: 1, prima: 2, costo: 200, fecha_ny: '${HOYR}', dias_abiertos: 0, vence_en: 1 }], [], [])`);
-    igual((hA.match(/class="gfv"/g) || []).length, 1, 'Diario: la insignia en el abierto de moomoo (y no en el de E*TRADE)');
+    igual((hA.match(/class="gfv"/g) || []).length, 1, 'Diario: la insignia en el lote de HOY de moomoo (ni en el del lunes del mismo contrato ni en el de E*TRADE)');
+    assert(hA.indexOf('class="gfv"') > hA.indexOf("entró " + Z.mod.ev(`fechaCorta('${HOYR}')`)), '… y es la del lote que entró hoy');
   }
   // b) en la computadora (tabla del gestor): la insignia arriba del detalle de la fila
   {

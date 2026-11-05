@@ -2419,7 +2419,7 @@ async function vistaCopiloto(hb) {
 
   // v69: la liquidez de moomoo (cuenta de efectivo) justo encima de las posiciones. El contenedor va siempre (vacío sin
   // tarjeta: :empty lo oculta) para que Realtime la pinte en sitio aunque aparezca después.
-  const ctxL = ctxLiquidez(), gfvL = gfvComprasHoy(_liq.compras, ctxL.hoy);
+  const ctxL = ctxLiquidez(), gfvL = gfvActual();
   const liqHtml = tarjetaLiquidezHtml(_liq.L, gfvL, ctxL);
   h += `<div id="liq_moomoo">${liqHtml}</div>`;
 
@@ -7138,10 +7138,10 @@ const LIQ_MISMA_LECTURA_MS = 5000;     // efectivo (capturado_at) y liquidado (l
 const LIQ_VIEJO_MIN = 30, LIQ_HORA_MIN = 5;   // > 30 min: «dato viejo» en ámbar · en sesión, > 5 min: la HORA del dato
 // L: la liquidez normalizada (liquidezDeFila) · compras: las filas de compras_no_liquidadas de `hoy` · ts/ttl: la caché ·
 // enVuelo/despues: una lectura a la vez y como mucho UNA más encadenada (Realtime durante una lectura) · canal: los canales
-// de Realtime ya abiertos · por/porHoy: las insignias por contrato (gfvComprasHoy) del día · pintadas: las líneas que hay en
+// de Realtime ya abiertos · G/gHoy/gCompras: las compras del día clasificadas (gfvActual) · pintadas: las líneas que hay en
 // #liq_lineas ahora (el repintado en sitio solo las cambia si cambian: role=status anuncia cada cambio)
 const _liq = { L: null, compras: [], hoy: '', ts: 0, ttl: 0, enVuelo: null, despues: null, err: null, errCompras: null, sinColumnas: false,
-  timer: null, canal: false, por: null, porHoy: '', pintadas: null };
+  timer: null, canal: false, G: null, gHoy: '', gCompras: null, pintadas: null };
 // El row moomoo de cuenta_snapshots → lo que pinta la tarjeta. null sin row; { sinColumnas: true } si el row no trae la clave
 // tipo_cuenta (la 0022 no está aplicada). Un número que falta (N/A en OpenD → null en la base) se queda en null: «no sé»,
 // nunca 0. Sin liquidar = efectivo − liquidado SOLO si las dos cifras son de la MISMA lectura: el worker escribe el efectivo
@@ -7199,28 +7199,69 @@ function nombreContratoGfv(c) {
 //   abiertas:     'no_liquidada' que aún no se pueden vender (libre_desde > hoy) y no se han vendido → «no la vendas hoy»
 //   vendidas:     'no_liquidada' con una venta registrada HOY antes de liberarse (vendida_antes_at) → posible GFV
 //   desconocidas: 'desconocido' (el worker arrancó a media sesión sin el liquidado del inicio: no se sabe, y se dice)
-//   porContrato:  { claveCartera: { usd, sinMonto, libre, n } } con TODAS las 'no_liquidada' aún no libres (vendidas o no:
-//                 si queda parte de esa compra abierta, sigue sin poder venderse) → la insignia de cada posición
-// Una 'liquidada' no se pinta. El umbral de $1 de tasas ya lo aplicó el worker al decidir el estado.
+//   porContrato:  { claveCartera: { lotes } } con TODAS las compras de hoy de ese contrato, en orden de ejecución
+//   porClave:     { clave_fill: lote } — el lote de UNA compra (el Diario lista un lote por compra, con su clave_ext)
+// lote = { clave, at, contratos, estado, motivo, usd, libre }; estado:
+//   'riesgo' — 'no_liquidada' aún no libre, vendida o no (si queda parte de esa compra, sigue sin poder venderse hoy)
+//   'nose'   — 'desconocido' (motivo 'desconocido'): no se sabe si usó dinero sin liquidar
+//   'libre'  — 'liquidada' (o ya libre): se puede vender hoy
+// Una venta se lleva primero lo más viejo (FIFO, como el worker): qué se dice de cada posición lo decide gfvResumen.
+// El umbral de $1 de tasas ya lo aplicó el worker al decidir el estado.
 function gfvComprasHoy(compras, hoy) {
-  const out = { abiertas: [], vendidas: [], desconocidas: [], porContrato: {} };
+  const out = { abiertas: [], vendidas: [], desconocidas: [], porContrato: {}, porClave: {} };
+  const num = (v) => { if (v == null || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const lotes = [];
   (Array.isArray(compras) ? compras : []).forEach(c => {
     if (!c || c.broker !== 'moomoo' || String(c.fecha_ny || '').slice(0, 10) !== hoy) return;
-    if (c.estado === 'desconocido') { out.desconocidas.push(c); return; }
-    if (c.estado !== 'no_liquidada') return;
     const libre = String(c.libre_desde || '').slice(0, 10);
-    if (!(libre > hoy)) return;                                   // ya libre (o sin fecha): nada que avisar
-    const vendida = !!c.vendida_antes_at && ymdNY(c.vendida_antes_at) === hoy;
-    (vendida ? out.vendidas : out.abiertas).push(c);
-    const k = claveCartera({ ...c, broker: 'moomoo' });
-    if (!k) return;
-    const nl = (c.no_liquidado_usd == null || c.no_liquidado_usd === '') ? null : Number(c.no_liquidado_usd);
-    const g = out.porContrato[k] || (out.porContrato[k] = { usd: 0, sinMonto: false, libre, n: 0 });
-    if (nl != null && Number.isFinite(nl)) g.usd = Math.round((g.usd + nl) * 100) / 100; else g.sinMonto = true;
-    if (libre > g.libre) g.libre = libre;
-    g.n++;
+    let estado = 'libre', motivo = null;
+    if (c.estado === 'no_liquidada' && libre > hoy) {                // aún no libre (sin fecha: nada que avisar)
+      estado = 'riesgo';
+      const vendida = !!c.vendida_antes_at && ymdNY(c.vendida_antes_at) === hoy;
+      (vendida ? out.vendidas : out.abiertas).push(c);
+    } else if (c.estado === 'desconocido' || !['liquidada', 'no_liquidada'].includes(c.estado)) {
+      estado = 'nose'; motivo = 'desconocido';
+      out.desconocidas.push(c);
+    }
+    const nl = num(c.no_liquidado_usd), n = num(c.contratos);
+    lotes.push({ clave: String(c.clave_fill == null ? '' : c.clave_fill), at: String(c.ejecutado_at || ''), contratos: n != null && n > 0 ? n : null,
+      estado, motivo, usd: estado === 'riesgo' ? nl : null, libre: estado === 'riesgo' ? libre : null, c });
+  });
+  lotes.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  lotes.forEach(l => {
+    if (l.clave) out.porClave[l.clave] = l;
+    const k = claveCartera({ ...l.c, broker: 'moomoo' });
+    if (k) (out.porContrato[k] || (out.porContrato[k] = { lotes: [] })).lotes.push(l);
   });
   return out;
+}
+// Lo que se dice de UNA posición de moomoo (o de un lote del Diario) con las compras de hoy de su contrato (grupo.lotes, en
+// orden de ejecución) y los contratos que tiene AHORA (nPos; null = no se sabe). FIFO, como el worker (ventas_antes_de_
+// liberarse): una venta se lleva primero lo más viejo, así que desde la PRIMERA compra de hoy con problema (riesgo o «no sé»)
+// todo lo comprado después tampoco se puede vender hoy sin tocarla; lo de antes (de otros días o pagado con liquidado) sí.
+// null si no hay nada que avisar. PURA.
+//   nivel: 'rojo' (alguna en riesgo) | 'ambar' (solo «no sé») · m: contratos de hoy desde la primera con problema (null si
+//   alguna no lo dice) · todo: los nPos son todos de esas compras («no la vendas hoy»; si no, «hoy no vendas los ×m de hoy,
+//   lo más viejo sale primero») · usd/sinMonto: lo pagado con dinero sin liquidar · libre: cuándo queda libre la última en
+//   riesgo · motivo: el de la primera «no sé»
+function gfvResumen(grupo, nPos) {
+  const lotes = (grupo && Array.isArray(grupo.lotes)) ? grupo.lotes : [];
+  const j = lotes.findIndex(l => l && (l.estado === 'riesgo' || l.estado === 'nose'));
+  if (j < 0) return null;
+  const cola = lotes.slice(j);
+  let m = 0;
+  for (const l of cola) { if (!(Number(l.contratos) > 0)) { m = null; break; } m = Math.round((m + Number(l.contratos)) * 10000) / 10000; }
+  const n = Number(nPos);
+  const todo = m != null && nPos != null && Number.isFinite(n) && n > 0 && n <= m + 1e-9;
+  let usd = 0, sinMonto = false, libre = '';
+  const riesgo = cola.filter(l => l.estado === 'riesgo');
+  riesgo.forEach(l => {
+    const u = Number(l.usd);
+    if (l.usd != null && l.usd !== '' && Number.isFinite(u)) usd = Math.round((usd + u) * 100) / 100; else sinMonto = true;
+    if (l.libre && l.libre > libre) libre = l.libre;
+  });
+  const nose = cola.find(l => l.estado === 'nose');
+  return { nivel: riesgo.length ? 'rojo' : 'ambar', m, todo, usd, sinMonto, libre: libre || null, motivo: nose ? (nose.motivo || null) : null };
 }
 // Las líneas de la tarjeta (dentro de #liq_lineas, role=status): la venta que pudo ser GFV, las tres cifras, el liquidado al
 // empezar el día, una línea roja por compra que no se puede vender hoy, el «no sé» de las desconocidas y los errores. PURA.
@@ -7233,7 +7274,7 @@ function lineasLiquidezHtml(L, G, ctx) {
   let h = '';
   // 1) lo más grave primero: hoy se vendió una compra pagada con dinero sin liquidar antes de liberarse
   if ((g.vendidas || []).length) {
-    h += `<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation</b>: ${g.vendidas.map(c => `${esc(nombreContratoGfv(c))} (vendida a las ${esc(hora(c.vendida_antes_at))}, libre desde el ${libreHtml(c.libre_desde)})`).join(' · ')}. Si se repite, moomoo puede limitar la cuenta 90 días a solo dinero liquidado.</div>`;
+    h += `<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation</b>: ${g.vendidas.map(c => `${esc(nombreContratoGfv(c))} (vendida a las ${esc(hora(c.vendida_antes_at))}, libre desde el ${libreHtml(c.libre_desde)})`).join(' · ')}. Si te queda parte de esa compra, tampoco la vendas antes de ese día. Si se repite, moomoo puede limitar la cuenta 90 días a solo dinero liquidado.</div>`;
   }
   // 2) las cifras (un hueco se dice: un «no sé» nunca se pinta como $0)
   const sl = L.sinLiquidar;
@@ -7287,17 +7328,37 @@ function montoGfv(g) {
   if (!g.sinMonto) return dineroD(g.usd);
   return g.usd > 0 ? 'al menos ' + dineroD(g.usd) : null;
 }
-// La insignia roja de una posición de moomoo con compras de hoy pagadas con dinero sin liquidar (g = porContrato). PURA.
+// Por qué no se sabe (lote 'nose'). PURA.
+const MOTIVO_GFV = { desconocido: 'el servidor arrancó a media sesión' };
+function motivoGfv(g) { return esc((g && MOTIVO_GFV[g.motivo]) || 'no hay dato'); }
+// «los ×2» (contratos de hoy desde la primera con problema) o «los» si no se sabe cuántos. PURA.
+function cuantosGfv(g) { return g && g.m != null ? `los ×${esc(g.m)}` : 'los'; }
+// La insignia de una posición de moomoo (g = gfvResumen). Roja si alguna compra de hoy se pagó con dinero sin liquidar;
+// ámbar si no se sabe. Con contratos de antes en la posición (g.todo falso) dice cuáles no se venden hoy: los de hoy (FIFO:
+// lo más viejo sale primero). PURA.
 function insigniaGfvHtml(g) {
-  if (!g || !g.libre) return '';
-  const m = montoGfv(g);
-  return `<span class="gfv">⚠ No la vendas hoy · good faith · libre desde ${fechaGfvHtml(g.libre)} (${esc(m || 'no sé cuánto')} sin liquidar)</span>`;
+  if (!g || !g.nivel) return '';
+  if (g.nivel === 'rojo') {
+    if (!g.libre) return '';
+    const m = montoGfv(g);
+    return g.todo ? `<span class="gfv">⚠ No la vendas hoy · good faith · libre desde ${fechaGfvHtml(g.libre)} (${esc(m || 'no sé cuánto')} sin liquidar)</span>`
+      : `<span class="gfv">⚠ Good faith: hoy no vendas ${cuantosGfv(g)} comprados hoy · libres desde ${fechaGfvHtml(g.libre)} (${esc(m || 'no sé cuánto')} sin liquidar) · lo más viejo sale primero (FIFO)</span>`;
+  }
+  return g.todo ? `<span class="gfv nose">⚠ No sé si la pagaste con dinero sin liquidar (${motivoGfv(g)}) · mira Settled Cash en moomoo antes de venderla hoy</span>`
+    : `<span class="gfv nose">⚠ No sé si pagaste con dinero sin liquidar ${cuantosGfv(g)} comprados hoy (${motivoGfv(g)}) · mira Settled Cash en moomoo antes de venderlos hoy · lo más viejo sale primero (FIFO)</span>`;
 }
-// El mismo aviso en el cuadro «Vender en moomoo» (es donde se decide la venta). PURA.
+// El mismo aviso en el cuadro «Vender en moomoo» (es donde se decide la venta). «La compraste hoy» solo si TODO lo que tiene
+// es de hoy; si hay contratos de antes, cuáles no se venden hoy (el ticket es por la posición entera). PURA.
 function avisoVentaGfvHtml(g) {
-  if (!g || !g.libre) return '';
-  const m = montoGfv(g);
-  return `<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy</b>: la compraste hoy con ${m ? esc(m) + ' de' : ''} dinero sin liquidar y queda libre desde el ${fechaGfvHtml(g.libre)}. Venderla antes puede contar como <b>good faith violation</b> (cuenta de efectivo).</div>`;
+  if (!g || !g.nivel) return '';
+  const gfv = 'puede contar como <b>good faith violation</b> (cuenta de efectivo).';
+  if (g.nivel === 'rojo') {
+    if (!g.libre) return '';
+    const m = montoGfv(g);
+    if (g.todo) return `<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy</b>: la compraste hoy con ${m ? esc(m) + ' de' : ''} dinero sin liquidar y queda libre desde el ${fechaGfvHtml(g.libre)}. Venderla antes ${gfv}</div>`;
+    return `<div class="aviso gfvav" role="alert">⚠ <b>Hoy no vendas ${cuantosGfv(g)} que compraste hoy</b>: los pagaste${m ? ` (${esc(m)})` : ''} con dinero sin liquidar y quedan libres desde el ${fechaGfvHtml(g.libre)}. Una venta se lleva primero lo más viejo (FIFO): el ticket de abajo es por la posición entera, así que hoy vende solo lo que tenías de antes. Vender los de hoy antes ${gfv}</div>`;
+  }
+  return `<div class="aviso gfvav nose" role="alert">⚠ <b>No sé si ${g.todo ? 'la pagaste' : `pagaste ${cuantosGfv(g)} que compraste hoy`} con dinero sin liquidar</b> (${motivoGfv(g)}): mira Settled Cash en moomoo antes de ${g.todo ? 'venderla' : 'venderlos'} hoy. Si se pagó con dinero sin liquidar, venderla antes de que se liquide ${gfv}</div>`;
 }
 // Cuentas: «liquidado $79.17» junto al saldo de moomoo, solo con la cuenta CASH y con el dato (en una cuenta de margen lo
 // retirable no es lo liquidado); viejo → su edad y «dato viejo». PURA.
@@ -7310,16 +7371,38 @@ function liquidadoCuentaHtml(c, ahoraMs, hoy) {
 function ctxLiquidez() {
   return { hoy: hoyNY(), ahoraMs: Date.now(), enSesion: sesionNY(_hbUltimo) === 'regular', err: _liq.err, errCompras: _liq.errCompras };
 }
-// La insignia de un contrato (posición del libro o ítem de la cartera): solo moomoo, solo con la cuenta CASH leída, con las
-// compras de HOY (al cambiar el día NY se recalcula y lo de ayer ya está libre). Lee _liq (no es pura).
+// Las compras de hoy clasificadas (gfvComprasHoy), con caché: se rehace al cambiar el día NY o las compras leídas. Lee _liq.
+function gfvActual() {
+  const hoy = hoyNY();
+  if (_liq.G && _liq.gHoy === hoy && _liq.gCompras === _liq.compras) return _liq.G;
+  _liq.G = gfvComprasHoy(_liq.compras, hoy); _liq.gHoy = hoy; _liq.gCompras = _liq.compras;
+  return _liq.G;
+}
+// El aviso de una POSICIÓN (ficha del libro o ítem de la cartera): solo moomoo, solo con la cuenta CASH leída, con las compras
+// de HOY de su contrato (al cambiar el día NY se recalcula y lo de ayer ya está libre) y los contratos que tiene AHORA: los del
+// bróker (la cartera) si se leyeron, si no los de la ficha. Lee _liq y la cartera (no es pura).
 function gfvDe(x) {
   if (!x || (x.broker || 'etrade') !== 'moomoo' || !_liq.L || _liq.L.tipo !== 'CASH') return null;
-  const hoy = hoyNY();
-  if (!_liq.por || _liq.porHoy !== hoy) { _liq.por = gfvComprasHoy(_liq.compras, hoy).porContrato; _liq.porHoy = hoy; }
   const k = claveCartera({ ...x, broker: 'moomoo' });
-  return (k && _liq.por[k]) || null;
+  const g = k && gfvActual().porContrato[k];
+  if (!g) return null;
+  let br = x.clave === k ? x : null;
+  if (!br && typeof itemsCartera === 'function' && typeof _cart !== 'undefined') { try { br = itemsCartera(_cart).find(it => it && it.clave === k) || null; } catch (_) { br = null; } }
+  const n = Number(br && br.contratos) > 0 ? Number(br.contratos) : Number(x.contratos);
+  return gfvResumen(g, Number.isFinite(n) && n > 0 ? n : null);
+}
+// El aviso de un LOTE del Diario (una compra, con su clave_ext = clave_fill): el de ESA compra, no el del contrato (un lote
+// del lunes no lleva el aviso de la compra de hoy). Un lote de hoy sin clave, por su contrato. Lee _liq (no es pura).
+function gfvLoteDe(a) {
+  if (!a || a.broker !== 'moomoo' || !_liq.L || _liq.L.tipo !== 'CASH') return null;
+  const G = gfvActual();
+  const lote = (a.clave_ext != null && a.clave_ext !== '') ? G.porClave[String(a.clave_ext)] : null;
+  if (lote) return gfvResumen({ lotes: [lote] }, Number(a.contratos) > 0 ? Number(a.contratos) : null);
+  if ((a.clave_ext != null && a.clave_ext !== '') || String(a.fecha_ny || '').slice(0, 10) !== hoyNY()) return null;
+  return gfvDe(a);
 }
 function insigniaGfvDe(x) { return insigniaGfvHtml(gfvDe(x)); }
+function insigniaGfvLote(a) { return insigniaGfvHtml(gfvLoteDe(a)); }
 function avisoVentaGfv(p) { return avisoVentaGfvHtml(gfvDe(p)); }
 // Lee el row moomoo de cuenta_snapshots y, SOLO con la cuenta CASH, las compras_no_liquidadas de hoy. Caché: 30 s con la
 // cuenta CASH, 10 min sin moomoo o MARGIN, 15 min sin la 0022, 1 min tras un fallo (lo leído antes se queda, con su hora:
@@ -7349,7 +7432,7 @@ function cargarLiquidez(forzar) {
         }
       }
     } catch (e) { err = String((e && e.message) || e || 'error').slice(0, 90); ttl = LIQ_TTL_ERR_MS; }
-    Object.assign(_liq, { L, compras, hoy, ts: Date.now(), ttl, err, errCompras, sinColumnas, por: null, porHoy: '' });
+    Object.assign(_liq, { L, compras, hoy, ts: Date.now(), ttl, err, errCompras, sinColumnas, G: null });
     if (L && L.tipo === 'CASH') suscribirLiquidez();
     return !err && !errCompras;
   })().finally(() => { _liq.enVuelo = null; });
@@ -7391,7 +7474,7 @@ function pintarLiquidezEnSitio() {
   if (!enCopilotoAhora()) return 0;
   let n = 0;
   const ctx = ctxLiquidez();
-  const G = gfvComprasHoy(_liq.compras, ctx.hoy);
+  const G = gfvActual();
   const cont = $('#liq_moomoo');
   if (cont) {
     const html = tarjetaLiquidezHtml(_liq.L, G, ctx);
@@ -12478,7 +12561,7 @@ function seccionAbiertosDiario(abiertos, comparacion, huerfanas) {
   if (!(abiertos || []).length) h += `<div class="card vacio">Ningún contrato abierto según las ejecuciones guardadas.</div>`;
   else h += `<div class="card" style="padding:4px 13px 8px">${abiertos.map(a => `<div class="fila" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start">
       <div><b style="font-size:13.5px">${esc(a.symbol)} ${esc(a.direccion)} ${esc(a.strike)}</b> <span class="fresco">${esc(fechaCorta(a.expiracion))}</span>
-        <div class="fresco">${esc(BROKER_CORTO[a.broker] || a.broker)} · entró ${esc(fechaCorta(a.fecha_ny))}${a.dias_abiertos != null ? ` · ${a.dias_abiertos} d abierto` : ''}</div>${a.broker === 'moomoo' && typeof insigniaGfvDe === 'function' ? insigniaGfvDe(a) : ''}</div>
+        <div class="fresco">${esc(BROKER_CORTO[a.broker] || a.broker)} · entró ${esc(fechaCorta(a.fecha_ny))}${a.dias_abiertos != null ? ` · ${a.dias_abiertos} d abierto` : ''}</div>${a.broker === 'moomoo' && typeof insigniaGfvLote === 'function' ? insigniaGfvLote(a) : ''}</div>
       <div class="mono" style="text-align:right;flex:none"><b>×${esc(a.contratos)} @ $${esc(Number(a.prima).toFixed(2))}</b>
         <div class="fresco">costó ${dineroD(a.costo)} · <span style="${a.vence_en != null && a.vence_en <= 0 ? 'color:var(--rojo);font-weight:700' : ''}">${a.vence_en == null ? 'sin vencimiento' : a.vence_en === 0 ? 'VENCE HOY' : a.vence_en < 0 ? 'vencido' : 'vence en ' + a.vence_en + ' d'}</span></div>${a.vence_en != null && a.vence_en < 0 ? '' : `
         <a href="#" class="lnk" onclick="MZ.calcDeAbierto('${esc(a.broker + '|' + a.contrato)}');return false" style="font-family:var(--sans);font-weight:600;text-decoration:none" title="Calculadora de limit y stop con las compras abiertas de este contrato">Calcular limit</a>`}</div></div>`).join('')}
