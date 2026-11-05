@@ -6787,11 +6787,14 @@ async function vistaCuentasSaldos() {
           + ` · <a href="#" onclick="MZ.olvidar('${b.k}');return false" style="color:var(--tx3)">olvidar en este equipo</a>`
           + (b.k === 'schwab' ? ` · <a href="#" onclick="MZ.swCambiarCuenta();return false" style="color:var(--tx3)">cambiar cuenta</a>` : '') : '';
       const hist = b.k === 'etrade' ? etradeLineaHistorial(etHist) : b.k === 'schwab' ? schwabLineaHistorial(swHist) : '';
+      // v69: moomoo (cuenta de efectivo) lleva «liquidado $X» debajo del saldo, solo si hay dato (sql 0022 + worker 0.1.13)
+      const liq = (b.k === 'moomoo' && typeof liquidadoCuentaHtml === 'function') ? liquidadoCuentaHtml(c, Date.now(), hoyNY()) : '';
+      const saldoHtml = `<span class="mono" style="font-weight:700;font-size:15px">${usd(c.saldo_neto)}</span>`;
       return `<div class="card"><div class="fila">
       <div><b style="font-size:14px">${esc(b.n)}</b> <span class="mut">${esc(c.numero_mascara||'')}</span>
         <div class="fresco">${orig} · ${esc(haceCuanto(c.capturado_at).txt)}${reconn}</div>
         ${hist ? `<div class="fresco">${hist}</div>` : ''}</div>
-      <span class="mono" style="font-weight:700;font-size:15px">${usd(c.saldo_neto)}</span></div></div>`;
+      ${liq ? `<div style="text-align:right;flex:none">${saldoHtml}${liq}</div>` : saldoHtml}</div></div>`;
     }
     const sub = b.k === 'tasty' ? 'conectando…'
       : (b.k === 'etrade' && etSinRed) ? 'sin conexión con el proxy — E*TRADE sigue conectada en este equipo'
