@@ -7135,13 +7135,14 @@ const LIQ_TTL_SQL_MS = 15 * 60000;     // sin la sql 0022 (el row no trae tipo_c
 const LIQ_TTL_ERR_MS = 60000;          // una lectura que falló: al minuto (el ruta() de 60 s)
 const LIQ_RUIDO_USD = 1;               // ≤ $1 de diferencia es ruido de tasas (el mismo umbral del worker)
 const LIQ_MISMA_LECTURA_MS = 5000;     // efectivo (capturado_at) y liquidado (liquidado_at) a ≤ 5 s: la MISMA lectura
+const LIQ_TRAS_COMPRA_MS = 2000;       // una compra más de 2 s posterior a la lectura: la lectura es de ANTES de esa compra
 const LIQ_VIEJO_MIN = 30, LIQ_HORA_MIN = 5;   // > 30 min: «dato viejo» en ámbar · en sesión, > 5 min: la HORA del dato
 // L: la liquidez normalizada (liquidezDeFila) · compras: las filas de compras_no_liquidadas de `hoy` · ts/ttl: la caché ·
 // enVuelo/despues: una lectura a la vez y como mucho UNA más encadenada (Realtime durante una lectura) · canal: los canales
-// de Realtime ya abiertos · G/gHoy/gCompras: las compras del día clasificadas (gfvActual) · pintadas: las líneas que hay en
+// de Realtime ya abiertos · G/gHoy/gCompras/gLibro/gMotivo: las compras del día clasificadas (gfvActual) · pintadas: las líneas que hay en
 // #liq_lineas ahora (el repintado en sitio solo las cambia si cambian: role=status anuncia cada cambio)
 const _liq = { L: null, compras: [], hoy: '', ts: 0, ttl: 0, enVuelo: null, despues: null, err: null, errCompras: null, sinColumnas: false,
-  timer: null, canal: false, G: null, gHoy: '', gCompras: null, pintadas: null };
+  timer: null, canal: false, G: null, gHoy: '', gCompras: null, gLibro: null, gMotivo: '', pintadas: null };
 // El row moomoo de cuenta_snapshots → lo que pinta la tarjeta. null sin row; { sinColumnas: true } si el row no trae la clave
 // tipo_cuenta (la 0022 no está aplicada). Un número que falta (N/A en OpenD → null en la base) se queda en null: «no sé»,
 // nunca 0. Sin liquidar = efectivo − liquidado SOLO si las dos cifras son de la MISMA lectura: el worker escribe el efectivo
@@ -7195,6 +7196,19 @@ function nombreContratoGfv(c) {
   const d = String((c && c.direccion) || '').toUpperCase().startsWith('P') ? 'P' : 'C';
   return (c && c.strike != null && c.strike !== '' && Number.isFinite(k) && k > 0) ? `${sym} ${k}${d}` : sym;
 }
+// Las compras de moomoo de `hoy` que ya están en el LIBRO de fills, como las lee el worker (liquidez.normalizar_fill: clave,
+// instante, contratos > 0, lado 'compra', día NY = fecha_ny o el de su instante), en orden de ejecución. PURA.
+function comprasLibroHoy(filas, hoy) {
+  const out = [];
+  (Array.isArray(filas) ? filas : []).forEach(f => {
+    if (!f || f.broker !== 'moomoo' || f.lado !== 'compra' || f.clave_ext == null || f.clave_ext === '') return;
+    const ms = Date.parse(f.ejecutado_at || ''), n = Number(f.contratos);
+    if (!Number.isFinite(ms) || !(n > 0)) return;
+    if ((String(f.fecha_ny || '').slice(0, 10) || ymdNY(f.ejecutado_at)) !== hoy) return;
+    out.push({ clave: String(f.clave_ext), at: String(f.ejecutado_at), ms, contratos: n, symbol: f.symbol, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion });
+  });
+  return out.sort((a, b) => a.ms - b.ms);
+}
 // Las compras de moomoo de `hoy` (filas de compras_no_liquidadas) repartidas para pintar. PURA.
 //   abiertas:     'no_liquidada' que aún no se pueden vender (libre_desde > hoy) y no se han vendido → «no la vendas hoy»
 //   vendidas:     'no_liquidada' con una venta registrada HOY antes de liberarse (vendida_antes_at) → posible GFV
@@ -7207,8 +7221,14 @@ function nombreContratoGfv(c) {
 //   'libre'  — 'liquidada' (o ya libre): se puede vender hoy
 // Una venta se lleva primero lo más viejo (FIFO, como el worker): qué se dice de cada posición lo decide gfvResumen.
 // El umbral de $1 de tasas ya lo aplicó el worker al decidir el estado.
-function gfvComprasHoy(compras, hoy) {
-  const out = { abiertas: [], vendidas: [], desconocidas: [], porContrato: {}, porClave: {} };
+// extra.libro (comprasLibroHoy): las compras de moomoo de hoy que YA están en el libro de fills. Una sin su fila en
+// compras_no_liquidadas es una compra que el servidor aún no evaluó (en la ventana de señales solo lee el hilo de las
+// ejecuciones, y si esa lectura falla no se reintenta hasta la foto de las 9:48): lote 'nose' (motivo extra.motivoFalta,
+// 'sin_evaluar' por defecto) y en sinEvaluar, para decirlo en la tarjeta, en la insignia y en el cuadro de venta.
+// ultimaCompraMs: el instante de la última compra de hoy (filas o libro).
+function gfvComprasHoy(compras, hoy, extra) {
+  const x = extra || {};
+  const out = { abiertas: [], vendidas: [], desconocidas: [], sinEvaluar: [], porContrato: {}, porClave: {}, ultimaCompraMs: null };
   const num = (v) => { if (v == null || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
   const lotes = [];
   (Array.isArray(compras) ? compras : []).forEach(c => {
@@ -7224,10 +7244,19 @@ function gfvComprasHoy(compras, hoy) {
       out.desconocidas.push(c);
     }
     const nl = num(c.no_liquidado_usd), n = num(c.contratos);
-    lotes.push({ clave: String(c.clave_fill == null ? '' : c.clave_fill), at: String(c.ejecutado_at || ''), contratos: n != null && n > 0 ? n : null,
+    lotes.push({ clave: String(c.clave_fill == null ? '' : c.clave_fill), at: String(c.ejecutado_at || ''), ms: Date.parse(c.ejecutado_at || ''), contratos: n != null && n > 0 ? n : null,
       estado, motivo, usd: estado === 'riesgo' ? nl : null, libre: estado === 'riesgo' ? libre : null, c });
   });
-  lotes.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  const conFila = new Set(lotes.map(l => l.clave));
+  (Array.isArray(x.libro) ? x.libro : []).forEach(f => {
+    if (!f || !f.clave || conFila.has(f.clave)) return;
+    conFila.add(f.clave);
+    out.sinEvaluar.push(f);
+    lotes.push({ clave: f.clave, at: f.at, ms: f.ms, contratos: f.contratos, estado: 'nose', motivo: x.motivoFalta || 'sin_evaluar', usd: null, libre: null, c: f });
+  });
+  // en orden de ejecución por INSTANTE (no por texto: la base y Realtime no escriben la zona igual)
+  lotes.sort((a, b) => { const ta = Number.isFinite(a.ms) ? a.ms : Infinity, tb = Number.isFinite(b.ms) ? b.ms : Infinity; return ta - tb; });
+  lotes.forEach(l => { if (Number.isFinite(l.ms) && (out.ultimaCompraMs == null || l.ms > out.ultimaCompraMs)) out.ultimaCompraMs = l.ms; });
   lotes.forEach(l => {
     if (l.clave) out.porClave[l.clave] = l;
     const k = claveCartera({ ...l.c, broker: 'moomoo' });
@@ -7290,7 +7319,8 @@ function lineasLiquidezHtml(L, G, ctx) {
     h += `<div class="fresco">según esa lectura: liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b>` : 'no sé'} · sin liquidar ${sl == null ? 'no sé'
       : sl < 0.005 ? `<b class="mono">${dineroD(0)}</b>` : `<b class="mono">${dineroD(sl)}</b>${libre}`} · poder de compra ${L.poder != null ? `<b class="mono">${dineroD(L.poder)}</b>` : 'sin dato'}</div>`;
   } else {
-    h += `<div class="liqfila">Liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b> <span class="liqd">— lo que compres hasta esto lo puedes vender hoy</span>`
+    const tras = compraTrasLectura(L, g, hoy);
+    h += `<div class="liqfila">Liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b> <span class="liqd">— ${tras ? `de antes de tu compra de las ${esc(tras.hora)}: aún no la descuenta` : 'lo que compres hasta esto lo puedes vender hoy'}</span>`
       : '<b>no sé</b> <span class="liqd">— moomoo no dio el dato (Settled Cash): míralo en su app antes de vender algo comprado hoy</span>'}</div>`;
     // se_libera_el es el siguiente hábil del día de la lectura (> hoy); sin él, «el próximo día hábil»; uno ≤ hoy en una
     // lectura de hoy no casa: «no sé cuándo»
@@ -7307,10 +7337,34 @@ function lineasLiquidezHtml(L, G, ctx) {
     h += `<div class="liqal">⚠ <b>${esc(nombreContratoGfv(c))}</b>${n ? ` ×${esc(n)}` : ''}${hh ? ` · ${esc(hh)}` : ''} · ${nl != null ? `${dineroD(nl)} de ${dineroD(monto)} sin liquidar` : `${dineroD(monto)}: no sé cuánto sin liquidar`} — <b>no la vendas hoy</b>: libre desde el ${libreHtml(c.libre_desde)}</div>`;
   });
   if ((g.desconocidas || []).length) h += `<div class="liqam">⚠ No sé si tus compras de hoy usaron dinero sin liquidar (el servidor arrancó a media sesión): mira Settled Cash en moomoo.</div>`;
+  // compras del libro que el servidor aún no evaluó (si no se pudieron leer las compras, ya lo dice la línea de errCompras)
+  const se = g.sinEvaluar || [];
+  if (se.length && !c0.errCompras) {
+    const uno = se.length === 1;
+    const lista = se.map(f => { const n = num(f.contratos), hh = hora(f.at); return `<b>${esc(nombreContratoGfv(f))}</b>${n ? ` ×${esc(n)}` : ''}${hh ? ` · ${esc(hh)}` : ''}`; }).join(', ');
+    h += `<div class="liqam">⚠ No sé si ${uno ? 'tu compra' : 'tus compras'} ${lista} ${uno ? 'usó' : 'usaron'} dinero sin liquidar (el servidor aún no ${uno ? 'la ha' : 'las ha'} evaluado): mira Settled Cash en moomoo antes de ${uno ? 'venderla' : 'venderlas'} hoy.</div>`;
+  }
+  const trasL = (hoy && L.at && ymdNY(L.at) === hoy) ? compraTrasLectura(L, g, hoy) : null;
+  if (trasL) h += `<div class="liqam">⚠ Esta lectura es de las ${esc(horaNY(Date.parse(L.at)))}, antes de tu compra de las ${esc(trasL.hora)}: las cifras de arriba aún no la descuentan.</div>`;
   if (c0.errCompras) h += `<div class="liqam">No pude leer tus compras de hoy (${esc(c0.errCompras)}): mira Settled Cash en moomoo antes de vender algo comprado hoy.</div>`;
   if (c0.err) h += `<div class="fresco">no pude volver a leer la liquidez (${esc(c0.err)}): las cifras son de la última lectura</div>`;
   h += `<div class="fresco">Cuenta de efectivo: comprar con dinero sin liquidar está permitido; vender esa compra antes de que ese dinero se liquide (el día hábil siguiente) es una good faith violation.</div>`;
   return h;
+}
+// La última compra de hoy POSTERIOR a la lectura de liquidez (más de 2 s): la lectura es de antes y sus cifras aún no la
+// descuentan (en la ventana 9:29-9:48 solo lee el hilo de las ejecuciones; si esa lectura falla, la foto no vuelve a leer
+// hasta las 9:48). { ms, hora } o null. PURA.
+function compraTrasLectura(L, G, hoy) {
+  const u = G && G.ultimaCompraMs, ms = Date.parse((L && L.at) || '');
+  if (!Number.isFinite(u) || !Number.isFinite(ms) || !hoy || ymdNY(L.at) !== hoy) return null;
+  return u > ms + LIQ_TRAS_COMPRA_MS ? { ms: u, hora: horaNY(u) } : null;
+}
+// La edad del dato con la compra posterior: «dato de las 09:30 · antes de tu compra de las 09:31», en ámbar. PURA.
+function edadLiquidezDe(L, G, ctx) {
+  const c0 = ctx || {};
+  const e = edadLiquidez(L && L.at, c0.ahoraMs, c0.enSesion, c0.hoy);
+  const tras = compraTrasLectura(L, G, c0.hoy);
+  return tras ? { txt: `${e.txt} · antes de tu compra de las ${tras.hora}`, viejo: true } : e;
 }
 // La tarjeta «Liquidez moomoo · cuenta de efectivo»: '' salvo con la cuenta CASH (sin row, MARGIN, tipo desconocido o sin la
 // 0022 no hay tarjeta). La edad va en la cabecera (#liq_edad) y las líneas en #liq_lineas (role=status, aria-live cortés):
@@ -7318,7 +7372,7 @@ function lineasLiquidezHtml(L, G, ctx) {
 function tarjetaLiquidezHtml(L, G, ctx) {
   if (!L || L.sinColumnas || L.tipo !== 'CASH') return '';
   const c0 = ctx || {};
-  const e = edadLiquidez(L.at, c0.ahoraMs, c0.enSesion, c0.hoy);
+  const e = edadLiquidezDe(L, G, c0);
   return `<div class="card liq"><div class="fila liqcab"><h3>Liquidez moomoo · cuenta de efectivo</h3><span id="liq_edad" class="${claseEdadLiquidez(e)}">${edadLiquidezHtml(e)}</span></div>`
     + `<div id="liq_lineas" role="status" aria-live="polite">${lineasLiquidezHtml(L, G, c0)}</div></div>`;
 }
@@ -7329,7 +7383,8 @@ function montoGfv(g) {
   return g.usd > 0 ? 'al menos ' + dineroD(g.usd) : null;
 }
 // Por qué no se sabe (lote 'nose'). PURA.
-const MOTIVO_GFV = { desconocido: 'el servidor arrancó a media sesión' };
+const MOTIVO_GFV = { desconocido: 'el servidor arrancó a media sesión', sin_evaluar: 'el servidor aún no ha evaluado esa compra',
+  sin_leer: 'no pude leer tus compras de hoy' };
 function motivoGfv(g) { return esc((g && MOTIVO_GFV[g.motivo]) || 'no hay dato'); }
 // «los ×2» (contratos de hoy desde la primera con problema) o «los» si no se sabe cuántos. PURA.
 function cuantosGfv(g) { return g && g.m != null ? `los ×${esc(g.m)}` : 'los'; }
@@ -7372,10 +7427,15 @@ function ctxLiquidez() {
   return { hoy: hoyNY(), ahoraMs: Date.now(), enSesion: sesionNY(_hbUltimo) === 'regular', err: _liq.err, errCompras: _liq.errCompras };
 }
 // Las compras de hoy clasificadas (gfvComprasHoy), con caché: se rehace al cambiar el día NY o las compras leídas. Lee _liq.
+// También mira el libro de fills (_libro.filas, la caché que ya tienen el Copiloto y el Diario; sin leer nada): una compra
+// de hoy que está en el libro y no en compras_no_liquidadas es una que el servidor aún no evaluó.
 function gfvActual() {
   const hoy = hoyNY();
-  if (_liq.G && _liq.gHoy === hoy && _liq.gCompras === _liq.compras) return _liq.G;
-  _liq.G = gfvComprasHoy(_liq.compras, hoy); _liq.gHoy = hoy; _liq.gCompras = _liq.compras;
+  const libro = (typeof _libro === 'object' && _libro && Array.isArray(_libro.filas)) ? _libro.filas : null;
+  const motivo = _liq.errCompras ? 'sin_leer' : 'sin_evaluar';
+  if (_liq.G && _liq.gHoy === hoy && _liq.gCompras === _liq.compras && _liq.gLibro === libro && _liq.gMotivo === motivo) return _liq.G;
+  _liq.G = gfvComprasHoy(_liq.compras, hoy, { libro: libro ? comprasLibroHoy(libro, hoy) : [], motivoFalta: motivo });
+  Object.assign(_liq, { gHoy: hoy, gCompras: _liq.compras, gLibro: libro, gMotivo: motivo });
   return _liq.G;
 }
 // El aviso de una POSICIÓN (ficha del libro o ítem de la cartera): solo moomoo, solo con la cuenta CASH leída, con las compras
@@ -7467,6 +7527,14 @@ function liquidezCambio(payload) {
     cargarLiquidez(true).then(() => pintarLiquidezEnSitio()).catch(() => {});
   }, 800);
 }
+// Un fill de moomoo llegado por Realtime (libroFillRT): con la cuenta CASH, la liquidez se relee y se repinta EN SITIO como
+// con un evento de cuenta_snapshots (si la lectura del servidor tras esa compra falló, la tarjeta y la insignia dicen ya el
+// «no sé» de una compra sin evaluar, sin esperar al repintado de 60 s). true si se pidió.
+function liquidezPorFill(f) {
+  if (!f || f.broker !== 'moomoo' || !_liq.L || _liq.L.tipo !== 'CASH') return false;
+  liquidezCambio({ new: { broker: 'moomoo' } });
+  return true;
+}
 // Repintado EN SITIO (sin innerHTML de #vista, como pintarVivoEnSitio): la tarjeta (#liq_moomoo; si ya está, solo su edad y,
 // si cambiaron, sus líneas) y las insignias de las posiciones de moomoo (#g_gfv_<id> del libro, #g_bgfv_<clave> de lo que el
 // bróker tiene sin registrar). Devuelve cuántos sitios tocó.
@@ -7480,7 +7548,7 @@ function pintarLiquidezEnSitio() {
     const html = tarjetaLiquidezHtml(_liq.L, G, ctx);
     const lin = $('#liq_lineas'), ed = $('#liq_edad');
     if (html && lin && ed) {
-      const e = edadLiquidez(_liq.L.at, ctx.ahoraMs, ctx.enSesion, ctx.hoy);
+      const e = edadLiquidezDe(_liq.L, G, ctx);
       ed.className = claseEdadLiquidez(e); ed.innerHTML = edadLiquidezHtml(e);
       const nuevas = lineasLiquidezHtml(_liq.L, G, ctx);
       if (nuevas !== _liq.pintadas) { lin.innerHTML = nuevas; _liq.pintadas = nuevas; }   // role=status: solo se anuncia lo que CAMBIÓ
@@ -11893,6 +11961,7 @@ function libroFillRT(payload, modo) {
   if (_libro.rt.length > LIBRO_RT_MAX) _libro.rt.splice(0, _libro.rt.length - LIBRO_RT_MAX);
   if (_libro.filas) _libro.filas = fusionarLibro(_libro.filas, [e]);
   libroRepintarPronto();
+  if (typeof liquidezPorFill === 'function') { try { liquidezPorFill(e.fila); } catch (_) {} }   // v69: la liquidez de moomoo en el Copiloto
   return true;
 }
 function libroFillNuevo(payload) { return libroFillRT(payload, 'insert'); }

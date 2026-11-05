@@ -32,9 +32,9 @@ const NOMBRES = ['liquidezDeFila', 'edadLiquidez', 'nombreContratoGfv', 'gfvComp
 const faltan = NOMBRES.filter(n => !tiene(n));
 if (faltan.length) { C.falla('no existe la liquidez de moomoo ni el aviso de good faith (faltan: ' + faltan.join(', ') + ')'); C.resumen(); }
 
-const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'nombreContratoGfv', 'gfvComprasHoy', 'gfvResumen', 'lineasLiquidezHtml',
+const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'edadLiquidezDe', 'compraTrasLectura', 'nombreContratoGfv', 'comprasLibroHoy', 'gfvComprasHoy', 'gfvResumen', 'lineasLiquidezHtml',
   'tarjetaLiquidezHtml', 'montoGfv', 'motivoGfv', 'cuantosGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaGfvHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
-const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN', 'MOTIVO_GFV'] });
+const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_TRAS_COMPRA_MS', 'LIQ_VIEJO_MIN', 'MOTIVO_GFV'] });
 
 const HOY = '2026-11-04';                 // miércoles (las secciones PURAS: la hora entra como argumento)
 // Las secciones que corren con el reloj de VERDAD (ctxLiquidez usa Date.now, cargarModuloEntero el día real) usan el día NY
@@ -118,7 +118,7 @@ const COMPRA = (o) => Object.assign({ user_id: 'u1', broker: 'moomoo', clave_fil
     [null, 40], 'una compra sin monto se anota sin monto: nunca se inventa');
   igual(P.gfvResumen(P.gfvComprasHoy([COMPRA({ no_liquidado_usd: null }), COMPRA({ clave_fill: 'x', no_liquidado_usd: 40 })], HOY).porContrato['moomoo|SPY|CALL|585|2026-11-07'], 4),
     { nivel: 'rojo', m: 4, todo: true, usd: 40, sinMonto: true, libre: '2026-11-05', motivo: null }, '… y el resumen lo dice (sinMonto: «al menos»)');
-  igual(P.gfvComprasHoy(null, HOY), { abiertas: [], vendidas: [], desconocidas: [], porContrato: {}, porClave: {} }, 'sin filas: nada');
+  igual(P.gfvComprasHoy(null, HOY), { abiertas: [], vendidas: [], desconocidas: [], sinEvaluar: [], porContrato: {}, porClave: {}, ultimaCompraMs: null }, 'sin filas: nada');
   igual(P.gfvComprasHoy([COMPRA({ vendida_antes_at: '2026-11-03T16:00:00Z' })], HOY).vendidas.length, 0, 'una venta de otro día no es «de hoy»');
   igual([P.montoGfv({ usd: 122.83, sinMonto: false }), P.montoGfv({ usd: 50, sinMonto: true }), P.montoGfv({ usd: 0, sinMonto: true }), P.montoGfv(null)],
     ['$122.83', 'al menos $50.00', null, null], 'el monto de la insignia: exacto, «al menos» o null (no se sabe)');
@@ -206,6 +206,45 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
       P.liquidezDeFila(ROW({ liquidado_at: null })).sinLiquidar], [3807.63, 3807.63, null],
       'la foto del worker escribe efectivo + liquidado sin capturado_at (capturado más viejo): misma lectura; ≤ 5 s de diferencia: misma; sin liquidado_at: no se sabe');
   }
+  // R5 (revisión «la verdad»): la lectura es de ANTES de la última compra y esa compra no tiene fila (en la ventana solo lee el
+  // hilo de las ejecuciones; si su lectura falla no se reintenta hasta las 9:48). El libro de fills ya tiene la compra.
+  {
+    const FILL = (o) => Object.assign({ id: 1, broker: 'moomoo', lado: 'compra', clave_ext: 'mm-931', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07',
+      contratos: 3, precio: 7.5, ejecutado_at: '2026-11-04T14:31:10+00:00', fecha_ny: HOY }, o || {});
+    const lib = P.comprasLibroHoy([FILL(), FILL({ clave_ext: 'v1', lado: 'venta' }), FILL({ clave_ext: 'e1', broker: 'etrade' }), FILL({ clave_ext: 'ay', fecha_ny: '2026-11-03', ejecutado_at: '2026-11-03T15:00:00Z' }),
+      FILL({ clave_ext: '' }), FILL({ clave_ext: 'c0', contratos: 0 }), FILL({ clave_ext: 'sinat', ejecutado_at: null }), FILL({ clave_ext: 'mm-920', ejecutado_at: '2026-11-04 14:20:00+00', fecha_ny: null }), null], HOY);
+    igual(lib.map(f => f.clave), ['mm-920', 'mm-931'], 'comprasLibroHoy: solo compras de moomoo de HOY con clave, instante y contratos (como las lee el worker), por instante');
+    const L5 = P.liquidezDeFila(ROW({ efectivo: 3000, saldo_neto: 3000, poder_compra: 3000, efectivo_liquidado: 500, capturado_at: '2026-11-04T14:00:00Z', liquidado_at: '2026-11-04T14:30:31Z',
+      liquidado_inicio: 500, liquidado_inicio_fecha: HOY }));
+    const C5 = { hoy: HOY, ahoraMs: MS('2026-11-04T14:40:00Z'), enSesion: true };
+    const G5 = P.gfvComprasHoy([], HOY, { libro: P.comprasLibroHoy([FILL()], HOY) });
+    igual([G5.sinEvaluar.map(f => f.clave), G5.porClave['mm-931'].estado, G5.porClave['mm-931'].motivo, G5.ultimaCompraMs], [['mm-931'], 'nose', 'sin_evaluar', MS('2026-11-04T14:31:10Z')],
+      'la compra del libro SIN fila en compras_no_liquidadas: «no sé» (sin evaluar)');
+    const h5 = P.tarjetaLiquidezHtml(L5, G5, C5), t5 = txt(h5);
+    assert(/<span id="liq_edad" class="liqedad viejo">dato de las 09:30 · antes de tu compra de las 09:31 · dato viejo<\/span>/.test(h5), 'la edad dice que la lectura es de ANTES de la compra, en ámbar', h5.slice(0, 300));
+    assert(t5.includes('Liquidado $500.00 — de antes de tu compra de las 09:31: aún no la descuenta') && !/lo puedes vender hoy/.test(t5), 'el liquidado ya no dice «lo puedes vender hoy» con una lectura de antes de la compra', t5);
+    assert(t5.includes('⚠ No sé si tu compra SPY 585C ×3 · 09:31 usó dinero sin liquidar (el servidor aún no la ha evaluado): mira Settled Cash en moomoo antes de venderla hoy.'), 'línea ámbar: la compra sin evaluar, con su «no sé»', t5);
+    assert(t5.includes('⚠ Esta lectura es de las 09:30, antes de tu compra de las 09:31: las cifras de arriba aún no la descuentan.'), 'línea ámbar: la lectura es de antes de la compra');
+    const g5 = P.gfvResumen(G5.porContrato['moomoo|SPY|CALL|585|2026-11-07'], 3);
+    igual([g5.nivel, g5.todo, g5.motivo], ['ambar', true, 'sin_evaluar'], 'esa posición: ámbar «no sé»');
+    assert(P.insigniaGfvHtml(g5).includes('No sé si la pagaste con dinero sin liquidar (el servidor aún no ha evaluado esa compra)') && /class="aviso gfvav nose"/.test(P.avisoVentaGfvHtml(g5)),
+      'la insignia y el cuadro «Vender en moomoo» de ese contrato dicen el «no sé» (antes: ni una palabra)');
+    // con su fila (el worker la evaluó: liquidada) ya no hay «no sé»; la lectura sigue siendo de antes de la compra
+    const G6 = P.gfvComprasHoy([COMPRA({ clave_fill: 'mm-931', estado: 'liquidada', no_liquidado_usd: 0, libre_desde: HOY, ejecutado_at: '2026-11-04T14:31:10Z', contratos: 3 })], HOY, { libro: P.comprasLibroHoy([FILL()], HOY) });
+    const t6 = txt(P.tarjetaLiquidezHtml(L5, G6, C5));
+    assert(G6.sinEvaluar.length === 0 && !/No sé si tu compra/.test(t6) && /antes de tu compra de las 09:31/.test(t6) && P.gfvResumen(G6.porContrato['moomoo|SPY|CALL|585|2026-11-07'], 3) === null,
+      'con su fila (liquidada): sin «no sé» ni insignia; solo que la lectura es de antes', t6);
+    // una compra a ≤ 2 s de la lectura no es «de antes» (reloj de moomoo vs el del servidor)
+    const G7 = P.gfvComprasHoy([], HOY, { libro: P.comprasLibroHoy([FILL({ ejecutado_at: '2026-11-04T14:30:32Z' })], HOY) });
+    assert(!/antes de tu compra/.test(P.tarjetaLiquidezHtml(L5, G7, C5)), 'una compra a 1 s de la lectura no marca la lectura como de antes');
+    // sin poder leer las compras: el motivo es ese y la línea de errCompras no se repite
+    const G8 = P.gfvComprasHoy([], HOY, { libro: P.comprasLibroHoy([FILL()], HOY), motivoFalta: 'sin_leer' });
+    const t8 = txt(P.tarjetaLiquidezHtml(L5, G8, { ...C5, errCompras: 'sin red' }));
+    assert(G8.porClave['mm-931'].motivo === 'sin_leer' && !/No sé si tu compra/.test(t8) && /No pude leer tus compras de hoy/.test(t8), 'sin las compras leídas: motivo «no pude leer tus compras» y una sola línea');
+    // la base y Realtime no escriben la zona igual: el orden es por instante
+    const G9 = P.gfvComprasHoy([COMPRA({ clave_fill: 'b', ejecutado_at: '2026-11-04T10:00:00-05:00' })], HOY, { libro: [{ clave: 'a', at: '2026-11-04T14:59:00+00:00', ms: MS('2026-11-04T14:59:00Z'), contratos: 1, symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '2026-11-07' }] });
+    igual(G9.porContrato['moomoo|SPY|CALL|585|2026-11-07'].lotes.map(l => l.clave), ['a', 'b'], 'orden de ejecución por INSTANTE (09:59 antes que 10:00 aunque el texto diga otra cosa)');
+  }
   // escape
   const hX = P.tarjetaLiquidezHtml(L, P.gfvComprasHoy([COMPRA({ symbol: '<img src=x onerror=alert(1)>', estado: 'no_liquidada' })], HOY), CTX);
   assert(!/<img/.test(hX) && /&lt;IMG SRC=X ONERROR=ALERT\(1\)&gt;/.test(hX), 'todo texto dinámico pasa por esc()');
@@ -247,7 +286,7 @@ function armarCarga(rutas, op) {
   const canales = [];
   sb.channel = (nombre) => { const c = { nombre, regs: [], on(_e, cfg, cb) { c.regs.push({ event: cfg && cfg.event, table: cfg && cfg.table, cb }); return c; }, subscribe() { c.suscrito = true; return c; } }; canales.push(c); return c; };
   const reloj = { hoy: op.hoy || HOY };
-  const M = construir(['cargarLiquidez', 'suscribirLiquidez', 'liquidezDeFila', 'textoErrorTabla', 'liquidezCambio'], {
+  const M = construir(['cargarLiquidez', 'suscribirLiquidez', 'liquidezDeFila', 'textoErrorTabla', 'liquidezCambio', 'liquidezPorFill'], {
     sb, hoyNY: () => reloj.hoy, sesionActiva: op.sinSesion ? null : { user: { id: 'u1' } }, enCopilotoAhora: () => op.copiloto !== false,
     pintarLiquidezEnSitio: () => { reg.pintados++; return 1; }, setTimeout: (f, ms) => { reg.timers.push({ f, ms }); return reg.timers.length; }, clearTimeout: () => {},
   }, { consts: ['_liq', 'LIQ_TTL_MS', 'LIQ_TTL_SIN_MS', 'LIQ_TTL_SQL_MS', 'LIQ_TTL_ERR_MS', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS'] });
@@ -334,6 +373,13 @@ function armarCarga(rutas, op) {
     const antes = R.sb.llamadas.length;
     R.reg.timers[0].f(); await respirar(); await respirar(); await respirar();
     igual([R.sb.llamadas.length - antes, R.reg.pintados], [2, 1], 'al vencer: relectura forzada (row + compras) y repintado EN SITIO');
+    // un fill de moomoo por Realtime (libroFillRT) con la cuenta CASH: lo mismo (la compra sin evaluar se dice ya)
+    const antesF = R.reg.timers.length;
+    igual([R.M.liquidezPorFill({ broker: 'etrade', lado: 'compra' }), R.M.liquidezPorFill(null), R.reg.timers.length], [false, false, antesF], 'fill de otro bróker: nada');
+    igual([R.M.liquidezPorFill({ broker: 'moomoo', lado: 'compra', clave_ext: 'mm-10' }), R.reg.timers.length, R.reg.timers[R.reg.timers.length - 1].ms], [true, antesF + 1, 800], 'fill de moomoo: relectura + repintado en sitio (800 ms)');
+    const Rm = armarCarga({ cuenta_snapshots: { data: ROW({ tipo_cuenta: 'MARGIN' }), error: null } });
+    await Rm.M.cargarLiquidez();
+    igual([Rm.M.liquidezPorFill({ broker: 'moomoo', lado: 'compra' }), Rm.reg.timers.length], [false, 0], 'con cuenta MARGIN (o sin moomoo): un fill no toca la liquidez');
     const Q = armarCarga({ cuenta_snapshots: { data: ROW(), error: null } }, { copiloto: false });
     Q.M.liquidezCambio({ new: { broker: 'moomoo' } }); Q.reg.timers[0].f(); await respirar();
     igual([Q.sb.llamadas.length, Q.reg.pintados], [0, 0], 'fuera del Copiloto: solo se invalida la caché (la próxima visita lee fresco)');
@@ -351,7 +397,7 @@ function armarCarga(rutas, op) {
     const W = construir(['pintarLiquidezEnSitio', 'ctxLiquidez', 'gfvActual', 'gfvDe', 'gfvLoteDe', 'insigniaGfvDe'].concat(PURAS), {
       esc, ymdNY, $, hoyNY: () => HOYR, sesionNY: () => 'regular', _hbUltimo: null, enCopilotoAhora: () => enCop, _gestor, _cart,
       itemsCartera: (c) => (c.moomoo.items || []), claveSlug: (k) => String(k || '').replace(/[^A-Za-z0-9]/g, '_'),
-    }, { consts: ['_liq', 'dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_VIEJO_MIN', 'MOTIVO_GFV'] });
+    }, { consts: ['_liq', 'dineroD', 'LIQ_RUIDO_USD', 'LIQ_MISMA_LECTURA_MS', 'LIQ_TRAS_COMPRA_MS', 'LIQ_VIEJO_MIN', 'MOTIVO_GFV'] });
     Object.assign(W._liq, { L: P.liquidezDeFila(ROW({ liquidado_at: new Date(Date.now() - 20000).toISOString() })), compras: [], hoy: HOYR });
     const HOY4 = (o) => COMPRA(Object.assign({ fecha_ny: HOYR, libre_desde: MANANA }, o || {}));   // compras de HOY (el día real)
     const LIBRE4 = P.fechaCortaAviso(MANANA);
@@ -455,6 +501,11 @@ function armarCarga(rutas, op) {
     for (let i = 0; i < 30; i++) await respirar();
     igual(Z.vistaSets(), sets0, 'el evento NO repinta #vista (ni cierra un cuadro ni quita el foco)');
     assert(/\$300\.00 sin liquidar/.test(Z.nodos['#g_gfv_7'].innerHTML) && /mm-2|SPY 585C[\s\S]*SPY 585C/.test(Z.nodos['#liq_lineas'].innerHTML), 'la insignia suma la compra nueva y la tarjeta tiene su línea, en sitio', Z.nodos['#g_gfv_7'].innerHTML);
+    // un fill de moomoo llega por Realtime y el servidor no escribió su fila: la tarjeta lo dice EN SITIO
+    const setsF = Z.vistaSets();
+    Z.mod.ev(`libroFillNuevo({ new: { id: 990, user_id: 'u1', broker: 'moomoo', lado: 'compra', clave_ext: 'mm-sinfila', symbol: 'SPY', direccion: 'CALL', strike: 585, expiracion: '${MANANA}', contratos: 1, precio: 1.5, ejecutado_at: new Date().toISOString(), fecha_ny: '${HOYR}' } })`);
+    for (let i = 0; i < 30; i++) await respirar();
+    assert(/No sé si tu compra <b>SPY 585C<\/b> ×1/.test(Z.nodos['#liq_lineas'].innerHTML) && Z.vistaSets() === setsF, 'un fill de moomoo por Realtime sin su fila: «no sé si tu compra… usó dinero sin liquidar», en sitio (sin tocar #vista)', Z.nodos['#liq_lineas'].innerHTML.slice(0, 900));
     // con un cuadro abierto, igual en sitio
     Z.mod.win.document.querySelector = ((q) => (s) => (s === '.modal' ? nodo() : q(s)))(Z.mod.win.document.querySelector);
     Z.canales.find(c => c.nombre === 'mesa2-liquidez').regs.find(r => r.event === 'UPDATE').cb({ new: { broker: 'moomoo' } });
