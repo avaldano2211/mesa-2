@@ -6794,7 +6794,7 @@ async function vistaCuentasSaldos() {
       <div><b style="font-size:14px">${esc(b.n)}</b> <span class="mut">${esc(c.numero_mascara||'')}</span>
         <div class="fresco">${orig} · ${esc(haceCuanto(c.capturado_at).txt)}${reconn}</div>
         ${hist ? `<div class="fresco">${hist}</div>` : ''}</div>
-      ${liq ? `<div style="text-align:right;flex:none">${saldoHtml}${liq}</div>` : saldoHtml}</div></div>`;
+      ${liq ? `<div style="text-align:right;min-width:0;max-width:62%">${saldoHtml}${liq}</div>` : saldoHtml}</div></div>`;
     }
     const sub = b.k === 'tasty' ? 'conectando…'
       : (b.k === 'etrade' && etSinRed) ? 'sin conexión con el proxy — E*TRADE sigue conectada en este equipo'
@@ -7180,6 +7180,8 @@ function edadLiquidez(at, ahoraMs, enSesion, hoy) {
 }
 function edadLiquidezHtml(e) { return e ? esc(e.txt) + (e.viejo ? ' · dato viejo' : '') : ''; }
 function claseEdadLiquidez(e) { return 'liqedad' + (e && e.viejo ? ' viejo' : ''); }
+// «jue 5-nov» sin partirse en «jue 5-» / «nov» a 375 px (span .liqf, nowrap); '' si no es una fecha. PURA.
+function fechaGfvHtml(ymd) { const f = fechaCortaAviso(String(ymd || '').slice(0, 10)); return f ? `<span class="liqf">${esc(f)}</span>` : ''; }
 // «SPY 580C» (el nombre corto del contrato, el mismo del aviso push del worker). PURA.
 function nombreContratoGfv(c) {
   const sym = String((c && c.symbol) || '?').toUpperCase();
@@ -7221,11 +7223,11 @@ function lineasLiquidezHtml(L, G, ctx) {
   const g = G || {};
   const num = (v) => { if (v == null || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; };
   const hora = (iso) => { const ms = Date.parse(iso || ''); return Number.isFinite(ms) ? horaNY(ms) : ''; };
-  const libreTxt = (ymd) => fechaCortaAviso(String(ymd || '').slice(0, 10)) || 'próximo día hábil';
+  const libreHtml = (ymd) => fechaGfvHtml(ymd) || 'próximo día hábil';
   let h = '';
   // 1) lo más grave primero: hoy se vendió una compra pagada con dinero sin liquidar antes de liberarse
   if ((g.vendidas || []).length) {
-    h += `<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation</b>: ${g.vendidas.map(c => `${esc(nombreContratoGfv(c))} (vendida a las ${esc(hora(c.vendida_antes_at))}, libre desde el ${esc(libreTxt(c.libre_desde))})`).join(' · ')}. Si se repite, moomoo puede limitar la cuenta 90 días a solo dinero liquidado.</div>`;
+    h += `<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation</b>: ${g.vendidas.map(c => `${esc(nombreContratoGfv(c))} (vendida a las ${esc(hora(c.vendida_antes_at))}, libre desde el ${libreHtml(c.libre_desde)})`).join(' · ')}. Si se repite, moomoo puede limitar la cuenta 90 días a solo dinero liquidado.</div>`;
   }
   // 2) las cifras (un hueco se dice: un «no sé» nunca se pinta como $0)
   h += `<div class="liqfila">Liquidado ${L.liquidado != null ? `<b class="mono">${dineroD(L.liquidado)}</b> <span class="liqd">— lo que compres hasta esto lo puedes vender hoy</span>`
@@ -7233,13 +7235,13 @@ function lineasLiquidezHtml(L, G, ctx) {
   const sl = L.sinLiquidar;
   h += `<div class="liqfila">Sin liquidar ${sl == null ? '<b>no sé</b> <span class="liqd">— a esta lectura le falta el efectivo o el liquidado</span>'
     : sl < 0.005 ? `<b class="mono">${dineroD(0)}</b> <span class="liqd">— todo tu efectivo está liquidado</span>`
-    : `<b class="mono">${dineroD(sl)}</b> <span class="liqd">— se libera el ${esc(L.liberaEl && L.liberaEl > hoy ? fechaCortaAviso(L.liberaEl) : 'próximo día hábil')}</span>`}</div>`;
+    : `<b class="mono">${dineroD(sl)}</b> <span class="liqd">— se libera el ${L.liberaEl && L.liberaEl > hoy ? fechaGfvHtml(L.liberaEl) : 'próximo día hábil'}</span>`}</div>`;
   h += `<div class="liqfila">Poder de compra ${L.poder != null ? `<b class="mono">${dineroD(L.poder)}</b>` : '<b>sin dato</b>'}</div>`;
   if (L.inicio != null && L.inicioFecha === hoy) h += `<div class="fresco">al empezar el día: ${dineroD(L.inicio)} liquidado</div>`;
   // 3) una línea roja por compra de hoy que todavía no se puede vender
   (g.abiertas || []).forEach(c => {
     const nl = num(c.no_liquidado_usd), monto = num(c.monto_usd), n = num(c.contratos), hh = hora(c.ejecutado_at);
-    h += `<div class="liqal">⚠ <b>${esc(nombreContratoGfv(c))}</b>${n ? ` ×${esc(n)}` : ''}${hh ? ` · ${esc(hh)}` : ''} · ${nl != null ? `${dineroD(nl)} de ${dineroD(monto)} sin liquidar` : `${dineroD(monto)}: no sé cuánto sin liquidar`} — <b>no la vendas hoy</b>: libre desde el ${esc(libreTxt(c.libre_desde))}</div>`;
+    h += `<div class="liqal">⚠ <b>${esc(nombreContratoGfv(c))}</b>${n ? ` ×${esc(n)}` : ''}${hh ? ` · ${esc(hh)}` : ''} · ${nl != null ? `${dineroD(nl)} de ${dineroD(monto)} sin liquidar` : `${dineroD(monto)}: no sé cuánto sin liquidar`} — <b>no la vendas hoy</b>: libre desde el ${libreHtml(c.libre_desde)}</div>`;
   });
   if ((g.desconocidas || []).length) h += `<div class="liqam">⚠ No sé si tus compras de hoy usaron dinero sin liquidar (el servidor arrancó a media sesión): mira Settled Cash en moomoo.</div>`;
   if (c0.errCompras) h += `<div class="liqam">No pude leer tus compras de hoy (${esc(c0.errCompras)}): mira Settled Cash en moomoo antes de vender algo comprado hoy.</div>`;
@@ -7267,13 +7269,13 @@ function montoGfv(g) {
 function insigniaGfvHtml(g) {
   if (!g || !g.libre) return '';
   const m = montoGfv(g);
-  return `<span class="gfv">⚠ No la vendas hoy · good faith · libre desde ${esc(fechaCortaAviso(g.libre))} (${esc(m || 'no sé cuánto')} sin liquidar)</span>`;
+  return `<span class="gfv">⚠ No la vendas hoy · good faith · libre desde ${fechaGfvHtml(g.libre)} (${esc(m || 'no sé cuánto')} sin liquidar)</span>`;
 }
 // El mismo aviso en el cuadro «Vender en moomoo» (es donde se decide la venta). PURA.
 function avisoVentaGfvHtml(g) {
   if (!g || !g.libre) return '';
   const m = montoGfv(g);
-  return `<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy</b>: la compraste hoy con ${m ? esc(m) + ' de' : ''} dinero sin liquidar y queda libre desde el ${esc(fechaCortaAviso(g.libre))}. Venderla antes puede contar como <b>good faith violation</b> (cuenta de efectivo).</div>`;
+  return `<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy</b>: la compraste hoy con ${m ? esc(m) + ' de' : ''} dinero sin liquidar y queda libre desde el ${fechaGfvHtml(g.libre)}. Venderla antes puede contar como <b>good faith violation</b> (cuenta de efectivo).</div>`;
 }
 // Cuentas: «liquidado $79.17» junto al saldo de moomoo, solo con la cuenta CASH y con el dato (en una cuenta de margen lo
 // retirable no es lo liquidado); viejo → su edad y «dato viejo». PURA.

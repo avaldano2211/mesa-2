@@ -33,7 +33,7 @@ const faltan = NOMBRES.filter(n => !tiene(n));
 if (faltan.length) { C.falla('no existe la liquidez de moomoo ni el aviso de good faith (faltan: ' + faltan.join(', ') + ')'); C.resumen(); }
 
 const PURAS = ['liquidezDeFila', 'edadLiquidez', 'edadLiquidezHtml', 'claseEdadLiquidez', 'nombreContratoGfv', 'gfvComprasHoy', 'lineasLiquidezHtml',
-  'tarjetaLiquidezHtml', 'montoGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
+  'tarjetaLiquidezHtml', 'montoGfv', 'insigniaGfvHtml', 'avisoVentaGfvHtml', 'liquidadoCuentaHtml', 'fechaGfvHtml', 'fechaCortaAviso', 'horaNY', 'claveCartera', 'claveContrato'];
 const P = construir(PURAS, { esc, ymdNY }, { consts: ['dineroD', 'LIQ_RUIDO_USD', 'LIQ_VIEJO_MIN'] });
 
 const HOY = '2026-11-04';                 // miércoles
@@ -136,7 +136,7 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   assert(txt(hD).includes('No sé si tus compras de hoy usaron dinero sin liquidar (el servidor arrancó a media sesión): mira Settled Cash en moomoo'), 'desconocido: «no sé si tus compras de hoy usaron dinero sin liquidar … mira Settled Cash en moomoo»');
   assert(/class="liqam"/.test(hD) && !/class="liqal"/.test(hD), '… en ámbar, sin inventar una línea roja');
   const hV = P.tarjetaLiquidezHtml(L, P.gfvComprasHoy([COMPRA({ vendida_antes_at: '2026-11-04T16:20:00Z' })], HOY), CTX);
-  assert(/<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation<\/b>: SPY 585C \(vendida a las 11:20, libre desde el jue 5-nov\)/.test(hV), 'vendida antes de liberarse: aviso ROJO «hoy hubo una venta que puede contar como good faith violation»', hV.slice(0, 400));
+  assert(/<div class="liqal">⚠ <b>Hoy hubo una venta que puede contar como good faith violation<\/b>: SPY 585C \(vendida a las 11:20, libre desde el <span class="liqf">jue 5-nov<\/span>\)/.test(hV), 'vendida antes de liberarse: aviso ROJO «hoy hubo una venta que puede contar como good faith violation»', hV.slice(0, 400));
   assert(hV.indexOf('Hoy hubo una venta') < hV.indexOf('Liquidado'), '… lo primero de la tarjeta');
   assert(!/\b[0-9]+ violaci/i.test(txt(hV)) && /puede limitar la cuenta 90 días/.test(hV), 'no afirma cuántas violaciones disparan la restricción (no está confirmado)');
   const hE = P.tarjetaLiquidezHtml(L, G0, { ...CTX, errCompras: 'la tabla compras_no_liquidadas aún no está en la base (migración pendiente)', err: 'sin red' });
@@ -155,12 +155,12 @@ const CTX = { hoy: HOY, ahoraMs: AHORA, enSesion: false, err: null, errCompras: 
   assert(!/<img/.test(hX) && /&lt;IMG SRC=X ONERROR=ALERT\(1\)&gt;/.test(hX), 'todo texto dinámico pasa por esc()');
 
   // la insignia
-  igual(P.insigniaGfvHtml({ usd: 255.5, sinMonto: false, libre: '2026-11-05', n: 2 }), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde jue 5-nov ($255.50 sin liquidar)</span>',
+  igual(P.insigniaGfvHtml({ usd: 255.5, sinMonto: false, libre: '2026-11-05', n: 2 }), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">jue 5-nov</span> ($255.50 sin liquidar)</span>',
     'la insignia: «⚠ No la vendas hoy · good faith · libre desde jue 5-nov ($X sin liquidar)»');
-  igual(P.insigniaGfvHtml({ usd: 0, sinMonto: true, libre: '2026-11-09', n: 1 }), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde lun 9-nov (no sé cuánto sin liquidar)</span>', 'sin monto: «no sé cuánto» (viernes → lunes)');
+  igual(P.insigniaGfvHtml({ usd: 0, sinMonto: true, libre: '2026-11-09', n: 1 }), '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">lun 9-nov</span> (no sé cuánto sin liquidar)</span>', 'sin monto: «no sé cuánto» (viernes → lunes)');
   igual([P.insigniaGfvHtml(null), P.insigniaGfvHtml({ usd: 1 })], ['', ''], 'sin compra (o sin día de liberación): nada');
   const av = P.avisoVentaGfvHtml({ usd: 200, sinMonto: false, libre: '2026-11-05' });
-  assert(/^<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy<\/b>: la compraste hoy con \$200\.00 de dinero sin liquidar y queda libre desde el jue 5-nov\. Venderla antes puede contar como <b>good faith violation<\/b>/.test(av), 'el aviso del cuadro «Vender en moomoo»', av);
+  assert(/^<div class="aviso gfvav" role="alert">⚠ <b>No la vendas hoy<\/b>: la compraste hoy con \$200\.00 de dinero sin liquidar y queda libre desde el <span class="liqf">jue 5-nov<\/span>\. Venderla antes puede contar como <b>good faith violation<\/b>/.test(av), 'el aviso del cuadro «Vender en moomoo»', av);
   igual(P.avisoVentaGfvHtml(null), '', 'sin compra sin liquidar: el cuadro de siempre');
   // Cuentas
   igual(P.liquidadoCuentaHtml(ROW(), AHORA, HOY), '<div class="fresco liqcta">liquidado <b class="mono">$63.42</b></div>', 'Cuentas: «liquidado $63.42» junto al saldo');
@@ -300,7 +300,7 @@ function armarCarga(rutas, op) {
     W.pintarLiquidezEnSitio();
     igual([cont.sets, lin.sets, ed.sets], [setsCont, 1, 1], 'con la tarjeta ya en pantalla: solo sus LÍNEAS (role=status) y su edad, el contenedor no se rehace');
     assert(/SPY 585C/.test(lin.innerHTML) && /TSLA 450C/.test(lin.innerHTML) && /hace 2\d s/.test(ed.innerHTML), 'las líneas rojas nuevas y la edad al día');
-    igual(g7.innerHTML, '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde jue 5-nov ($200.00 sin liquidar)</span>', 'la ficha de moomoo (strike «585.00» del libro) lleva su insignia');
+    igual(g7.innerHTML, '<span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">jue 5-nov</span> ($200.00 sin liquidar)</span>', 'la ficha de moomoo (strike «585.00» del libro) lleva su insignia');
     assert(/\$80\.00 sin liquidar/.test(gb.innerHTML) && g8.sets === 0, 'lo que el bróker tiene sin registrar también; la ficha de E*TRADE del mismo contrato, no');
     W.pintarLiquidezEnSitio();
     igual([lin.sets, ed.sets], [1, 2], 'sin cambios: las líneas NO se reescriben (el lector de pantalla no repite), la edad sí');
@@ -357,7 +357,7 @@ function armarCarga(rutas, op) {
     assert(/<div id="liq_moomoo"><div class="card liq">/.test(v) && /Liquidez moomoo · cuenta de efectivo/.test(v), 'el Copiloto pinta la tarjeta de liquidez');
     assert(v.indexOf('id="liq_moomoo"') < v.indexOf('POSICIONES ABIERTAS'), '… justo encima de las posiciones');
     const libre = Z.mod.ev(`fechaCortaAviso('${MANANA}')`);
-    assert(new RegExp('<div class="gfvw" id="g_gfv_7"><span class="gfv">⚠ No la vendas hoy · good faith · libre desde ' + libre + ' \\(\\$200\\.00 sin liquidar\\)</span></div>').test(v), 'la tarjeta de la posición de moomoo lleva la insignia roja (iPhone)', (v.match(/g_gfv_7[\s\S]{0,200}/) || [''])[0]);
+    assert(new RegExp('<div class="gfvw" id="g_gfv_7"><span class="gfv">⚠ No la vendas hoy · good faith · libre desde <span class="liqf">' + libre + '</span> \\(\\$200\\.00 sin liquidar\\)</span></div>').test(v), 'la tarjeta de la posición de moomoo lleva la insignia roja (iPhone)', (v.match(/g_gfv_7[\s\S]{0,200}/) || [''])[0]);
     igual([Z.de('cuenta_snapshots').length, Z.de('compras_no_liquidadas').length], [1, 1], 'UNA lectura del row y UNA de las compras');
     assert(Z.canales.some(c => c.nombre === 'mesa2-liquidez') && Z.canales.some(c => c.nombre === 'mesa2-gfv') && Z.canales.flatMap(c => c.regs).every(r => r.event !== '*'), 'con la cuenta CASH se abren sus canales (sin «*»)');
     // Realtime: una compra nueva → repintado EN SITIO (#liq_lineas y la insignia), #vista intacta. Antes, que termine lo
@@ -431,6 +431,7 @@ function armarCarga(rutas, op) {
     assert(/\.gfv\{display:inline-block;max-width:100%;[^}]*white-space:normal/.test(INDEX) && /\.liqal,\.liqam,\.gfv\{overflow-wrap:anywhere/.test(INDEX), 'CSS: la insignia y las líneas se parten a 375 px (sin desborde lateral)');
     assert(/\.liqal\{[^}]*color:var\(--avrojo\)/.test(INDEX) && /\.liqam\{[^}]*color:var\(--avoro\)/.test(INDEX) && /\.gfv\{[^}]*color:var\(--avrojo\)/.test(INDEX), 'CSS: rojo y ámbar con --avrojo/--avoro (AA en tema claro y oscuro)');
     assert(/\.liqedad\.viejo\{color:var\(--avoro\)/.test(INDEX), 'CSS: «dato viejo» en ámbar');
+    assert(/\.liqf\{white-space:nowrap\}/.test(INDEX), 'CSS: «jue 5-nov» no se parte en «jue 5-» / «nov»');
   }
   C.resumen();
 })().catch(e => { console.log('FALLA: excepción inesperada → ' + (e && e.stack || e)); C.resumen(); });
