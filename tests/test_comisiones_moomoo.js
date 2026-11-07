@@ -31,7 +31,7 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     assert(/config\.js\?v=71"/.test(html) && /app\/main\.js\?v=71"/.test(html), 'index.html carga config.js?v=71 y app/main.js?v=71');
     assert(/const VER = 'mesa2-v60';/.test(sw), 'sw.js VER mesa2-v60 (la caché vieja se borra al activarse)');
   }
-  const NUEVAS = ['estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'textoComisionOpCuentas'];
+  const NUEVAS = ['estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'textoComisionOpCuentas', 'parteComision'];
   const faltan = NUEVAS.filter(n => { try { extraer(n); return false; } catch (_) { return true; } });
   NUEVAS.forEach(n => assert(!faltan.includes(n), `existe function ${n} en el fuente`));
   // el pie fijo de la v70 ya no puede estar en ningún sitio
@@ -43,9 +43,9 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
   const HOY = '2026-11-09';                                   // lunes
   const AHORA = Date.parse('2026-11-09T21:00:00Z');           // 16:00 ET
   const DIA = 86400000;
-  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre',
+  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre',
     'diaADia', 'metricasDiario', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion', 'fechaCorta', 'fmtFechaNY',
-    'estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'tarjetasResumenDiario', 'seccionEjecucionesDiario'],
+    'estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'tarjetasResumenDiario', 'seccionEjecucionesDiario', 'parteComision'],
     { hoyNY: () => HOY, ymdNY, subtituloPeriodoDiario: () => 'Todo el historial · 2026-11-02 → 2026-11-09' },
     { consts: ['DIARIO_LADOS_SALIDA', 'FUENTES_SPOT', 'COMISION_PENDIENTE_MS', 'CONCEPTOS_COMISION_CORTO', 'esc', 'dineroD', 'dineroS', 'pctD2', 'colD', 'nOps', 'BROKER_NOMBRE', 'BROKER_CORTO', 'MESES_ES_C'] });
   // una ejecución de moomoo de juguete CON las columnas de la 0023 (comision_fuente null = nadie la resolvió aún)
@@ -113,6 +113,38 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     igual(sinRes.viajes[0].pnl, 250, 'las mismas ejecuciones sin la comisión resuelta: el P&L es el bruto (no se inventa nada)');
     const Cm = D.comisionesDiario(R.cerradas, RES, AHORA);
     igual(Cm, { por_broker: { moomoo: 1.24 }, pendientes: 0, sin_dato: 0 }, 'comisionesDiario: $1.24 de moomoo, nada pendiente');
+  }
+
+  // ════════════════ 3b. v71 rev · el reparto por ACUMULADO, como el worker: Σ de los tramos = Σ fills.comision al centavo ════════════════
+  // (juez de dinero: con el reparto proporcional cada tramo se redondeaba por su lado y una salida en tercios perdía 1 ¢;
+  // los centavos esperados están hechos A MANO con floor(F·C_k/Q) − floor(F·C_{k−1}/Q), como los escribe el worker)
+  {
+    const R = (cf) => cf.map(([c, l, n, p, at, com]) => FM(c, l, n, p, at, { comision: com, comision_fuente: 'moomoo_orden' }));
+    const suma = (xs) => Math.round(xs.reduce((s, c) => s + c.comisiones, 0) * 100) / 100;
+    const t3 = D.emparejarFillsFIFO(R([['t1', 'compra', 3, 2.00, T0, 0.58], ['t2', 'venta', 1, 2.50, T1, 0.20], ['t3', 'venta', 1, 2.50, '2026-11-06T15:05:00Z', 0.20], ['t4', 'venta', 1, 2.50, T2, 0.20]]), HOY);
+    igual(t3.cerradas.map(c => [c.comisiones, c.pnl]), [[0.39, 49.61], [0.39, 49.61], [0.40, 49.60]],
+      '3 × 1 (compra $0.58, tres ventas de $0.20): 0.19+0.20, 0.19+0.20, 0.20+0.20 — los tramos que escribe el worker en broker_trades');
+    igual([suma(t3.cerradas), t3.viajes[0].comisiones, t3.viajes[0].pnl], [1.18, 1.18, 148.82], 'Σ tramos = $1.18 (Σ fills.comision) y el neto $148.82 = $150 − $1.18 (antes: $1.17 y $148.83)');
+    const M3 = D.metricasDiario(t3.cerradas, D.diaADia(t3.cerradas, null, null, t3.viajes), t3.viajes, []);
+    igual([M3.total, M3.comisiones], [148.82, 1.18], 'metricasDiario: el total y las comisiones del pie, al centavo');
+    const t118 = D.emparejarFillsFIFO(R([['u1', 'compra', 10, 1.00, T0, 1.03], ['u2', 'venta', 1, 1.50, T1, 0.13], ['u3', 'venta', 1, 1.50, '2026-11-06T15:05:00Z', 0.13], ['u4', 'venta', 8, 2.00, T2, 0.71]]), HOY);
+    igual(t118.cerradas.map(c => [c.contratos, c.comisiones, c.pnl]), [[1, 0.23, 49.77], [1, 0.23, 49.77], [8, 1.54, 798.46]],
+      '10 en 1 + 1 + 8 (compra $1.03): 0.10, 0.10 y 0.83 de la compra (antes 1.53 en el último: faltaba 1 ¢)');
+    igual([suma(t118.cerradas), t118.viajes[0].pnl], [2.00, 898.00], 'Σ = $2.00 = $1.03 + $0.13 + $0.13 + $0.71; neto $898.00 = $900 − $2.00');
+    const t87 = D.emparejarFillsFIFO(R([['v1', 'compra', 8, 1.00, T0, 0.41], ['v2', 'compra', 7, 1.00, '2026-11-06T14:40:01Z', 0.36], ['v3', 'venta', 15, 1.20, T2, 0.92]]), HOY);
+    igual(t87.cerradas.map(c => [c.contratos, c.comisiones, c.pnl]), [[8, 0.90, 159.10], [7, 0.79, 139.21]],
+      '15 en 8 + 7 (la orden de $0.77 repartida 0.41 / 0.36; la venta de $0.92: 0.49 a los 8 y 0.43 a los 7)');
+    igual(suma(t87.cerradas), 1.69, 'Σ = $1.69 = $0.77 + $0.92');
+    const ab = D.emparejarFillsFIFO(R([['w1', 'compra', 3, 2.00, T0, 0.58], ['w2', 'venta', 1, 2.50, T1, 0.20]]), HOY);
+    igual([ab.cerradas[0].comisiones, ab.abiertos[0].comision], [0.39, 0.39], 'lote abierto: le queda la parte de sus 2 contratos aún sin cerrar ($0.58 − $0.19 = $0.39)');
+    const vc = D.emparejarFillsFIFO(R([['x1', 'compra', 3, 2.00, '2026-11-02T14:40:00Z', 0.58], ['x2', 'venta', 1, 2.50, '2026-11-02T15:00:00Z', 0.20]]).map(f => ({ ...f, expiracion: '2026-11-06' })), HOY);
+    igual(vc.cerradas.map(c => [c.contratos, c.comisiones, c.vencido]), [[1, 0.39, false], [2, 0.39, true]], 'el resto que vence sin venderse lleva la parte que le queda al lote ($0.39): Σ = $0.78 = $0.58 + $0.20');
+    const et = D.emparejarFillsFIFO(R([['y1', 'compra', 3, 1.00, T0, 1.9725], ['y2', 'venta', 1, 1.10, T1, 0.6575], ['y3', 'venta', 2, 1.20, T2, 1.315]]).map(f => ({ ...f, broker: 'etrade', comision_fuente: null })), HOY);
+    const p4 = [D.parteComision(1.9725, 0, 1, 3), D.parteComision(1.9725, 1, 2, 3), D.parteComision(1.9725, 2, 3, 3)];
+    igual(p4, [0.6575, 0.6575, 0.6575], 'E*TRADE con 4 decimales (0.6575 por contrato): el acumulado va en diezmilésimas, no en centavos');
+    cerca(et.cerradas.reduce((s, c) => s + c.pnl, 0), 50 - 3.945, 'y el neto de sus tramos es el bruto menos la comisión exacta (al centavo de redondeo de cada tramo, como siempre)', 0.0101);
+    igual([D.parteComision(0.58, 0, 1, 3), D.parteComision(0.58, 1, 2, 3), D.parteComision(0.58, 2, 3, 3), D.parteComision(0, 0, 1, 3), D.parteComision(0.58, 0, 1, 0), D.parteComision('x', 0, 1, 3)],
+      [0.19, 0.19, 0.2, 0, 0, 0], 'parteComision: el acumulado de la casa; con F = 0, q = 0 o basura, 0');
   }
 
   // ════════════════ 4. el pie del Diario: de qué brókeres son, pendientes y sin dato ════════════════

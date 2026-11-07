@@ -53,13 +53,13 @@ const DESDE_MS = HOY_MS - 180 * 86400000;
 
 // Cuentas (unirOperaciones con el libro) y el Diario (emparejarFillsFIFO del libro vigente): las funciones REALES
 const NOMBRES_CTA = ['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe',
-  'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'vencimientoMoomoo', 'filasMoomooVencimiento',
+  'operacionCerrada', 'parteComision', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'vencimientoMoomoo', 'filasMoomooVencimiento',
   'filasSchwabVencimiento', 'cerradasDesde', 'diaOpNY', 'diaAperturaOp'].filter(existe);
 const K = construir(NOMBRES_CTA, { ymdNY, hoyNY: () => '2026-10-31' },
   { consts: ['ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst) });
 const E = construir(['emparejarEtrade', 'instanteVencimiento', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion'], { ymdNY });
 // filasEtradeSupersedidas y lo que usa: desde la rev68 hace la prueba de la lectura (filasEtradeVigentes y su FIFO)
-const NOMBRES_SUP = ['filasEtradeSupersedidas', 'filasEtradeVigentes', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill',
+const NOMBRES_SUP = ['filasEtradeSupersedidas', 'filasEtradeVigentes', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'parteComision', 'durMin', 'diasEntre', 'spotDeFill',
   'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato'].filter(existe);
 const CONSTS_SUP = ['ET_SUPERSEDIDA_MARGEN_MS', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst);
 const claveDe = (t) => `${t.raw.abre}>${t.raw.cierra} x${t.contratos}`;
@@ -338,7 +338,7 @@ function libroJuguete(conProvisionales) {
         'emparejarEtrade', 'fillsDeTransaccionesEtrade', 'ladoFillEtrade', 'fechaNyTransaccion', 'guardarFills', 'textoErrorFills', 'textoErrorTabla', 'etDiaVencido',
         'leerFillsTodos', 'libroInvalidar', 'fusionarLibro', 'ordenarLibro', 'instanteLibro', 'maxIdLibro', 'libroVigente', 'fillsEtradeVigentes', 'tipoFillEtrade',
         'claveFill', 'claveContrato', 'instanteVencimiento', 'filasEtradeSupersedidas', 'libroCrudoEtrade', 'etradeReemplazarSupersedidas',
-        'filasEtradeVigentes', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'].filter(existe);
+        'filasEtradeVigentes', 'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'parteComision', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'].filter(existe);
       const consola = { info: (...a) => W.logs.push(a), log() {}, warn() {}, error() {} };
       const M = construir(FN, { Date: FakeDate, ymdNY, hoyNY, localStorage: ls, URL, sb, etProxy, sesionActiva: { user: { id: 'u' } }, console: consola,
         haceCuanto: (iso) => ({ min: (W.T - new Date(iso).getTime()) / 60000 }), etCreds: () => ({ token: 't', token_secret: 's' }),

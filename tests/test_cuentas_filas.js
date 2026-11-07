@@ -20,7 +20,7 @@ const NOMBRES = ['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes'
   'vencimientoMoomoo', 'filasMoomooVencimiento', 'filasSchwabVencimiento', 'cerradasDesde', 'aportePeriodoCuentas', 'resumenPeriodo', 'metricasCuentas',
   'comisionDelBroker', 'tilesCuentasHtml', 'detalleOpCuentas', 'diaOpNY', 'diaAperturaOp', 'sinHoraIso', 'horaNY', 'fechaNyTransaccion', 'dteEntrada',
   'diasEntre', 'filaVencioCuentas', 'filaPresuntaCuentas', 'spotDeOperacion', 'partesOpCuentas', 'senalDeOperacion', 'spotDeFill', 'peorFuenteSpot',
-  'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'durMin', 'diaADia', 'marcarLotesAbiertosCuentas'].filter(existe);
+  'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'parteComision', 'durMin', 'diaADia', 'marcarLotesAbiertosCuentas'].filter(existe);
 const CONSTS = ['ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT', 'BROKERS_CON_COMISION', 'BROKER_CORTO',
   'CTA_MARGEN_MS', 'dineroD', 'pctD2', 'usd', 'colUtil', 'esc'].filter(existeConst);
 const K = construir(NOMBRES, { ymdNY, hoyNY: () => '2026-11-01' }, { consts: CONSTS });

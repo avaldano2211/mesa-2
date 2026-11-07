@@ -12126,6 +12126,21 @@ function diasEntre(a, b) {
 // día a día y el % ponderado se calculan sobre tramos). La OPERACIÓN que se cuenta y se lista es el
 // VIAJE (viajeDe): igual que el Diario viejo, corrección de Andrés 2026-08-04.
 // El % es sobre lo que costó ESA compra, con las comisiones de los dos lados ya descontadas.
+// v71 rev (juez de dinero: «la suma de los tramos no da la comisión real: falta o sobra 1 ¢») · La parte de una comisión
+// `total` (dólares) que toca a los contratos (a, b] de un total q, por ACUMULADO como el worker 0.1.15
+// (comisiones_moomoo.parte): floor(F·b/q) − floor(F·a/q), con F el monto en su unidad (centavos si es de centavos, como las
+// de moomoo; diezmilésimas si trae más decimales, como E*TRADE, que guarda 4). Σ de las partes = total EXACTO cuando están
+// todas, y una parte ya calculada no cambia al aparecer otra. Con el reparto proporcional de antes cada tramo se redondeaba
+// por su lado: una compra de $0.58 cerrada en tres ventas de $0.20 descontaba $1.17 de $1.18 (y el worker escribe 0.39 /
+// 0.39 / 0.40 en broker_trades: Diario y Cuentas diferían en 1 ¢). Los contratos se cuentan en diezmilésimas. PURA.
+function parteComision(total, a, b, q) {
+  const T = Number(total), Q = Math.round(Number(q) * 10000);
+  if (!Number.isFinite(T) || T === 0 || !(Q > 0)) return 0;
+  const u = Math.abs(T * 100 - Math.round(T * 100)) < 1e-6 ? 100 : 10000;
+  const F = Math.round(T * u);
+  const c = (x) => Math.min(Math.max(Math.round((Number(x) || 0) * 10000), 0), Q);
+  return (Math.floor(F * c(b) / Q) - Math.floor(F * c(a) / Q)) / u;
+}
 function operacionCerrada(f, ap, usa, costo, venta, com, ladoSalida, derivado) {
   const r2 = (n) => Math.round(n * 100) / 100;
   const pnl = r2(venta - costo - com);
@@ -12167,7 +12182,8 @@ function viajeDe(v) {
 }
 // EL CONTABLE. Por contrato y por bróker, FIFO:
 //   · compra → lote en cola; venta/vencimiento/asignación/ejercicio → consume lotes por orden de
-//     llegada, con la comisión de cada lado prorrateada por contratos (como el emparejador de v50).
+//     llegada, con la comisión de cada lado prorrateada por contratos (como el emparejador de v50); v71 rev: por
+//     ACUMULADO (parteComision, como el worker 0.1.15): Σ de los tramos = la comisión exacta al centavo.
 //   · cerradas: cada TRAMO (entrada, salida, duración, contratos, costo, venta, comisiones, P&L $ y
 //     % sobre lo que costó ESA compra). Es la unidad del $ por día.
 //   · viajes: cada OPERACIÓN (viajeDe): de la primera compra con el ciclo plano a quedar plano. Es la
@@ -12216,16 +12232,20 @@ function emparejarFillsFIFO(fills, hoy) {
     if (f.lado === 'compra') {
       if (!enViaje[k]) enViaje[k] = { broker: f.broker, symbol: f.symbol, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion, contrato: f._c, entrada_at: f._at, tramos: [] };
       const sf = spotDeFill(f);   // v60: el lote lleva el spot de la acción al comprar (y su fuente)
-      (abiertos[k] = abiertos[k] || []).push({ qty: num(f.contratos), precio: num(f.precio), at: f._at, fecha: f._fecha, com: num(f.comision), id: f.clave_ext, spot: sf.spot, spot_fuente: sf.fuente, f });
+      (abiertos[k] = abiertos[k] || []).push({ qty: num(f.contratos), qty0: num(f.contratos), precio: num(f.precio), at: f._at, fecha: f._fecha,
+        com: num(f.comision), com0: num(f.comision), id: f.clave_ext, spot: sf.spot, spot_fuente: sf.fuente, f });
       continue;
     }
     let rest = num(f.contratos); const cola = abiertos[k] || [];
     const comV = num(f.comision), qtyV = num(f.contratos);
     while (rest > 1e-9 && cola.length) {
       const ap = cola[0], usa = Math.min(rest, ap.qty);
-      const comAp = ap.com * (ap.qty ? usa / ap.qty : 1), comCi = comV * (qtyV ? usa / qtyV : 1);
+      // v71 rev: cada lado por ACUMULADO (parteComision): los contratos ya consumidos de ESE lote (qty0 − qty) y los ya
+      // cerrados de ESA venta (qtyV − rest); lo que le queda al lote (ap.com) es la parte de sus contratos aún sin cerrar
+      const usadoAp = ap.qty0 - ap.qty, usadoV = qtyV - rest;
+      const comAp = parteComision(ap.com0, usadoAp, usadoAp + usa, ap.qty0), comCi = parteComision(comV, usadoV, usadoV + usa, qtyV);
       tramo(k, operacionCerrada(f, ap, usa, ap.precio * usa * 100, num(f.precio) * usa * 100, comAp + comCi, f.lado, false));
-      ap.qty -= usa; ap.com -= comAp; rest -= usa;
+      ap.qty -= usa; rest -= usa; ap.com = parteComision(ap.com0, ap.qty0 - ap.qty, ap.qty0, ap.qty0);
       if (ap.qty <= 1e-9) cola.shift();
     }
     if (colaVacia(k)) cerrarViaje(k);                    // quedó plano: la operación se cierra en ESTE día

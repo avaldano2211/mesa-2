@@ -186,7 +186,7 @@ function sbGrabador(respuestas) {
   // ════════════════ 2. EL CONTABLE: emparejarFillsFIFO ════════════════
   const claveContrato = construir(['claveContrato']).claveContrato;
   // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
-  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
+  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
     'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'periodoDiarioRapido', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
     { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
