@@ -187,7 +187,7 @@ function sbGrabador(respuestas) {
   const claveContrato = construir(['claveContrato']).claveContrato;
   // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
   const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
-    'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
+    'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'periodoDiarioRapido', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
     { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
   const FILLS = [
@@ -365,10 +365,27 @@ function sbGrabador(respuestas) {
   igual(D.periodoDiarioNormalizar({ modo: 'dias', vals: [] }), { modo: 'todo' }, 'selector: días vacíos = todo');
   const dd1 = D.periodoDiarioToggle({ modo: 'todo' }, 'dia', HOY);
   const dd2 = D.periodoDiarioToggle(dd1, 'dia', '2026-09-23');
-  igual([dd1, dd2], [{ modo: 'dias', vals: [HOY] }, { modo: 'dias', vals: ['2026-09-23', HOY] }], 'toggle «Hoy»: crea {modo: dias, vals: [hoy]}; un segundo día se SUMA (y se ordena)');
+  igual([dd1, dd2], [{ modo: 'dias', vals: [HOY] }, { modo: 'dias', vals: ['2026-09-23', HOY] }], 'toggle de un día (la pura; v70: el chip «Hoy» ya no pasa por aquí): crea {modo: dias, vals: [hoy]}; un segundo día se SUMA (y se ordena)');
   igual(D.periodoDiarioToggle(dd2, 'dia', '2026-09-23', true), { modo: 'dias', vals: ['2026-09-23'] }, 'toggle «solo» (una fila del día a día) deja ese día solo');
   igual(D.periodoDiarioToggle(dd1, 'dia', HOY), { modo: 'todo' }, 'toggle: quitar el único día vuelve a todo');
   igual(D.periodoDiarioToggle(s2, 'dia', HOY), { modo: 'dias', vals: [HOY] }, 'toggle: pasar de meses a un día empieza de cero');
+  // v70 (Andrés, 6-nov: pulsó «Hoy» y el Diario siguió en «3 días · 2026-10-30 → 2026-11-04»): los chips rápidos «Hoy»,
+  // «Este mes» y «Esta semana» dejan EXACTAMENTE ese período, vengan de donde vengan; si ya es exactamente ese único
+  // valor, vuelven a todo el historial. periodoDiarioRapido es PURA y no toca la selección que recibe.
+  const tres = { modo: 'dias', vals: ['2026-09-22', '2026-09-23', HOY] };
+  igual(D.periodoDiarioRapido(tres, 'dia', HOY), { modo: 'dias', vals: [HOY] }, 'v70 «Hoy» desde {dias: [3 días]} → {dias: [hoy]} (antes el toggle QUITABA hoy de los tres y quedaban «2 días»)');
+  igual(D.periodoDiarioRapido({ modo: 'dias', vals: ['2026-09-22', '2026-09-23'] }, 'dia', HOY), { modo: 'dias', vals: [HOY] }, 'v70 «Hoy» desde dos días SIN hoy → {dias: [hoy]} (no se suma)');
+  igual(D.periodoDiarioRapido({ modo: 'dias', vals: [HOY] }, 'dia', HOY), { modo: 'todo' }, 'v70 «Hoy» desde {dias: [hoy]} → todo el historial');
+  igual(D.periodoDiarioRapido({ modo: 'todo' }, 'dia', HOY), { modo: 'dias', vals: [HOY] }, 'v70 «Hoy» desde todo → {dias: [hoy]}');
+  igual(D.periodoDiarioRapido(s2, 'dia', HOY), { modo: 'dias', vals: [HOY] }, 'v70 «Hoy» desde dos meses → {dias: [hoy]}');
+  igual(D.periodoDiarioRapido(s2, 'mes', '2026-09'), { modo: 'meses', vals: ['2026-09'] }, 'v70 «Este mes» desde {meses: [2 meses]} → {meses: [esteMes]} (antes el toggle QUITABA septiembre y dejaba agosto)');
+  igual(D.periodoDiarioRapido({ modo: 'meses', vals: ['2026-09'] }, 'mes', '2026-09'), { modo: 'todo' }, 'v70 «Este mes» desde {meses: [esteMes]} → todo');
+  igual(D.periodoDiarioRapido({ modo: 'meses', vals: ['2026-08'] }, 'mes', '2026-09'), { modo: 'meses', vals: ['2026-09'] }, 'v70 «Este mes» desde OTRO mes solo → {meses: [esteMes]}');
+  igual(D.periodoDiarioRapido({ modo: 'semanas', vals: ['2026-09-07', '2026-09-14'] }, 'sem', '2026-09-25'), { modo: 'semanas', vals: ['2026-09-21'] }, 'v70 «Esta semana» desde {semanas: […]} → {semanas: [lunes]} (la semana se guarda por su lunes aunque llegue el viernes)');
+  igual(D.periodoDiarioRapido({ modo: 'semanas', vals: ['2026-09-21'] }, 'sem', '2026-09-21'), { modo: 'todo' }, 'v70 «Esta semana» desde {semanas: [lunes]} → todo');
+  igual(D.periodoDiarioRapido({ modo: 'rango', desde: '2026-09-01', hasta: '2026-09-25' }, 'sem', '2026-09-21'), { modo: 'semanas', vals: ['2026-09-21'] }, 'v70 «Esta semana» desde un rango a medida → {semanas: [lunes]}');
+  igual(D.periodoDiarioRapido(dd2, 'dia', 'x'), { modo: 'todo' }, 'v70 un valor que no es fecha no deja basura: todo');
+  igual([tres, s2], [{ modo: 'dias', vals: ['2026-09-22', '2026-09-23', HOY] }, { modo: 'meses', vals: ['2026-08', '2026-09'] }], 'v70 periodoDiarioRapido es PURA: la selección que recibe sigue igual');
   igual(R.cerradas.filter(c => D.enPeriodoDiario({ modo: 'dias', vals: ['2026-09-23'] }, c.fecha_ny)).map(c => c.symbol), ['SPY', 'QQQ'], 'filtrar por un día deja solo lo cerrado ESE día (el tramo 1 de SPY y QQQ el 23)');
   igual(R.cerradas.filter(c => D.enPeriodoDiario(dd2, c.fecha_ny)).length, 2, 'con dos días elegidos (23 y hoy 25) entran los del 23 y ninguno más');
   igual([D.tituloPeriodoDiario({ modo: 'dias', vals: ['2026-09-24'] }), D.tituloPeriodoDiario(dd2)], ['24 sep', '2 días'], 'títulos del modo días: «24 sep» y «2 días»');
@@ -610,11 +627,16 @@ function sbGrabador(respuestas) {
   assert(/Todo el historial/.test(hP) && /Este mes/.test(hP) && /Esta semana/.test(hP) && /id="dDesde"/.test(hP) && /MZ\.diarioRango\(\)/.test(hP) && /septiembre 2026/.test(hP), 'selector: Todo · este mes · esta semana · meses · semanas · rango a medida');
   const hPt = V.seccionPeriodoDiario({ modo: 'todo' }, meses, sem, HOY, { desde: '2026-09-01' });
   assert(/id="dDesde" value="2026-09-01"/.test(hPt) && /MZ\.diarioRangoTmp\('desde', this\.value\)/.test(hPt) && /MZ\.diarioRangoTmp\('hasta', this\.value\)/.test(hPt), 'rango a medida: la fecha ya elegida sobrevive al redibujo (se guarda al cambiarla, se pinta desde ahí)');
-  // v53: el chip «Hoy» (modo días): encendido con hoy elegido, apagado con un mes elegido
+  // v53: el chip «Hoy» (modo días): encendido con hoy elegido, apagado con un mes elegido.
+  // v70: los tres chips rápidos van por MZ.diarioPeriodoRapido (exactamente ese período; otra vez, todo), no por el toggle
   const hPh = V.seccionPeriodoDiario({ modo: 'dias', vals: [HOY] }, meses, sem, HOY);
-  assert(/<button class="chip2 on" onclick="MZ\.diarioPeriodo\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(hPh) && /<span class="fresco">25 sep<\/span>/.test(hPh), 'selector: el chip «Hoy» (MZ.diarioPeriodo(dia, hoy)) sale encendido con hoy elegido y el título del período dice «25 sep»');
-  assert(/<button class="chip2" onclick="MZ\.diarioPeriodo\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(hP) && /<button class="chip2 on" onclick="MZ\.diarioPeriodo\('mes','2026-09'\)"/.test(hP), 'selector: con un mes elegido el chip «Hoy» va apagado (y el del mes encendido)');
-  assert(/<button class="chip2" onclick="MZ\.diarioPeriodo\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(V.seccionPeriodoDiario({ modo: 'dias', vals: ['2026-09-23', HOY] }, meses, sem, HOY)), 'selector: con hoy Y otro día elegidos, «Hoy» no se enciende (solo cuando hoy es el único)');
+  assert(/<button class="chip2 on" onclick="MZ\.diarioPeriodoRapido\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(hPh) && /<span class="fresco">25 sep<\/span>/.test(hPh), 'selector: el chip «Hoy» (v70: MZ.diarioPeriodoRapido(dia, hoy)) sale encendido con hoy elegido y el título del período dice «25 sep»');
+  assert(/<button class="chip2" onclick="MZ\.diarioPeriodoRapido\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(hP) && /<button class="chip2 on" onclick="MZ\.diarioPeriodo\('mes','2026-09'\)" title="\d+ operaciones · toca varios meses para sumarlos">septiembre 2026</.test(hP), 'selector: con un mes elegido el chip «Hoy» va apagado (y el del mes, en la lista, encendido)');
+  assert(/<button class="chip2" onclick="MZ\.diarioPeriodoRapido\('dia','2026-09-25'\)" title="">Hoy<\/button>/.test(V.seccionPeriodoDiario({ modo: 'dias', vals: ['2026-09-23', HOY] }, meses, sem, HOY)), 'selector: con hoy Y otro día elegidos, «Hoy» no se enciende (solo cuando hoy es el único)');
+  assert(/<button class="chip2 on" onclick="MZ\.diarioPeriodoRapido\('mes','2026-09'\)" title="">Este mes<\/button>/.test(hP) && /<button class="chip2" onclick="MZ\.diarioPeriodoRapido\('sem','2026-09-21'\)" title="">Esta semana<\/button>/.test(hP), 'v70 selector: «Este mes» (MZ.diarioPeriodoRapido(mes, …)) encendido con solo este mes elegido; «Esta semana» (MZ.diarioPeriodoRapido(sem, lunes)) apagado');
+  assert(/<button class="chip2" onclick="MZ\.diarioPeriodoRapido\('mes','2026-09'\)" title="">Este mes<\/button>/.test(V.seccionPeriodoDiario({ modo: 'meses', vals: ['2026-08', '2026-09'] }, meses, sem, HOY)), 'v70 selector: con DOS meses elegidos «Este mes» no se enciende (solo con ese único valor)');
+  assert(/<button class="chip2 on" onclick="MZ\.diarioPeriodoRapido\('sem','2026-09-21'\)" title="">Esta semana<\/button>/.test(V.seccionPeriodoDiario({ modo: 'semanas', vals: ['2026-09-21'] }, meses, sem, HOY)) && /<button class="chip2" onclick="MZ\.diarioPeriodoRapido\('sem','2026-09-21'\)" title="">Esta semana<\/button>/.test(V.seccionPeriodoDiario({ modo: 'semanas', vals: ['2026-09-14', '2026-09-21'] }, meses, sem, HOY)), 'v70 selector: «Esta semana» encendido solo con esa única semana elegida');
+  assert(!/MZ\.diarioPeriodoRapido\('(mes|sem)','[^']+'\)" title="[^"]*toca var/.test(hP) && /MZ\.diarioPeriodo\('mes','2026-09'\)" title="\d+ operaciones · toca varios meses para sumarlos"/.test(hP), 'v70 selector: los chips de la LISTA de meses y semanas siguen por MZ.diarioPeriodo (se suman); solo los tres rápidos van por el exclusivo');
   // v55: la fila de TARJETAS de la mesa vieja
   const hM = V.tarjetasResumenDiario(M, { modo: 'todo' }, cob.map(c => ({ ...c, pnl_periodo: -1 })));
   const etiquetas = (h) => [...h.matchAll(/<div class="lb">([^<]+)<\/div>/g)].map(x => x[1]);
@@ -655,7 +677,7 @@ function sbGrabador(respuestas) {
   const semMuchas = Array.from({ length: 10 }, (_, i) => { const l = new Date(Date.UTC(2026, 8, 21) - i * 7 * 86400000).toISOString().slice(0, 10); return { clave: l, desde: l, hasta: V.viernesDe(l), pnl: 1, ops: 1 }; });
   const hPm = V.seccionPeriodoDiario({ modo: 'todo' }, meses, semMuchas, HOY);
   assert(/las 8 más recientes · elige un mes para ver todas sus semanas/.test(hPm) && !/las 8 más recientes/.test(hP) && !/las 8 más recientes/.test(V.seccionPeriodoDiario({ modo: 'meses', vals: ['2026-09'] }, meses, semMuchas, HOY)), 'v55 selector: con más de 8 semanas y nada elegido dice «las 8 más recientes · elige un mes para ver todas sus semanas»; con un mes elegido salen las suyas y calla');
-  igual((hPm.match(/MZ\.diarioPeriodo\('sem','2026-\d\d-\d\d'\)/g) || []).length, 9, 'v55 selector: 8 semanas + «Esta semana»');
+  igual([(hPm.match(/MZ\.diarioPeriodo\('sem','2026-\d\d-\d\d'\)/g) || []).length, (hPm.match(/MZ\.diarioPeriodoRapido\('sem','2026-\d\d-\d\d'\)/g) || []).length], [8, 1], 'v55 selector: 8 semanas (se suman) + «Esta semana» (v70: el rápido)');
   const hO = V.seccionOperacionesDiario(R.viajes);
   assert(/OPERACIONES CERRADAS · 4/.test(hO) && /venció \(deducido\)/.test(hO) && /mismo día|1 d|2 d/.test(hO) && /\+13\.2%/.test(hO) && /1 compra y 2 salidas/.test(hO) && /×1 \$3\.30→\$4\.00 · ×1 \$3\.30→\$3\.50/.test(hO), 'operaciones cerradas: una tarjeta por VIAJE con su % sobre lo que costó, sus tramos debajo y las vencidas marcadas (deducida vs reportada)');
   assert(/-\$10\.00 · -3\.1%/.test(V.seccionOperacionesDiario(RA.viajes)), 'CASO A en pantalla: «-$10.00 · -3.1%» (el segundo decimal del redondeo no se ve)');
@@ -1016,8 +1038,8 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════
   // v54: 31184c9 (v53) ya está publicado; sin subir el número la Mesa instalada no se actualiza sola
-  assert(/config\.js\?v=69/.test(INDEX) && /app\/main\.js\?v=69/.test(INDEX), 'index.html carga config.js?v=69 y app/main.js?v=69 (v66: la Mesa se actualiza sola también en la computadora)');
-  assert(/const VER = 'mesa2-v58';/.test(SW), 'sw.js VER mesa2-v58');
+  assert(/config\.js\?v=70/.test(INDEX) && /app\/main\.js\?v=70/.test(INDEX), 'index.html carga config.js?v=70 y app/main.js?v=70 (v66: la Mesa se actualiza sola también en la computadora)');
+  assert(/const VER = 'mesa2-v59';/.test(SW), 'sw.js VER mesa2-v59');
   // v55: el CSS del Diario (envoltorio ancho solo con el Diario, rejilla de tarjetas, historial en línea/apilado por @container)
   assert(/@media \(min-width:900px\)\{#app\.ancho\{max-width:1180px\}/.test(INDEX) && /\.diario\{[^}]*container-type:inline-size/.test(INDEX) && /@container \(min-width:860px\)\{/.test(INDEX), 'v55 CSS: #app.ancho a 1180 px desde 900 px y .diario como contenedor de @container (min-width:860px)');
   assert(/\.dcards\{display:grid;grid-template-columns:1fr 1fr/.test(INDEX) && /\.dcards\{grid-template-columns:repeat\(auto-fill,minmax\(168px,1fr\)\)\}/.test(INDEX) && /\.dcard \.vl\{font-family:var\(--mono\)/.test(INDEX), 'v55 CSS: tarjetas a dos columnas en el iPhone, en filas en el Mac, número monoespaciado');
@@ -1079,6 +1101,26 @@ function sbGrabador(respuestas) {
     const nuevas = ['cuentasVista', 'diarioPeriodo', 'diarioRango', 'diarioBroker', 'diarioMasEjec', 'diarioSincronizar', 'notaGuardar', 'notaEditar', 'notaEditarGuardar', 'notaEditarCancelar', 'notaBorrar', 'notaDePosicion', 'cancelarOrdenFuera', 'tickerActivo', 'tickerMover', 'tickerAgregar',
       'notaBorrador', 'notaBorradorCampo', 'notaEdBorrador', 'diarioRangoTmp'];
     igual(nuevas.filter(k => typeof win.MZ[k] !== 'function'), [], 'las 16 puertas de la v52 y las 4 del borrador (v53) cuelgan de window.MZ');
+    // v70: MZ.diarioPeriodoRapido (los chips «Hoy», «Este mes» y «Esta semana») guarda EXACTAMENTE ese período y repinta el Diario
+    {
+      assert(typeof win.MZ.diarioPeriodoRapido === 'function', 'v70: MZ.diarioPeriodoRapido cuelga de window.MZ');
+      almacen['mz_diario_periodo'] = JSON.stringify({ modo: 'dias', vals: ['2026-10-30', '2026-11-03', '2026-11-04'] });
+      ev("window.__vdReal = vistaDiario; window.__vd = []; vistaDiario = (f) => { window.__vd.push(f); return Promise.resolve(); }; _diario.masEjec = true; _diario.rangoTmp = { desde: '2026-10-01' };");
+      ev("MZ.diarioPeriodoRapido('dia', '2026-11-06')");
+      igual([JSON.parse(almacen['mz_diario_periodo']), ev('window.__vd'), ev('_diario.masEjec'), ev('_diario.rangoTmp')], [{ modo: 'dias', vals: ['2026-11-06'] }, [true], false, null], 'v70: «Hoy» desde «3 días» deja {dias: [hoy]} guardado y repinta el Diario (vistaDiario(true)), soltando «más ejecuciones» y el rango a medio poner, como los demás chips');
+      ev("MZ.diarioPeriodoRapido('dia', '2026-11-06')");
+      igual([JSON.parse(almacen['mz_diario_periodo']), ev('window.__vd').length], [{ modo: 'todo' }, 2], 'v70: «Hoy» otra vez → todo el historial');
+      ev("MZ.diarioPeriodoRapido('mes', '2026-11')");
+      igual(JSON.parse(almacen['mz_diario_periodo']), { modo: 'meses', vals: ['2026-11'] }, 'v70: «Este mes» → {meses: [esteMes]}');
+      ev("MZ.diarioPeriodoRapido('sem', '2026-11-02')");
+      igual(JSON.parse(almacen['mz_diario_periodo']), { modo: 'semanas', vals: ['2026-11-02'] }, 'v70: «Esta semana» → {semanas: [lunes]}');
+      ev("MZ.diarioPeriodo('mes', '2026-10'); MZ.diarioPeriodo('mes', '2026-11');");
+      igual(JSON.parse(almacen['mz_diario_periodo']), { modo: 'meses', vals: ['2026-10', '2026-11'] }, 'v70: los chips de la LISTA (MZ.diarioPeriodo) siguen SUMANDO');
+      ev("MZ.diarioPeriodo('dia', '2026-11-04', true)");
+      igual(JSON.parse(almacen['mz_diario_periodo']), { modo: 'dias', vals: ['2026-11-04'] }, 'v70: una fila del día a día (MZ.diarioPeriodo con «solo») sigue dejando ese día solo');
+      ev('vistaDiario = window.__vdReal;');
+      delete almacen['mz_diario_periodo'];
+    }
     // v53: el Realtime de posiciones (marks del worker) pasa por rutaSalvoDiario: con el Diario a la vista no redibuja
     const registros = []; canal.on = (ev, cfg, cb) => { registros.push([cfg && cfg.table, cb && cb.name]); return canal; };
     ev('suscribir()');

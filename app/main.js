@@ -421,6 +421,17 @@ function suscribir() {
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'fills' }, libroFillNuevo)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'fills' }, libroFillCambiado)
     .subscribe();
+  // v70: las idas y vueltas de broker_trades (el worker las rehace a los 5 s de cada ejecución de moomoo —0.1.12b— y con la
+  // foto de tasty; E*TRADE y Schwab las escribe este equipo) llegan al instante y Cuentas no espera al minuto del respaldo
+  // (Andrés, 6-nov: «la mesa no me está actualizando»). En su PROPIO canal, como los demás: si broker_trades faltara en la
+  // publicación, solo cae este. Solo INSERT y UPDATE (pasan por RLS: user_id = auth.uid()); nunca '*' ni DELETE: los DELETE
+  // no pasan por RLS y viajarían con la clave a cualquier suscriptor, y la app no los necesita (tras el delete de una
+  // sincronización, el upsert que sigue llega como INSERT). El `if (canal) return` de arriba vale también para este canal:
+  // un re-render no lo abre dos veces.
+  sb.channel('mesa2-trades')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'broker_trades' }, tradeBrokerCambio)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'broker_trades' }, tradeBrokerCambio)
+    .subscribe();
 }
 
 // ---------- helpers de tiempo/estado ----------
@@ -11996,6 +12007,23 @@ function libroFillRT(payload, modo) {
 }
 function libroFillNuevo(payload) { return libroFillRT(payload, 'insert'); }
 function libroFillCambiado(payload) { return libroFillRT(payload, 'update'); }
+// v70 · Realtime de `broker_trades` (canal 'mesa2-trades'): una ida y vuelta nueva o cambiada → Cuentas en segundos. Cuentas
+// no guarda broker_trades en caché (vistaCuentasSaldos la vuelve a leer en cada pintado), así que basta con repintar: el
+// MISMO camino que un fill de Realtime (libroRepintarPronto: debounce de 1,5 s —una sincronización escribe decenas de filas
+// de golpe— y las guardas de repintarVistaLibro: solo con el Diario o Cuentas a la vista, sin un cuadro abierto ni un campo
+// en uso; en Cuentas el repintado conserva el scroll de la tabla y las filas de «ver más»). La única caché que cuenta
+// operaciones con broker_trades es la de «Tu plan hoy» del Informe (opsInforme, 60 s): se invalida, como con una posición
+// nueva. El timer de 60 s (ruta) sigue de respaldo. Un evento sin fila (payload incompleto) o de otro usuario —la RLS ya lo
+// impide; aquí, por si acaso— no hace nada. Devuelve si hizo algo (para las pruebas).
+function tradeBrokerCambio(payload) {
+  const f = payload && payload.new;
+  if (!f || typeof f !== 'object') return false;
+  const uid = sesionActiva && sesionActiva.user && sesionActiva.user.id;
+  if (!uid || (f.user_id != null && f.user_id !== uid)) return false;
+  if (typeof informeOpsInvalidar === 'function') informeOpsInvalidar();
+  libroRepintarPronto();
+  return true;
+}
 // v65: ¿qué vista que USA el libro está a la vista? 'diario' | 'cuentas' | null (cualquier otra pestaña: nada que repintar;
 // el Informe, Disciplina y el Copiloto lo leen de la caché en su próximo pintado).
 function vistaLibroAbierta() {
@@ -12355,6 +12383,19 @@ function periodoDiarioToggle(sel, tipo, val, solo) {
   const vals = s.vals.includes(v) ? s.vals.filter(x => x !== v) : s.vals.concat([v]);
   return vals.length ? periodoDiarioNormalizar({ modo, vals }) : { modo: 'todo' };
 }
+// v70 · Los chips rápidos «Hoy», «Este mes» y «Esta semana» dejan EXACTAMENTE ese período (modo dias/meses/semanas con un
+// solo valor), vengan de donde vengan; y si ya es exactamente ese único valor, pulsarlo vuelve a «Todo el historial».
+// Antes «Hoy» pasaba por periodoDiarioToggle sin «solo»: alternaba el día DENTRO de la selección de días que se iba
+// acumulando con los «Hoy» de los días anteriores (Andrés, 6-nov: pulsó «Hoy» y el Diario siguió en «3 días ·
+// 2026-10-30 → 2026-11-04»). Los chips de la lista de meses y semanas (se suman) y las filas de los resúmenes y del día a
+// día («solo») siguen con periodoDiarioToggle. PURA.
+function periodoDiarioRapido(sel, tipo, val) {
+  const modo = tipo === 'mes' ? 'meses' : tipo === 'dia' ? 'dias' : 'semanas';
+  const s = periodoDiarioNormalizar(sel);
+  const v = modo === 'semanas' ? lunesDe(val) : String(val);
+  if (s.modo === modo && s.vals.length === 1 && s.vals[0] === v) return { modo: 'todo' };
+  return periodoDiarioNormalizar({ modo, vals: [v] });
+}
 const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const MESES_ES_C = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 function nombreMesYm(ym) { const m = /^(\d{4})-(\d{2})$/.exec(String(ym || '')); return m ? `${MESES_ES[Number(m[2]) - 1] || m[2]} ${m[1]}` : String(ym || ''); }
@@ -12430,9 +12471,10 @@ function selectorCuentas(v) {
     <button class="perbtn${v === 'cuentas' ? ' on' : ''}" onclick="MZ.cuentasVista('cuentas')">Cuentas</button></div>`;
 }
 // Selector de período, como en la mesa vieja: fila PERÍODO (Todo el historial · Hoy · Este mes · Esta
-// semana · un chip por mes con su $, que se SUMAN) · fila SEMANAS (las 8 más recientes, o todas las
-// de lo elegido) · RANGO A MEDIDA con dos fechas. `tmp` = las fechas del rango que Andrés ya eligió y
-// aún no aplicó (en el iPhone elegir dos fechas tarda más que un redibujo de 60 s).
+// semana —v70: los tres rápidos dejan EXACTAMENTE ese período, y otra vez, todo— · un chip por mes con su $,
+// que se SUMAN) · fila SEMANAS (las 8 más recientes, o todas las de lo elegido) · RANGO A MEDIDA con dos
+// fechas. `tmp` = las fechas del rango que Andrés ya eligió y aún no aplicó (en el iPhone elegir dos fechas
+// tarda más que un redibujo de 60 s).
 function seccionPeriodoDiario(sel, meses, semanas, hoy, tmp) {
   const s = periodoDiarioNormalizar(sel);
   const t = tmp || {};
@@ -12445,15 +12487,17 @@ function seccionPeriodoDiario(sel, meses, semanas, hoy, tmp) {
   else if (s.modo === 'semanas') ctx = new Set(s.vals.flatMap(l => [l.slice(0, 7), viernesDe(l).slice(0, 7)]));
   else if (s.modo === 'dias') ctx = new Set(s.vals.map(d => d.slice(0, 7)));
   const semVis = (ctx ? (semanas || []).filter(w => ctx.has(w.desde.slice(0, 7)) || ctx.has(w.hasta.slice(0, 7))) : (semanas || []).slice(0, 8));
-  const chip = (tipo, val, txt, pnl, esOn, titulo) => `<button class="chip2${esOn ? ' on' : ''}" onclick="MZ.diarioPeriodo('${tipo}','${esc(val)}')" title="${esc(titulo || '')}">${esc(txt)}${pnl != null ? `<small style="color:${esOn ? 'inherit' : colD(pnl)}">${dineroS(pnl)}</small>` : ''}</button>`;
+  // v70: `rapido` = uno de los tres chips rápidos (MZ.diarioPeriodoRapido: deja EXACTAMENTE ese período; pulsado otra vez,
+  // todo el historial). Los chips de la lista siguen con MZ.diarioPeriodo (varios se suman).
+  const chip = (tipo, val, txt, pnl, esOn, titulo, rapido) => `<button class="chip2${esOn ? ' on' : ''}" onclick="MZ.${rapido ? 'diarioPeriodoRapido' : 'diarioPeriodo'}('${tipo}','${esc(val)}')" title="${esc(titulo || '')}">${esc(txt)}${pnl != null ? `<small style="color:${esOn ? 'inherit' : colD(pnl)}">${dineroS(pnl)}</small>` : ''}</button>`;
   const etq = (txt) => `<span class="etq">${txt}</span>`;
   return `<div class="card">
     <div class="fila"><h3>Período</h3><span class="fresco">${esc(tituloPeriodoDiario(s))}</span></div>
     <div class="chips">${etq('PERÍODO')}
       <button class="chip2${s.modo === 'todo' ? ' on' : ''}" onclick="MZ.diarioPeriodo('todo')">Todo el historial</button>
-      ${chip('dia', String(hoy).slice(0, 10), 'Hoy', null, on('dias', String(hoy).slice(0, 10)) && s.vals.length === 1)}
-      ${chip('mes', esteMes, 'Este mes', null, on('meses', esteMes) && s.vals.length === 1)}
-      ${chip('sem', estaSem, 'Esta semana', null, on('semanas', estaSem) && s.vals.length === 1)}
+      ${chip('dia', String(hoy).slice(0, 10), 'Hoy', null, on('dias', String(hoy).slice(0, 10)) && s.vals.length === 1, '', true)}
+      ${chip('mes', esteMes, 'Este mes', null, on('meses', esteMes) && s.vals.length === 1, '', true)}
+      ${chip('sem', estaSem, 'Esta semana', null, on('semanas', estaSem) && s.vals.length === 1, '', true)}
       ${ms.map(m => chip('mes', m.clave, nombreMesYm(m.clave), m.pnl, on('meses', m.clave), `${m.ops} operaciones · toca varios meses para sumarlos`)).join('')}</div>
     ${semVis.length ? `<div class="chips">${etq('SEMANAS')}${semVis.map(w => chip('sem', w.desde, textoSemana(w.desde), w.pnl, on('semanas', w.desde), `del ${w.desde} al ${w.hasta} · ${w.ops} operaciones · toca varias para sumarlas`)).join('')}
       ${!ctx && (semanas || []).length > 8 ? `<span class="fresco" style="align-self:center">las 8 más recientes · elige un mes para ver todas sus semanas</span>` : ''}</div>` : ''}
@@ -13487,6 +13531,10 @@ window.MZ = Object.assign(window.MZ || {}, {
   diarioPeriodo: (tipo, val, solo) => {
     const sel = tipo === 'todo' ? { modo: 'todo' } : periodoDiarioToggle(periodoDiarioSel(), tipo, val, !!solo);
     periodoDiarioGuardar(sel); _diario.masEjec = false; _diario.rangoTmp = null; vistaDiario(true);
+  },
+  // v70: los chips rápidos «Hoy», «Este mes» y «Esta semana» (periodoDiarioRapido: exactamente ese período; otra vez, todo)
+  diarioPeriodoRapido: (tipo, val) => {
+    periodoDiarioGuardar(periodoDiarioRapido(periodoDiarioSel(), tipo, val)); _diario.masEjec = false; _diario.rangoTmp = null; vistaDiario(true);
   },
   diarioRango: () => {
     const a = ($('#dDesde') || {}).value, b = ($('#dHasta') || {}).value;
