@@ -6014,7 +6014,8 @@ const CTA_COLS = [['Fecha', '', 1], ['Contrato', 'exp · DTE', 1], ['Bróker', '
 // v62 rev: los brókeres que MANDAN la comisión (fees, aunque sea 0): E*TRADE (brokerage.fee) y tasty. Schwab no la manda:
 // su resultado_usd es BRUTO. v71: moomoo NO entra aquí aunque ya la da (worker 0.1.15: order_fee_query, por orden, repartida
 // por contratos): la asienta minutos después y la ida y vuelta llega con fees 0 hasta que el worker la sabe, así que su 0 es
-// «aún sin dato», no un 0 real; con fees > 0 cuenta como neta igual que cualquiera (comisionDelBroker).
+// «aún sin dato», no un 0 real; con fees > 0 cuenta como neta igual que cualquiera (comisionDelBroker), y v71 rev: lo ES
+// (filasMoomooNetas resta fees al resultado que el worker 0.1.15 deja en bruto).
 const BROKERS_CON_COMISION = ['etrade', 'tasty'];
 
 // ¿El instante es una FECHA sin hora? Exactamente 00:00:00 UTC o 00:00 NY (la regla del worker 0.1.9b). Las opciones no
@@ -11389,6 +11390,36 @@ function filasSchwabVencimiento(trades) {
   if (!trades.some(t => iv(t))) return trades;
   return trades.map(t => { const e = iv(t); return e ? { ...t, cerrada_at: e } : t; });
 }
+// v71 rev (jueces de dinero y de seguridad: «Cuentas toma el resultado_usd de moomoo como NETO en cuanto fees > 0, y el
+// worker 0.1.15 lo deja en BRUTO») · La convención de la casa para broker_trades es que una fila con fees > 0 trae
+// resultado_usd NETO (bruto − fees): así lo escriben E*TRADE (emparejarEtrade) y tasty (tasty_cuenta.py) y así lo leen
+// comisionDelBroker, Cuentas («neto · bruto $X − comisión $Y»), Disciplina y el Informe. El worker 0.1.15 pone en las de
+// moomoo fees > 0 (al emparejar, o con el PATCH de su paso 5, que solo toca `fees`) y deja resultado_usd = (venta − compra)
+// × contratos × 100: Cuentas enseñaba el bruto rotulado «neto», un «bruto» inflado con la comisión y, cada mes, la nota del
+// Diario atribuía la diferencia a Schwab y a las fichas a mano. Se arregla AL LEER, como filasMoomooVencimiento: la fila de
+// moomoo con fees > 0 cuyo resultado_usd es EXACTAMENTE el bruto de sus propias primas (a medio centavo) se lee con
+// resultado_usd = bruto − fees y el bruto en raw.moomoo_bruto. Si el worker ya la escribe NETA (la convención), su
+// resultado no es el bruto de sus primas y la fila se queda tal cual: nunca dos descuentos. Sin primas o sin contratos no
+// se puede saber y no se toca. La base no se toca (copias) y devuelve el MISMO arreglo si no hay nada que cambiar. PURA.
+function filasMoomooNetas(trades) {
+  if (!Array.isArray(trades)) return trades;
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const bruto = (t) => {
+    if (!t || t.broker !== 'moomoo') return null;
+    const f = num(t.fees), r = num(t.resultado_usd), pe = num(t.prima_fill), ps = num(t.prima_salida), c = num(t.contratos);
+    if (!(f > 0) || r == null || pe == null || ps == null || !(c > 0)) return null;
+    const b = r2((ps - pe) * c * 100);
+    return Math.abs(r - b) < 0.005 ? b : null;
+  };
+  if (!trades.some(t => bruto(t) != null)) return trades;
+  return trades.map(t => {
+    const b = bruto(t);
+    if (b == null) return t;
+    const raw = (t.raw && typeof t.raw === 'object') ? t.raw : {};
+    return { ...t, resultado_usd: r2(b - Number(t.fees)), raw: { ...raw, moomoo_bruto: b } };
+  });
+}
 // Une las operaciones manuales (posiciones) con los round-trips reales de los
 // brókeres (broker_trades) en UN conjunto sin duplicados, para la Disciplina.
 //  · Los round-trips del bróker se agrupan por contrato + día NY de apertura:
@@ -11409,8 +11440,10 @@ function filasSchwabVencimiento(trades) {
 //    el vencimiento es su vencimiento, a las 16:30 ET del día de la expiración, como en el Diario.
 //  · v66 (A3): y por filasSchwabVencimiento (tampoco depende del libro): la «>venc» de Schwab guardada a las 20:00Z se lee a
 //    las 16:30 ET del día de la expiración, como el «Option Expired» de E*TRADE y el vencimiento deducido del Diario.
+//  · v71 rev: y por filasMoomooNetas (tampoco depende del libro): la fila de moomoo con su comisión (fees > 0) y el
+//    resultado aún en BRUTO se lee NETA, como las de E*TRADE y tasty (Cuentas, Disciplina y el Informe cuadran con el Diario).
 function unirOperaciones(posic, trades, fills) {
-  trades = filasSchwabVencimiento(filasMoomooVencimiento(filasEtradeVigentes(trades, fills || null)));   // v66 A3: y la «>venc» de Schwab a su instante
+  trades = filasMoomooNetas(filasSchwabVencimiento(filasMoomooVencimiento(filasEtradeVigentes(trades, fills || null))));   // v66 A3: y la «>venc» de Schwab a su instante; v71 rev: moomoo neta
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const r2 = (n) => Math.round(n * 100) / 100;
   const tramos = {}, manualesAgrupadas = [];
@@ -13306,7 +13339,7 @@ async function vistaDiario(forzar) {
     const inicioMes = hoy.slice(0, 8) + '01';
     const R = resumenPeriodo(unirOperaciones(posic, btR.data || [], fillsR.error ? null : fills).ops, inicioMes);
     const dMes = Math.round(F.cerradas.filter(c => c.fecha_ny >= inicioMes).reduce((s, c) => s + c.pnl, 0) * 100) / 100;
-    if (Math.abs((R.util || 0) - dMes) > 0.5) notaCuentas = `Este mes el Diario suma ${dineroD(dMes)} y la pestaña Cuentas ${dineroD(R.util)}. No es un error: Cuentas suma las operaciones cerradas que bajó cada bróker (sin comisiones de Schwab y con las fichas que registraste a mano); el Diario suma cada compra y venta guardada, con comisiones. Manda el Diario; Cuentas se alinea en la siguiente entrega.`;
+    if (Math.abs((R.util || 0) - dMes) > 0.5) notaCuentas = `Este mes el Diario suma ${dineroD(dMes)} y la pestaña Cuentas ${dineroD(R.util)}. No es un error: Cuentas suma las operaciones cerradas que bajó cada bróker (sin comisiones de Schwab ni las de moomoo que aún no están en sus idas y vueltas, y con las fichas que registraste a mano); el Diario suma cada compra y venta guardada, con las comisiones que se saben. Manda el Diario; Cuentas se alinea en la siguiente entrega.`;
   } catch (_) {}
   // v55: el orden de la mesa vieja — período, historial de cada cuenta, la fila de tarjetas, resumen
   // mensual, resumen semanal, y debajo lo demás (día a día, operaciones, abiertos, ejecuciones, notas).

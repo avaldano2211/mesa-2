@@ -53,7 +53,7 @@ const DESDE_MS = HOY_MS - 180 * 86400000;
 
 // Cuentas (unirOperaciones con el libro) y el Diario (emparejarFillsFIFO del libro vigente): las funciones REALES
 const NOMBRES_CTA = ['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato', 'emparejarFillsFIFO', 'viajeDe',
-  'operacionCerrada', 'parteComision', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'vencimientoMoomoo', 'filasMoomooVencimiento',
+  'operacionCerrada', 'parteComision', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY', 'instanteVencimiento', 'vencimientoMoomoo', 'filasMoomooVencimiento', 'filasMoomooNetas',
   'filasSchwabVencimiento', 'cerradasDesde', 'diaOpNY', 'diaAperturaOp'].filter(existe);
 const K = construir(NOMBRES_CTA, { ymdNY, hoyNY: () => '2026-10-31' },
   { consts: ['ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'].filter(existeConst) });

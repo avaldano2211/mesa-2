@@ -17,7 +17,7 @@ const existe = (n) => new RegExp('^(?:async )?function ' + n + '\\s*\\(', 'm').t
 
 // Cuentas (unirOperaciones y sus lectores, los períodos y los tiles) y el Diario (el FIFO del libro y el día a día)
 const NOMBRES = ['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato', 'instanteVencimiento',
-  'vencimientoMoomoo', 'filasMoomooVencimiento', 'filasSchwabVencimiento', 'cerradasDesde', 'aportePeriodoCuentas', 'resumenPeriodo', 'metricasCuentas',
+  'vencimientoMoomoo', 'filasMoomooVencimiento', 'filasMoomooNetas', 'filasSchwabVencimiento', 'cerradasDesde', 'aportePeriodoCuentas', 'resumenPeriodo', 'metricasCuentas',
   'comisionDelBroker', 'tilesCuentasHtml', 'detalleOpCuentas', 'diaOpNY', 'diaAperturaOp', 'sinHoraIso', 'horaNY', 'fechaNyTransaccion', 'dteEntrada',
   'diasEntre', 'filaVencioCuentas', 'filaPresuntaCuentas', 'spotDeOperacion', 'partesOpCuentas', 'senalDeOperacion', 'spotDeFill', 'peorFuenteSpot',
   'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'parteComision', 'durMin', 'diaADia', 'marcarLotesAbiertosCuentas'].filter(existe);
@@ -237,7 +237,7 @@ const FILLS_T = [
       { ...W, contratos: 1, prima_salida: 1.30, cerrada_at: '2026-10-19T15:00:00Z', resultado_usd: 30, fees: 0, clave_ext: 'w2' }];
     const vista = nodo();
     const sb = sbFalso((tabla) => ({ posiciones: { data: [] }, broker_trades: { data: copia(trades) }, cuenta_snapshots: { data: [] }, ordenes: { data: [] } }[tabla] || { data: [] }));
-    const D = construir(['vistaDisciplina', 'unirOperaciones', 'filasEtradeVigentes', 'instanteVencimiento', 'filasMoomooVencimiento', 'filasSchwabVencimiento', 'vencimientoMoomoo',
+    const D = construir(['vistaDisciplina', 'unirOperaciones', 'filasEtradeVigentes', 'instanteVencimiento', 'filasMoomooVencimiento', 'filasMoomooNetas', 'filasSchwabVencimiento', 'vencimientoMoomoo',
       'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato', 'cerradasDesde', 'reglasRotas', 'planDePct', 'fmtFechaNY', 'planActivo', 'planFilaCache', 'planUid'].filter(existe), {
       libroParaUnir: async () => null, sb, $: () => vista, cargarPlanUsuario: async () => null, sesionActiva: { user: { id: 'u1' } },
       localStorage: { getItem: () => null, setItem() {}, removeItem() {} },

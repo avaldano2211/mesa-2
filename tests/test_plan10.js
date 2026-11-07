@@ -597,7 +597,7 @@ function armarCorte(E) {
   // ════════════════ 11. unirOperaciones (tramos = una operación) y cerradasDesde ════════════════
   {
     // v65 rev4: unirOperaciones pasa SIEMPRE por filasEtradeVigentes (sin libro solo pone el vencimiento de E*TRADE en su día)
-    const U = construir(['unirOperaciones', 'filasEtradeVigentes', 'instanteVencimiento', 'filasMoomooVencimiento', 'filasSchwabVencimiento', 'vencimientoMoomoo', 'fillsEtradeVigentes', 'cerradasDesde'], { ymdNY });
+    const U = construir(['unirOperaciones', 'filasEtradeVigentes', 'instanteVencimiento', 'filasMoomooVencimiento', 'filasMoomooNetas', 'filasSchwabVencimiento', 'vencimientoMoomoo', 'fillsEtradeVigentes', 'cerradasDesde'], { ymdNY });
     const base = { symbol: 'SPY', direccion: 'CALL', strike: 600, expiracion: '2026-10-17', prima_fill: 1.00, broker: 'etrade', abierta_at: '2026-09-22T14:00:00Z', abierta_fecha_ny: '2026-09-22' };
     const u = U.unirOperaciones([
       { id: 20, ...base, contratos: 3, estado: 'abierta', resultado_usd: null },

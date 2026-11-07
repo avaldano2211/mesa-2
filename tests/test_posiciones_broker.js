@@ -408,7 +408,7 @@ const LE = construir(['leerCarteraEtrade', 'lecturaBroker', 'normalizarPosEtrade
 
   // ════════════════ 11. A1 · Cuentas y Disciplina cuentan LO MISMO ════════════════
   // v65 rev4: unirOperaciones pasa SIEMPRE por filasEtradeVigentes (sin libro solo pone el vencimiento de E*TRADE en su día)
-  const U = construir(['unirOperaciones', 'filasEtradeVigentes', 'instanteVencimiento', 'filasMoomooVencimiento', 'filasSchwabVencimiento', 'vencimientoMoomoo', 'fillsEtradeVigentes', 'resumenPeriodo', 'cerradasDesde', 'aportePeriodoCuentas'], { ymdNY });
+  const U = construir(['unirOperaciones', 'filasEtradeVigentes', 'instanteVencimiento', 'filasMoomooVencimiento', 'filasMoomooNetas', 'filasSchwabVencimiento', 'vencimientoMoomoo', 'fillsEtradeVigentes', 'resumenPeriodo', 'cerradasDesde', 'aportePeriodoCuentas'], { ymdNY });
   const POS_A1 = [
     // la MISMA operación registrada a mano y traída del bróker
     { id: 1, user_id: 'u', symbol: 'SPY', direccion: 'CALL', strike: 769, expiracion: '2026-09-19', contratos: 2,

@@ -38,7 +38,7 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   // v65 rev6: el instante de un vencimiento (16:30 ET del día de la expiración, con el horario de NY de ese día)
   'instanteVencimiento',
   // v65 rev7: la venta a $0 que moomoo anota tras el vencimiento es su vencimiento (el FIFO del libro y Cuentas la leen así)
-  'vencimientoMoomoo', 'filasMoomooVencimiento',
+  'vencimientoMoomoo', 'filasMoomooVencimiento', 'filasMoomooNetas',
   // v66 A3: la «>venc» de Schwab guardada a las 20:00Z se lee a las 16:30 ET de su día (instanteVencimiento)
   'filasSchwabVencimiento',
   // v71: lo que se dice de la comisión bajo el P&L (moomoo con fees 0: «aún sin dato», no «sin comisión del bróker»)
@@ -1121,7 +1121,7 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     '(v65 rev7) leer dos veces no cambia nada (el cierre ya no es posterior al vencimiento) y la fila original no se muta');
   igual([K.filasMoomooVencimiento(null), K.filasMoomooVencimiento(undefined), K.filasMoomooVencimiento([null, {}]).length], [null, undefined, 2], '(v65 rev7) sin filas o con basura, no revienta');
   igual(K.unirOperaciones([], [{ ...base, raw: null }]).ops[0]._partes_filas[0].raw, { cierra: 'vencimiento', moomoo_anotada_at: '2026-10-17T05:22:00+00:00' }, '(v65 rev7) una fila sin raw recibe la marca igual');
-  assert(/trades = filasSchwabVencimiento\(filasMoomooVencimiento\(filasEtradeVigentes\(trades, fills \|\| null\)\)\);/.test(extraer('unirOperaciones')), '(v65 rev7) unirOperaciones lee SIEMPRE las filas de moomoo con filasMoomooVencimiento (con libro y sin él): Cuentas, Disciplina, los cupos y la comprobación del Diario cuentan lo mismo');
+  assert(/trades = filasMoomooNetas\(filasSchwabVencimiento\(filasMoomooVencimiento\(filasEtradeVigentes\(trades, fills \|\| null\)\)\)\);/.test(extraer('unirOperaciones')), '(v65 rev7) unirOperaciones lee SIEMPRE las filas de moomoo con filasMoomooVencimiento (con libro y sin él): Cuentas, Disciplina, los cupos y la comprobación del Diario cuentan lo mismo');
 }
 // v62 rev4: TODAS las pantallas que suman operaciones pasan el libro (mismas cifras en Cuentas, Disciplina y los cupos)
 {

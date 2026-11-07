@@ -299,8 +299,9 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     assert(/sin comisión del bróker/.test(W.tarjetaHistorial(sw, {})) && !/aún sin dato/.test(W.tarjetaHistorial(sw, {})), 'Schwab sigue «sin comisión del bróker»');
     // una operación de moomoo con dos idas y vueltas: una con su comisión y otra aún sin ella
     const dosIV = W.unirOperaciones([], [
-      { ...b, broker: 'moomoo', abierta_at: '2026-11-06T14:40:00Z', cerrada_at: '2026-11-06T15:00:00Z', resultado_usd: 49.57, fees: 0.43, clave_ext: 'm1|m2' },
-      { ...b, broker: 'moomoo', abierta_at: '2026-11-06T14:40:00Z', cerrada_at: '2026-11-06T15:10:00Z', resultado_usd: 200, fees: 0, clave_ext: 'm1|m3' }]).ops;
+      // v71 rev: como las escribe el worker 0.1.15 (resultado_usd en BRUTO de sus primas, fees aparte; filasMoomooNetas lo lee neto)
+      { ...b, broker: 'moomoo', prima_salida: 2.5, abierta_at: '2026-11-06T14:40:00Z', cerrada_at: '2026-11-06T15:00:00Z', resultado_usd: 50, fees: 0.43, clave_ext: 'm1|m2' },
+      { ...b, broker: 'moomoo', contratos: 2, abierta_at: '2026-11-06T14:40:00Z', cerrada_at: '2026-11-06T15:10:00Z', resultado_usd: 200, fees: 0, clave_ext: 'm1|m3' }]).ops;
     const op2 = dosIV.find(o => Array.isArray(o._partes_filas) && o._partes_filas.length === 2);
     assert(!!op2, 'las dos idas y vueltas del mismo contrato y día forman UNA operación (para probar los datos mezclados dentro de ella)', JSON.stringify(dosIV.map(o => (o._partes_filas || []).length)));
     if (op2) {
@@ -308,7 +309,42 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
       igual([d2.com, d2.comPendParte, d2.comPendTotal, d2.comPendiente], [0.43, 1, 2, false], 'detalle: comisión conocida $0.43 y 1 de 2 idas y vueltas aún sin dato');
       assert(/neto · bruto \$250\.00 − comisión \$0\.43 \(1 de 2 idas y vueltas aún sin dato de comisión\)/.test(W.tarjetaHistorial(op2, {})), 'la tarjeta lo dice: «(1 de 2 idas y vueltas aún sin dato de comisión)»');
       assert(/<span class="csub">bruto \$250\.00 · parcial<\/span>/.test(W.filaHistorialCuentas(op2, { fills: [], senales: [] })), 'la fila: «bruto $250.00 · parcial»');
+      igual([d2.neto, d2.bruto], [249.57, 250], '… y su neto es $249.57 = $250 − $0.43 (la fila con comisión, leída neta)');
     }
+
+    // ── 7b. v71 rev · las filas TAL CUAL las escribe moomoo_cuenta.emparejar del worker 0.1.15: resultado_usd en BRUTO y la
+    // comisión aparte en fees (salida del emparejar REAL con deals de juguete: compra 3 @2.00 de $0.57, venta 1 @2.50 de
+    // $0.24, venta 2 @3.00 de $0.43). Jueces de dinero y de seguridad: Cuentas daba $250 «neta» con el Diario en $248.76.
+    const RAWW = { fuente: 'moomoo OpenD history_deal_list_query', fees: 'moomoo order_fee_query, repartidas por contratos', cuenta: 'MARGEN' };
+    const OSI = 'TSLA  261113C00450000', AB = '2026-11-06T09:40:00-05:00';
+    const fila = (n, ps, cierre, res, fees, ids) => ({ broker: 'moomoo', symbol: 'TSLA', direccion: 'CALL', strike: 450.0, expiracion: '2026-11-13', contratos: n,
+      prima_fill: 2.0, prima_salida: ps, abierta_at: AB, cerrada_at: cierre, resultado_usd: res, fees, clave_ext: `${OSI}|${AB}|${cierre}|${n}|${ids}`, raw: { ...RAWW } });
+    const WA = [fila(1, 2.5, '2026-11-06T10:00:00-05:00', 50.0, 0.43, 'd1>d2'), fila(2, 3.0, '2026-11-06T10:10:00-05:00', 200.0, 0.81, 'd1>d3')];
+    const FA = [FM('d1', 'compra', 3, 2.00, AB, { comision: 0.57, comision_fuente: 'moomoo_orden' }), FM('d2', 'venta', 1, 2.50, '2026-11-06T10:00:00-05:00', { comision: 0.24, comision_fuente: 'moomoo_orden' }),
+      FM('d3', 'venta', 2, 3.00, '2026-11-06T10:10:00-05:00', { comision: 0.43, comision_fuente: 'moomoo_orden' })];
+    const util = (bt) => W.metricasCuentas(W.resumenPeriodo(W.unirOperaciones([], bt).ops, '2026-11-01').ops, '2026-11-01');
+    const diario = (fs) => { const R = D.emparejarFillsFIFO(fs, HOY); return D.metricasDiario(R.cerradas, D.diaADia(R.cerradas, null, null, R.viajes), R.viajes, fs).total; };
+    const MA = util(WA);
+    igual([MA.util, MA.comisiones, MA.com_brokers], [248.76, 1.24, ['moomoo']], 'Cuentas con las filas del worker: utilidad NETA $248.76 = $250 − $1.24 (antes $250 rotulada «neta»)');
+    igual(MA.util, diario(FA), 'Cuentas = Diario al centavo con las MISMAS ejecuciones');
+    const opA = W.unirOperaciones([], WA).ops[0], dA = W.detalleOpCuentas(opA, {});
+    igual([dA.neto, dA.bruto, dA.com], [248.76, 250, 1.24], 'la operación: neto $248.76, bruto $250.00 (el de sus primas, no $251.24 inventado) y comisión $1.24');
+    assert(/neto · bruto \$250\.00 − comisión \$1\.24/.test(W.tarjetaHistorial(opA, {})), 'la tarjeta: «neto · bruto $250.00 − comisión $1.24»');
+    // el mismo período si el worker escribe la convención de la casa (resultado_usd NETO): idéntico, nunca dos descuentos
+    const WN = WA.map(t => ({ ...t, resultado_usd: Math.round((t.resultado_usd - t.fees) * 100) / 100 }));
+    igual([util(WN).util, W.detalleOpCuentas(W.unirOperaciones([], WN).ops[0], {}).bruto], [248.76, 250], 'filas ya NETAS (E*TRADE y tasty lo hacen así): $248.76 y bruto $250.00, sin restar dos veces');
+    // salida escalonada por tercios (compra $0.58, tres ventas de $0.20): el worker reparte 0.39 / 0.39 / 0.40
+    const WB = [fila(1, 2.5, '2026-11-06T10:00:00-05:00', 50.0, 0.39, 'd1>d2'), fila(1, 2.5, '2026-11-06T10:05:00-05:00', 50.0, 0.39, 'd1>d3'), fila(1, 2.5, '2026-11-06T10:10:00-05:00', 50.0, 0.40, 'd1>d4')];
+    const FB = [FM('d1', 'compra', 3, 2.00, AB, { comision: 0.58, comision_fuente: 'moomoo_orden' })].concat(['10:00', '10:05', '10:10'].map((h, i) => FM('d' + (i + 2), 'venta', 1, 2.50, `2026-11-06T${h}:00-05:00`, { comision: 0.20, comision_fuente: 'moomoo_orden' })));
+    igual([util(WB).util, diario(FB)], [148.82, 148.82], 'salida en tercios: Cuentas y Diario $148.82 = $150 − $1.18 (antes $150 y $148.83)');
+    // filasMoomooNetas, sola
+    const N = W.filasMoomooNetas;
+    const otras = [{ ...WA[0], broker: 'etrade' }, { ...WA[0], fees: 0 }, { ...WA[0], prima_salida: null }, { ...WA[0], contratos: 0 }, WN[0]];
+    assert(N(otras) === otras, 'no toca: E*TRADE, moomoo con fees 0, sin prima o sin contratos, ni la que ya viene neta (el MISMO arreglo)');
+    const n1 = N(WA);
+    igual([n1[0].resultado_usd, n1[0].raw.moomoo_bruto, n1[0].raw.fees, WA[0].resultado_usd, WA[0].raw.moomoo_bruto], [49.57, 50, RAWW.fees, 50, undefined], 'copia con el neto y el bruto en raw.moomoo_bruto; la fila leída no cambia');
+    igual(N(n1).map(t => t.resultado_usd), [49.57, 199.19], 'leída dos veces no resta dos veces');
+    igual([N(null), N(undefined), N([null, {}]).length], [null, undefined, 2], 'sin filas o con basura: no se rompe');
   }
 
   // ════════════════ 8. el Diario ENTERO pintado (módulo real, supabase de juguete) ════════════════
