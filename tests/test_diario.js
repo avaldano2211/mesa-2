@@ -425,8 +425,10 @@ function sbGrabador(respuestas) {
   const V = construir(['seccionPeriodoDiario', 'tarjetasResumenDiario', 'seccionCoberturaDiario', 'seccionDiaADia', 'seccionResumenesDiario', 'seccionOperacionesDiario', 'seccionAbiertosDiario',
     'seccionEjecucionesDiario', 'seccionNotasDiario', 'selectorCuentas', 'textoDuracionOp', 'fechaHoraD', 'periodoDiarioNormalizar', 'lunesDe', 'viernesDe', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'tituloPeriodoDiario', 'diasEntre', 'claveFill',
     'rangoPeriodoDiario', 'subtituloPeriodoDiario', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion',   // v62 rev2: fechas y duración por instante
-    'vencimientoMoomoo', 'instanteVencimiento'],   // v65 rev7: la venta a $0 de moomoo tras el vencimiento se rotula VENCIMIENTO
+    'vencimientoMoomoo', 'instanteVencimiento',   // v65 rev7: la venta a $0 de moomoo tras el vencimiento se rotula VENCIMIENTO
+    'estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'fillSoloVencimiento'],   // v71: la comisión de moomoo (se prueba en test_comisiones_moomoo.js)
     { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, ymdNY, fmtFechaNY, durTxt, claveContrato, filaAccionDiario: () => '',   // v60: la fila de la acción se prueba en test_spot.js
+      COMISION_PENDIENTE_MS: constante('COMISION_PENDIENTE_MS'), CONCEPTOS_COMISION_CORTO: constante('CONCEPTOS_COMISION_CORTO'),
       MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C'), BROKER_CORTO: constante('BROKER_CORTO'),
       dineroD: constante('dineroD'), dineroS: constante('dineroS'), pctD: constante('pctD'), pctD2: constante('pctD2'), colD: constante('colD'), nOps: constante('nOps') });
   const dineroD = constante('dineroD'), pctD2 = constante('pctD2');
@@ -774,6 +776,7 @@ function sbGrabador(respuestas) {
       etradeSincronizar: async () => { sincronizaciones++; return cacheado; }, schwabSincronizar: async () => ({ estado: 'sin' }),
       TICKERS: ['AAPL'], periodoDiarioSel: () => ({ modo: 'todo' }), emparejarFillsFIFO: () => ({ cerradas: [], viajes: [], abiertos: [], huerfanas: [], vencidas: [] }), enPeriodoDiario: () => true,
       diaADia: () => [], metricasDiario: () => ({ total: 0, ops: 0, aciertos: 0, comisiones: 0, vencidas: 0, dias_operados: 0 }), resumenPorPeriodo: () => [],
+      comisionesDiario: () => ({ por_broker: {}, pendientes: 0, sin_dato: 0 }),   // v71
       coberturaFills: () => [], brokersLeidos: () => [], itemsCartera: () => [], compararAbiertos: () => [], _cart: {}, resumenPeriodo: () => ({ util: 0 }), unirOperaciones: () => ({ ops: [] }), dineroD: () => '$0',
       selectorCuentas: () => '', seccionPeriodoDiario: () => '', tarjetasResumenDiario: () => '', seccionCoberturaDiario: () => '', seccionDiaADia: () => '', seccionResumenesDiario: () => '',
       seccionOperacionesDiario: () => '', seccionAbiertosDiario: () => '', seccionEjecucionesDiario: () => '', seccionNotasDiario: () => '<textarea id="nTexto"></textarea>', esc, _notas: { lista: [], editando: null, err: null },

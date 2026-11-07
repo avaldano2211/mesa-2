@@ -12536,6 +12536,9 @@ function subtituloPeriodoDiario(sel, hoy, primera) {
 // E*TRADE, moomoo, Charles Schwab, tastytrade) · PROMEDIO POR DÍA · PROYECCIÓN MENSUAL · PROYECCIÓN
 // ANUAL. En el iPhone a dos columnas, en el Mac en una o dos filas (.dcards). Debajo, en pequeño, lo
 // que la vieja decía al pie: mejor/peor, comisiones, vencidas y el descargo de las proyecciones.
+// v71: las comisiones dicen de QUÉ brókeres son (M.com, comisionesDiario: de los datos del período, no una frase fija que
+// decía que moomoo no las manda) y, si las hay, las ejecuciones de moomoo con la comisión pendiente o sin dato; con
+// alguna, el total es «neto de las comisiones conocidas». Sin M.com, solo el monto.
 function tarjetasResumenDiario(M, sel, cob, hoy) {
   const H = String(hoy || hoyNY()).slice(0, 10);
   const conFills = (cob || []).filter(c => c.n > 0);
@@ -12544,11 +12547,21 @@ function tarjetasResumenDiario(M, sel, cob, hoy) {
   const porBroker = ['etrade', 'moomoo', 'schwab', 'tasty'].map(b => conFills.find(c => c.broker === b)).filter(Boolean);
   const pie = [];
   if (M.ops) pie.push(`mejor ${dineroS(M.mejor)} · peor ${dineroS(M.peor)}`);
-  if (M.comisiones) pie.push(`comisiones ya descontadas: ${dineroD(M.comisiones)} (E*TRADE las reporta; Schwab no las manda en sus órdenes ni moomoo en sus ejecuciones)`);
+  const C = (M.com && typeof M.com === 'object') ? M.com : null;
+  if (M.comisiones) {
+    const pb = (C && C.por_broker) || {};
+    const de = ['etrade', 'moomoo', 'schwab', 'tasty'].concat(Object.keys(pb).sort()).filter((b, i, xs) => xs.indexOf(b) === i && Number(pb[b]) > 0)
+      .map(b => `${esc(BROKER_NOMBRE[b] || b)} ${dineroD(pb[b])}`);
+    pie.push(`comisiones ya descontadas: ${dineroD(M.comisiones)}${de.length ? ` (${de.join(' · ')})` : ''}`);
+  }
+  const nEj = (n) => `${n} ejecuci${n === 1 ? 'ón' : 'ones'} de moomoo`;
+  if (C && C.pendientes > 0) pie.push(`${nEj(C.pendientes)} con la comisión pendiente (moomoo la asienta minutos después; la Mesa la pide a los 30 min)`);
+  if (C && C.sin_dato > 0) pie.push(`${nEj(C.sin_dato)} sin dato de comisión (su P&amp;L va sin descontarla)`);
+  const faltanCom = !!(C && (C.pendientes > 0 || C.sin_dato > 0));
   if (M.vencidas) pie.push(`<span style="color:var(--oro)">${nOps(M.vencidas)} ${M.vencidas > 1 ? 'vencieron' : 'venció'} sin venderse (toda o en parte): pérdida total el día del vencimiento</span>`);
   if (M.dias_operados) pie.push(`⚠ Las proyecciones extrapolan el promedio de ${M.dias_operados} día(s) operado(s): son una estimación del ritmo, no una promesa; un solo día malo las cambia por completo.`);
   return `<div class="dcards">
-    ${tarjeta('TOTAL DEL PERÍODO', dineroD(M.total), esc(subtituloPeriodoDiario(sel, H, primera)) + (M.comisiones ? ' · neto de comisiones' : ''), colD(M.total))}
+    ${tarjeta('TOTAL DEL PERÍODO', dineroD(M.total), esc(subtituloPeriodoDiario(sel, H, primera)) + (M.comisiones ? (faltanCom ? ' · neto de las comisiones conocidas' : ' · neto de comisiones') : ''), colD(M.total))}
     ${tarjeta('% GANADO POR $ OPERADO', pctD2(M.pct), `P&amp;L ÷ costo de ${nOps(M.ops, 'cerradas')}`, colD(M.pct))}
     ${tarjeta('ACIERTOS', M.ops ? `${M.aciertos} de ${M.ops}` : '—', M.ops ? `${Math.round(M.aciertos / M.ops * 100)}% de las operaciones en verde` : 'sin operaciones cerradas en el período')}
     ${porBroker.map(c => tarjeta(String(BROKER_NOMBRE[c.broker] || c.broker).toUpperCase(), dineroD(c.pnl_periodo), c.primera ? `cuenta desde ${esc(c.primera)}` : 'sin operaciones', colD(c.pnl_periodo))).join('')}
@@ -12724,11 +12737,91 @@ function seccionAbiertosDiario(abiertos, comparacion, huerfanas) {
   }
   return h;
 }
+// v71 · COMISIONES DE MOOMOO (sql 0023 + worker 0.1.15). moomoo cobra la comisión POR ORDEN (no por ejecución) y la asienta
+// entre 4 y 23 minutos después de ejecutarse: el worker la pide con order_fee_query cuando la orden tiene ≥ 30 min, la
+// reparte entre las ejecuciones de la orden por contratos (acumulado, exacta al centavo) y la escribe en fills.comision con
+// comision_fuente ('moomoo_orden': es dato, aunque sea $0; 'moomoo_sin_dato': no se pudo saber) y en comision_detalle los
+// conceptos de la ORDEN entera ({orden_total, ejecuciones, conceptos}). Hasta entonces la ejecución llega con comision 0 y
+// comision_fuente null. El Diario ya descontaba fills.comision en los tramos: lo nuevo es DECIR qué falta.
+const COMISION_PENDIENTE_MS = 3 * 86400000;   // una de moomoo sin resolver más vieja que esto ya no es «pendiente»: «sin dato»
+// PURA · El estado de la comisión de UNA ejecución de moomoo; null en cualquier otro caso (nada que decir aparte del monto):
+//   'orden'     el worker la resolvió con order_fee_query: comision es la parte de ESTA ejecución (un 0 es un 0 real)
+//   'pendiente' comision 0, sin resolver y ejecutada hace < 3 días (moomoo la asienta minutos después; la Mesa la pide a los 30 min)
+//   'sin_dato'  el worker no pudo saberla, o sigue sin resolver pasados 3 días (p. ej. la app publicada antes de que el worker
+//               termine): nunca $0 ni «pendiente» eterno
+// Sin las columnas de la 0023 (la fila no trae comision_fuente) no se afirma nada: null. Un vencimiento tampoco cuenta
+// (fillSoloVencimiento: anotarlo no es una orden). Una fuente que esta versión no conoce no se interpreta.
+function estadoComisionFill(f, ahoraMs) {
+  if (!f || typeof f !== 'object' || f.broker !== 'moomoo' || !('comision_fuente' in f)) return null;
+  if (fillSoloVencimiento(f)) return null;
+  const fu = f.comision_fuente;
+  if (fu === 'moomoo_orden') return 'orden';
+  if (fu === 'moomoo_sin_dato') return 'sin_dato';
+  if (fu != null && fu !== '') return null;
+  const c = Number(f.comision);
+  if (Number.isFinite(c) && c !== 0) return null;      // trae monto sin fuente (no debería): el monto ya se enseña
+  const t = Date.parse(f.ejecutado_at || ''), ahora = Number.isFinite(ahoraMs) ? ahoraMs : Date.now();
+  return (Number.isFinite(t) && ahora - t < COMISION_PENDIENTE_MS) ? 'pendiente' : 'sin_dato';
+}
+// Los conceptos de order_fee_query (texto libre: puede haber otros) en corto para la lista de ejecuciones; uno que no
+// está aquí va con su nombre sin « Fees».
+const CONCEPTOS_COMISION_CORTO = { 'OCC Fees': 'OCC', 'Options Regulatory Fees': 'ORF', 'SEC Fees': 'SEC', 'Trading Activity Fees': 'TAF',
+  'Consolidated Audit Trail Fees': 'CAT', 'Contract Fees': 'contrato', 'Exchange Proprietary Fees': 'bolsa' };
+// PURA · El desglose de la comisión de la ORDEN de una ejecución (comision_detalle), o null si no lo trae o no se entiende.
+// { total (null si no viene), ejecuciones (null si no viene), conceptos: [{ nombre, corto, monto }] } en el orden en que
+// llegan. Acepta el objeto de la 0023 ({"OCC Fees": 0.38, …}), su texto JSON y la lista de pares de order_fee_query.
+// Los nombres NO se escapan aquí: quien los pinte usa esc().
+function detalleComisionFill(f) {
+  let d = f && f.comision_detalle;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { return null; } }
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const crudo = d.conceptos;
+  const pares = Array.isArray(crudo) ? crudo.filter(x => Array.isArray(x) && x.length >= 2).map(x => [x[0], x[1]])
+    : (crudo && typeof crudo === 'object') ? Object.keys(crudo).map(k => [k, crudo[k]]) : [];
+  const conceptos = pares.map(([k, v]) => {
+    const nombre = String(k == null ? '' : k).trim(), monto = num(v);
+    if (!nombre || monto == null) return null;
+    return { nombre, corto: CONCEPTOS_COMISION_CORTO[nombre] || nombre.replace(/\s+fees?$/i, ''), monto: Math.round(monto * 100) / 100 };
+  }).filter(Boolean);
+  const total = num(d.orden_total), ej = num(d.ejecuciones);
+  if (total == null && !conceptos.length) return null;
+  return { total: total == null ? null : Math.round(total * 100) / 100, ejecuciones: ej != null && ej >= 1 ? Math.round(ej) : null, conceptos };
+}
+// La línea pequeña (HTML, ya escapada) y el title (texto plano) del desglose de la ORDEN bajo una ejecución: en la línea,
+// los conceptos con monto en corto («OCC $0.38 · ORF $0.19»); en el title, todos con su nombre entero. PURA.
+function textoDetalleComision(dt) {
+  if (!dt) return null;
+  const n = dt.ejecuciones, rep = n > 1 ? ` repartida en ${n} ejecuciones` : '';
+  const conMonto = dt.conceptos.filter(c => c.monto !== 0);
+  const cab = `comisión de la orden ${dt.total != null ? dineroD(dt.total) : 'sin total'}${rep}`;
+  return { linea: esc(cab) + (conMonto.length ? ': ' + conMonto.map(c => `${esc(c.corto)} ${dineroD(c.monto)}`).join(' · ') : ''),
+    titulo: cab + (dt.conceptos.length ? ': ' + dt.conceptos.map(c => `${c.nombre} ${dineroD(c.monto)}`).join(' · ') : '') };
+}
+// PURA · Las comisiones del período para el pie del Diario: cuánto descontaron los TRAMOS cerrados de cada bróker (de los
+// datos, no de una lista fija) y cuántas ejecuciones de moomoo del período tienen la comisión pendiente o sin dato
+// (estadoComisionFill). Sin las columnas de la 0023 los dos conteos dan 0: no se afirma nada.
+function comisionesDiario(cerradas, fills, ahoraMs) {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const por = {};
+  for (const c of (cerradas || [])) {
+    const v = Number(c && c.comisiones);
+    if (c && c.broker && Number.isFinite(v) && v > 0) por[c.broker] = (por[c.broker] || 0) + v;
+  }
+  Object.keys(por).forEach(b => { por[b] = r2(por[b]); });
+  let pendientes = 0, sinDato = 0;
+  for (const f of (fills || [])) {
+    const e = estadoComisionFill(f, ahoraMs);
+    if (e === 'pendiente') pendientes++; else if (e === 'sin_dato') sinDato++;
+  }
+  return { por_broker: por, pendientes, sin_dato: sinDato };
+}
 // La lista de EJECUCIONES del período, A LA VISTA, con filtro por bróker. Es lo primero que Andrés
 // va a buscar («dice que E*TRADE está conectado pero no salen las transacciones»). Dos líneas por
 // ejecución (contrato y lado/cantidad/precio; fecha, cuenta, monto y comisión): a 390 px se lee
-// entera, sin desplazar de lado.
-function seccionEjecucionesDiario(fills, filtro, todas) {
+// entera, sin desplazar de lado. v71: la comisión de moomoo dice «pendiente» o «sin dato» cuando no se sabe
+// (estadoComisionFill; `ahoraMs` para probarlo) y, debajo, el desglose de su ORDEN (comision_detalle) en una línea pequeña.
+function seccionEjecucionesDiario(fills, filtro, todas, ahoraMs) {
   const bs = ['etrade', 'schwab', 'tasty', 'moomoo'];   // v54: moomoo entra al libro por el worker (moomoo_fills)
   const f = filtro || 'todos';
   const lista = (fills || []).filter(x => f === 'todos' || x.broker === f).slice().sort((a, b) => (a.ejecutado_at < b.ejecutado_at ? 1 : a.ejecutado_at > b.ejecutado_at ? -1 : 0));
@@ -12739,6 +12832,17 @@ function seccionEjecucionesDiario(fills, filtro, todas) {
   // rotula así, como el «Option Expired» de E*TRADE (que también enseña el instante en que el bróker lo anotó): VENTA ×N @
   // $0.00 a las 01:22 de un sábado parecía una ejecución. El libro no cambia: solo el rótulo.
   const ladoDe = (x) => (x.lado === 'venta' && x.broker === 'moomoo' && vencimientoMoomoo(x.broker, x.precio, x.ejecutado_at, x.expiracion)) ? 'vencimiento' : x.lado;
+  // v71: el monto si lo hay (o el $0 que moomoo dio de verdad); si no, de moomoo, «pendiente» o «sin dato» (nunca un $0 que no es)
+  const comTxt = (x) => {
+    const e = estadoComisionFill(x, ahoraMs);
+    if (e === 'pendiente') return ' · <span title="moomoo la asienta minutos después; la Mesa la pide a los 30 min">com pendiente</span>';
+    if (e === 'sin_dato') return ' · com sin dato';
+    return (Number(x.comision) || e === 'orden') ? ' · com ' + dineroD(x.comision) : '';
+  };
+  const detTxt = (x) => {
+    const t = textoDetalleComision(detalleComisionFill(x));
+    return t ? `<div class="fresco" style="margin-top:2px;text-align:right" title="${esc(t.titulo)}">${t.linea}</div>` : '';
+  };
   let h = `<div class="sec">EJECUCIONES DEL PERÍODO · ${(fills || []).length}</div>
     <div class="chips" style="margin-top:0">${['todos'].concat(bs).map(b => `<button class="chip2${f === b ? ' on' : ''}" onclick="MZ.diarioBroker('${b}')">${b === 'todos' ? 'Todas' : esc(BROKER_CORTO[b])}<small>${cuenta(b)}</small></button>`).join('')}</div>`;
   if (!n) return h + `<div class="card vacio">Sin ejecuciones ${f === 'todos' ? '' : 'de ' + esc(BROKER_NOMBRE[f] || f) + ' '}en el período.<br><span class="fresco">Se guardan al sincronizar cada bróker en Cuentas (E*TRADE y Schwab desde este equipo; tasty y moomoo las escribe el worker).</span></div>`;
@@ -12746,9 +12850,9 @@ function seccionEjecucionesDiario(fills, filtro, todas) {
       <div class="fila"><span><b style="font-size:13.5px">${esc(x.symbol)} ${esc(x.direccion || '')} ${x.strike != null ? esc(x.strike) : ''}</b> <span class="fresco">${esc(fechaCorta(x.expiracion))}</span></span>
         <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap">${lado(ladoDe(x))} ×${esc(x.contratos)} @ $${esc(Number(x.precio).toFixed(2))}</span></div>
       <div class="fila fresco" style="margin-top:2px"><span>${sinHoraIso(x.ejecutado_at) ? esc(fechaCorta(String(x.fecha_ny || '').slice(0, 10) || diaOpNY(x.ejecutado_at))) + ' (sin hora)' : esc(fmtFechaNY(x.ejecutado_at, true))} · ${esc(BROKER_CORTO[x.broker] || x.broker)}</span>
-        <span>monto ${dineroD(Number(x.precio) * Number(x.contratos) * 100)}${Number(x.comision) ? ' · com ' + dineroD(x.comision) : ''}</span></div></div>`).join('')}
+        <span>monto ${dineroD(Number(x.precio) * Number(x.contratos) * 100)}${comTxt(x)}</span></div>${detTxt(x)}</div>`).join('')}
     ${n > T && !todas ? `<div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.diarioMasEjec()">Ver las ${n - T} restantes</button></div>` : ''}
-    <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución; una ejecución que llega sin hora (00:00) muestra solo la fecha; Schwab (órdenes) y moomoo (ejecuciones de OpenD) no mandan comisiones.</div></div>`;
+    <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución; moomoo la cobra por ORDEN y la asienta minutos después: la Mesa la pide a los 30 min y la reparte entre las ejecuciones de la orden por contratos (el desglose es el de la orden entera; «pendiente» hasta entonces, «sin dato» si no se pudo saber); Schwab no manda comisiones en sus órdenes; una ejecución que llega sin hora (00:00) muestra solo la fecha.</div></div>`;
   return h;
 }
 
@@ -13097,6 +13201,7 @@ async function vistaDiario(forzar) {
   const dias = diaADia(cerradasSel, null, null, viajesSel);
   const fillsSelDias = fills.filter(f => enPeriodoDiario(sel, f.fecha_ny));   // días operados = días con cualquier ejecución
   const M = metricasDiario(cerradasSel, dias, viajesSel, fillsSelDias);
+  M.com = comisionesDiario(cerradasSel, fillsSelDias, Date.now());   // v71: de qué brókeres son y las de moomoo que aún no se saben
   const meses = resumenPorPeriodo(F.cerradas, 'mes', null, null, F.viajes, fills), semanas = resumenPorPeriodo(F.cerradas, 'semana', null, null, F.viajes, fills);
   const sesiones = {
     etrade: etCreds() ? (etDiaVencido() ? 'caducada' : 'ok') : 'sin',
