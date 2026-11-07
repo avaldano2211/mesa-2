@@ -4623,7 +4623,7 @@ function fillsDeOrdenesSchwab(ordenes) {
 }
 // Ejecuciones {osi, symbol, expiracion, direccion, strike, side, qty, price, ts, fee, id}
 // → round-trips FIFO por contrato (el mismo criterio que E*TRADE, tasty y moomoo).
-// Schwab no manda comisiones en las órdenes: fees = 0 (igual que moomoo).
+// Schwab no manda comisiones en las órdenes: fees = 0 (moomoo sí las da desde el worker 0.1.15, por orden: ver BROKERS_CON_COMISION).
 // A2 (v50): un contrato que VENCE sin venderse no genera ninguna orden en Schwab, así
 // que su pérdida no existía en ningún sitio y la utilidad salía INFLADA (en E*TRADE sí
 // se cubre: el tipo 'Option Expired' entra como venta a 0). Aquí, terminado el FIFO,
@@ -6006,12 +6006,15 @@ const CTA_MARGEN_MS = 2 * 60000;     // A3: holgura de un fill alrededor de la a
 // Andrés ya está DENTRO de la vista (v62 rev: el tope vuelve a 200 al entrar, no en el repintado automático).
 const _cta = { tope: CTA_PASO, cerradas: [], ctx: null, formato: null, dentro: false };
 // C2: las 15 columnas del historial en la computadora — [título, subtítulo, alineada a la izquierda]. v62 rev: «neto si
-// hay comisión» — moomoo y Schwab no mandan la comisión y su P&L es bruto; llamar «neto» a toda la columna era falso.
+// hay comisión» — Schwab no manda la comisión y la de moomoo puede no saberse aún (v71): su P&L es bruto; llamar «neto» a
+// toda la columna era falso.
 const CTA_COLS = [['Fecha', '', 1], ['Contrato', 'exp · DTE', 1], ['Bróker', '', 1], ['×', '', 0], ['Entrada', 'hora · prima', 0], ['Salida', 'hora · prima', 0],
   ['Duración', '', 0], ['Costo', '', 0], ['Venta', '', 0], ['Comisión', '', 0], ['P&L $', 'neto si hay comisión', 0], ['%', '', 0],
   ['Acción', 'entrada → salida · %', 1], ['Strike vs acción', 'al entrar', 1], ['Señal', 'antes de entrar', 1]];
-// v62 rev: los brókeres que MANDAN la comisión (fees, aunque sea 0): E*TRADE (brokerage.fee) y tasty. moomoo escribe 0 con
-// raw.fees «no disponibles» y Schwab tampoco la manda: su resultado_usd es BRUTO.
+// v62 rev: los brókeres que MANDAN la comisión (fees, aunque sea 0): E*TRADE (brokerage.fee) y tasty. Schwab no la manda:
+// su resultado_usd es BRUTO. v71: moomoo NO entra aquí aunque ya la da (worker 0.1.15: order_fee_query, por orden, repartida
+// por contratos): la asienta minutos después y la ida y vuelta llega con fees 0 hasta que el worker la sabe, así que su 0 es
+// «aún sin dato», no un 0 real; con fees > 0 cuenta como neta igual que cualquiera (comisionDelBroker).
 const BROKERS_CON_COMISION = ['etrade', 'tasty'];
 
 // ¿El instante es una FECHA sin hora? Exactamente 00:00:00 UTC o 00:00 NY (la regla del worker 0.1.9b). Las opciones no
@@ -6051,8 +6054,8 @@ function partesOpCuentas(op) {
   return [op];
 }
 // v62 rev · ¿El P&L de esta operación lleva descontada la comisión del bróker? Sí si trae fees > 0 (de quien sea) o si es
-// de un bróker que la manda (BROKERS_CON_COMISION) con fees dado (un 0 de E*TRADE es un 0 de verdad). moomoo y Schwab con
-// 0 o sin fees: no (su resultado es bruto); una ficha a mano sin fees tampoco. PURA.
+// de un bróker que la manda (BROKERS_CON_COMISION) con fees dado (un 0 de E*TRADE es un 0 de verdad). Schwab con 0 o sin
+// fees, y moomoo con 0 (v71: la suya aún sin dato): no (su resultado es bruto); una ficha a mano sin fees tampoco. PURA.
 function comisionDelBroker(op) {
   const f = (op && op.fees != null && op.fees !== '') ? Number(op.fees) : null;
   if (f == null || !Number.isFinite(f)) return false;
@@ -6228,6 +6231,10 @@ function dteEntrada(op) {
 // bróker o tramo en el día NY de su cierre, como el Diario); ops, aciertos, verdes/rojas, medias, factor, mejor/peor y
 // racha por OPERACIÓN, el día en que quedó plana y con su resultado entero (como los viajes del Diario). `sin_cerrar` =
 // las que aportan dinero al período sin quedar planas en él (siguen abiertas o su último cierre cae en otro período).
+// v71 · `com_sin_dato` = las idas y vueltas de moomoo del período (FILAS, no operaciones: con datos mezclados una operación
+// puede llevar unas con su comisión y otras aún sin ella) con fees 0: su comisión aún no se sabe (el worker la reparte
+// cuando moomoo la asienta). moomoo sigue en sin_com_brokers si ninguna de sus operaciones la trae; el tile ya no dice
+// que «no la da».
 function metricasCuentas(ops, desde) {
   const d0 = String(desde || '');
   const r2 = (n) => Math.round(n * 100) / 100;
@@ -6242,6 +6249,7 @@ function metricasCuentas(ops, desde) {
     xs.push({ op, plana: a.plana, util: a.util, res: a.res != null ? r2(a.res) : null,   // v67 rev69: de las filas que cuentan
       capital: filas.reduce((s, f) => s + (num(f.prima_fill) || 0) * (num(f.contratos) || 0) * 100, 0),
       fees: fs, daCom: comisionDelBroker({ broker: op.broker, fees: fs }),
+      comSinDato: op.broker === 'moomoo' ? filas.filter(f => !(num(f.fees) > 0)).length : 0,
       cierre: a.cierre });
   }
   const agregar = (lista) => {
@@ -6281,7 +6289,7 @@ function metricasCuentas(ops, desde) {
     gan_media: T.ganadoras ? r2(gb / T.ganadoras) : null, perd_media: T.perdedoras ? r2(pb / T.perdedoras) : null,
     factor: pb < 0 ? Math.round(gb / -pb * 100) / 100 : null,
     capital: T.capital, rentabilidad: T.rentabilidad, comisiones: coms.length ? r2(coms.reduce((a, b) => a + b, 0)) : null,
-    com_brokers: conCom, sin_com_brokers: sinCom,
+    com_brokers: conCom, sin_com_brokers: sinCom, com_sin_dato: xs.reduce((a, x) => a + x.comSinDato, 0),
     mejor: T.res.length ? Math.max(...T.res) : null, peor: T.res.length ? Math.min(...T.res) : null, racha,
     por_activo: grupos(op => String(op.symbol || '?').toUpperCase()), por_broker: grupos(op => op.broker || 'manual') };
 }
@@ -6299,7 +6307,7 @@ function detalleOpCuentas(p, ctx) {
   const costo = pe != null ? r2(pe * c * 100) : null, venta = ps != null ? r2(ps * c * 100) : null;
   const neto = num(p.resultado_usd) != null ? num(p.resultado_usd) : (venta != null && costo != null ? r2(venta - costo) : null);
   const fees = num(p.fees);
-  const com = fees != null && fees > 0 ? r2(fees) : null;       // Schwab y moomoo mandan 0: no hay comisión que enseñar
+  const com = fees != null && fees > 0 ? r2(fees) : null;       // Schwab manda 0 y moomoo 0 mientras no se sabe: nada que enseñar
   // v62 rev: el día de apertura y el de cierre con diaOpNY (una FECHA a medianoche UTC no es el día anterior)
   const dia = diaAperturaOp(p), diaC = p.cerrada_at ? diaOpNY(p.cerrada_at) : '';
   const ix = ctx.idx || null;
@@ -6326,8 +6334,14 @@ function detalleOpCuentas(p, ctx) {
   // tampoco tiene hora de salida: la del grupo sería la del vencimiento (16:30 ET, instanteVencimiento), que no es una
   // ejecución. Lo dice como el Diario («venció en parte») y su duración va en días hasta el vencimiento.
   const vencioEnParte = !expirada && !!p.cerrada_at && filasB.some(t => filaVencioCuentas(t) && t.cerrada_at === p.cerrada_at);
+  // v71: moomoo SÍ da la comisión (worker 0.1.15) pero la asienta después: con fees 0 la suya está «aún sin dato» (no «sin
+  // comisión del bróker»); con datos mezclados, cuántas de sus idas y vueltas aún no la traen (comPendParte de comPendTotal)
+  const partesMM = p.broker === 'moomoo' ? (filasB.length ? filasB : [p]) : [];
+  const pendMM = partesMM.filter(t => !(num(t.fees) > 0)).length;
   return { c, pe, ps, costo, venta, neto, com, bruto: (com != null && neto != null) ? r2(neto + com) : null,
-    sinComBroker: com == null && ['schwab', 'moomoo'].includes(p.broker),
+    sinComBroker: com == null && p.broker === 'schwab',
+    comPendiente: com == null && p.broker === 'moomoo',
+    comPendParte: com != null && pendMM > 0 ? pendMM : 0, comPendTotal: partesMM.length,
     pct: (neto != null && costo > 0) ? Math.round(neto / costo * 1000) / 10 : null,
     dia, diaC, dir, dte: dteEntrada(p), sinHora, expirada, vencioEnParte, presunta: (expirada || vencioEnParte) && filasB.some(filaPresuntaCuentas),
     spot: ctx.errFills ? null : spotDeOperacion(p, fillsOp), senal, senalDespues: despues, senalOtra: otra,
@@ -6517,14 +6531,23 @@ function tramosOpCuentasHtml(p, d) {
   }).join('');
   return `<details class="ctram" data-k="${esc(claveDetalleCuentas(p, d))}"><summary>${n} ${d.tramos.tipo === 'viajes' ? 'idas y vueltas' : 'tramos'} · ver el desglose</summary>${filas}</details>`;
 }
+// v71 · Lo que se dice de la comisión de una operación bajo su P&L (tarjeta) y en el title de la celda (fila), en texto plano:
+// el neto con su bruto y su comisión (y, de moomoo con datos mezclados, cuántas idas y vueltas aún no la traen); Schwab
+// «sin comisión del bróker»; moomoo con fees 0, «comisión de moomoo aún sin dato» (la asienta después: no es un $0). PURA.
+function textoComisionOpCuentas(d) {
+  if (d.com != null) return `neto · bruto ${dineroD(d.bruto)} − comisión ${dineroD(d.com)}`
+    + (d.comPendParte ? ` (${d.comPendParte} de ${d.comPendTotal} idas y vueltas aún sin dato de comisión)` : '');
+  if (d.comPendiente) return 'comisión de moomoo aún sin dato (P&L bruto hasta que moomoo la asiente y la Mesa la reparta)';
+  if (d.sinComBroker) return 'sin comisión del bróker';
+  return '';
+}
 // B · La TARJETA de una operación (teléfono, < 900 px). Antes: compra, venta, duración, costo, venta y ×N bróker.
 function tarjetaHistorial(p, ctx) {
   const d = detalleOpCuentas(p, ctx), k = contratoOpCuentas(p, d), A = accionOpCuentas(p, d);
   return `<div class="card">
     <div class="fila"><h3>${k.titulo} <span class="fresco">${k.sub}</span></h3>
       <span class="mono" style="font-weight:700;color:${colUtil(d.neto)};white-space:nowrap">${dineroD(d.neto)}${d.pct != null ? ` · ${pctD(d.pct)}` : ''}</span></div>
-    ${d.com != null ? `<div class="fresco" style="text-align:right">neto · bruto ${dineroD(d.bruto)} − comisión ${dineroD(d.com)}</div>`
-      : d.sinComBroker ? '<div class="fresco" style="text-align:right">sin comisión del bróker</div>' : ''}
+    ${d.com != null || d.sinComBroker || d.comPendiente ? `<div class="fresco" style="text-align:right">${esc(textoComisionOpCuentas(d))}</div>` : ''}
     <div class="hist">
       <div><span>entrada</span><b>${entradaOpCuentas(p, d, false)}</b></div>
       <div><span>salida</span><b>${salidaOpCuentas(p, d)}</b></div>
@@ -6563,7 +6586,7 @@ function filaHistorialCuentas(p, ctx) {
     <td>${dineroD(d.costo)}</td>
     <td>${dineroD(d.venta)}</td>
     <td>${d.com != null ? dineroD(d.com) : '<span class="fresco">—</span>'}</td>
-    <td style="color:${colUtil(d.neto)}"${d.com != null ? ` title="neto · bruto ${dineroD(d.bruto)} − comisión ${dineroD(d.com)}"` : d.sinComBroker ? ' title="sin comisión del bróker"' : ''}><b>${dineroD(d.neto)}</b>${d.com != null ? `<span class="csub">bruto ${dineroD(d.bruto)}</span>` : d.sinComBroker ? '<span class="csub">sin comisión</span>' : ''}</td>
+    <td style="color:${colUtil(d.neto)}"${textoComisionOpCuentas(d) ? ` title="${esc(textoComisionOpCuentas(d))}"` : ''}><b>${dineroD(d.neto)}</b>${d.com != null ? `<span class="csub">bruto ${dineroD(d.bruto)}${d.comPendParte ? ' · parcial' : ''}</span>` : d.comPendiente ? '<span class="csub">com. sin dato</span>' : d.sinComBroker ? '<span class="csub">sin comisión</span>' : ''}</td>
     <td style="color:${colUtil(d.neto)}">${pctD(d.pct)}</td>
     <td class="ctxt cacc" title="${tituloCelda(A.accion)} · contrato ${tituloCelda(A.vs)}"><span class="c1">${A.corta.linea}</span><span class="csub">${['contrato ' + pctEsp(d.pct, 1)].concat(A.corta.etq).map(esc).join(' · ')}</span></td>
     <td class="ctxt cstk" title="${tituloCelda(A.strike)}"><span class="c1">${A.corta.strike}</span>${A.corta.strikeEtq.length ? `<span class="csub">${A.corta.strikeEtq.map(esc).join(' · ')}</span>` : ''}</td>
@@ -6572,19 +6595,26 @@ function filaHistorialCuentas(p, ctx) {
 }
 // C2 · La fila de TILES de métricas (las .dcards del Diario: 2 columnas en el teléfono, en una fila en la computadora).
 // v62 rev: «neto» solo lo que lo es — la utilidad descuenta las comisiones de los brókeres que las MANDAN y dice cuáles
-// no (moomoo y Schwab: su P&L va sin descontarlas); sin ninguno que las mande, COMISIONES dice «—», no $0.00.
+// no (Schwab: su P&L va sin descontarlas); sin ninguno que las mande, COMISIONES dice «—», no $0.00.
+// v71: moomoo ya no es de los que «no las dan» (worker 0.1.15): sus idas y vueltas con fees 0 (M.com_sin_dato) van «aún sin
+// dato de comisión», y con datos mezclados se dice a la vez que moomoo las da y cuántas suyas aún no la traen.
 function tilesCuentasHtml(M, periodo) {
   const t = (lbl, val, sub, col, chico) => `<div class="dcard"><div class="lb">${esc(lbl)}</div><div class="vl${chico ? ' vl2' : ''}" style="color:${col || 'var(--tx)'}">${val}</div><div class="sb">${sub || ''}</div></div>`;
   const tit = ({ dia: 'HOY' })[periodo] || String(periodo || '').toUpperCase();
   const r = M.racha || { tipo: null, n: 0 };
   const nom = (k) => k === 'manual' ? 'las fichas a mano' : (BROKER_CORTO[k] || k);
   const lista = (ks) => { const xs = (ks || []).map(nom); return xs.length <= 1 ? (xs[0] || '') : `${xs.slice(0, -1).join(', ')} y ${xs[xs.length - 1]}`; };
-  const con = M.com_brokers || [], sin = M.sin_com_brokers || [];
+  const con = M.com_brokers || [], sinT = M.sin_com_brokers || [];
+  const sin = sinT.filter(b => b !== 'moomoo');                 // v71: moomoo sí las da; la suya, si falta, «aún sin dato»
   const noDan = sin.length ? `${esc(lista(sin))} no ${sin.length > 1 || sin[0] === 'manual' ? 'las dan' : 'las da'}` : '';
-  const subUtil = con.length ? `neta de las comisiones de ${esc(lista(con))}${noDan ? `; ${noDan} (su P&L va sin descontarlas)` : ''}`
-    : noDan ? `${noDan}: P&L sin descontarlas` : 'lo que bajó cada bróker';
-  const subCom = con.length ? `ya descontadas del neto · las da${con.length > 1 ? 'n' : ''} ${esc(lista(con))}${sin.length ? ` (${esc(lista(sin))} no)` : ''}`
-    : noDan || 'ningún bróker las reportó en el período';
+  const nMM = Number(M.com_sin_dato) || 0;
+  const mmSin = nMM ? `${nMM} ${nMM > 1 ? 'idas y vueltas' : 'ida y vuelta'} de moomoo aún sin dato de comisión`
+    : sinT.includes('moomoo') ? 'moomoo aún sin dato de comisión' : '';
+  const faltan = [noDan, mmSin].filter(Boolean).join('; ');
+  const subUtil = con.length ? `neta de las comisiones de ${esc(lista(con))}${faltan ? `; ${faltan} (su P&L va sin descontarlas)` : ''}`
+    : faltan ? `${faltan}: P&L sin descontarlas` : 'lo que bajó cada bróker';
+  const subCom = con.length ? `ya descontadas del neto · las da${con.length > 1 ? 'n' : ''} ${esc(lista(con))}${sin.length ? ` (${esc(lista(sin))} no)` : ''}${mmSin ? ` · ${mmSin}` : ''}`
+    : faltan || 'ningún bróker las reportó en el período';
   // v67 (C): el dinero va por fila y la operación cuenta el día en que queda plana (como el Diario «bajo el día»): si
   // alguna aportó dinero sin quedar plana en el período, se dice, para que «0 ops» con utilidad no parezca un error
   const k = Number(M.sin_cerrar) || 0;

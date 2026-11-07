@@ -40,7 +40,9 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   // v65 rev7: la venta a $0 que moomoo anota tras el vencimiento es su vencimiento (el FIFO del libro y Cuentas la leen así)
   'vencimientoMoomoo', 'filasMoomooVencimiento',
   // v66 A3: la «>venc» de Schwab guardada a las 20:00Z se lee a las 16:30 ET de su día (instanteVencimiento)
-  'filasSchwabVencimiento'];
+  'filasSchwabVencimiento',
+  // v71: lo que se dice de la comisión bajo el P&L (moomoo con fees 0: «aún sin dato», no «sin comisión del bróker»)
+  'textoComisionOpCuentas'];
 const CONSTS = ['CTA_PASO', 'CTA_MARGEN_MS', '_cta', 'CTA_COLS', 'BROKERS_CON_COMISION', 'FUENTES_SPOT', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'LADO_DINERO',
   'BROKER_CORTO', 'BROKER_NOMBRE', 'MESES_ES_C', 'dineroD', 'pctD', 'pctD2', 'usd', 'colUtil', 'esc', 'GESTOR_ANCHO_TABLA', 'ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA'];
 function cuentas(op) {
@@ -503,7 +505,8 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     assert(/\(media de 1 de 2 idas y vueltas, las que tienen dato\)/.test(K.accionOpCuentas(op, d1).vs), 'si solo una ida y vuelta tiene dato, se dice «1 de 2»');
     assert(!/ctspot/.test(K.tramosOpCuentasHtml(op, K.detalleOpCuentas(op, { fills: [], senales: [] }))), 'sin ningún dato de la acción, el desglose no repite «sin dato» en cada fila');
   }
-  // (arreglo 5) neto y bruto bien dichos: moomoo y Schwab no mandan comisión
+  // (arreglo 5) neto y bruto bien dichos: Schwab no manda comisión; v71: la de moomoo (worker 0.1.15) llega después: con fees 0
+  // es «aún sin dato», nunca «moomoo no las da»
   {
     const b = { symbol: 'TSLA', direccion: 'CALL', strike: 440, expiracion: '2026-10-09', contratos: 1, prima_fill: 2, prima_salida: 3 };
     const BT = [{ ...b, broker: 'etrade', abierta_at: '2026-10-06T04:00:00Z', cerrada_at: '2026-10-06T04:00:00Z', resultado_usd: 97.4, fees: 2.6 },
@@ -512,20 +515,20 @@ const GOLDEN_V61 = {"fuentes":{"etrade":3,"manual":6,"schwab":1,"tasty":1},"fusi
     const M = K.metricasCuentas(K.resumenPeriodo(ops, '2026-10-01').ops, '2026-10-01');
     igual([M.comisiones, M.com_brokers, M.sin_com_brokers], [2.6, ['etrade'], ['moomoo']], '(arreglo 5) comisiones solo de quien las manda (E*TRADE); moomoo anotado aparte');
     const tl = K.tilesCuentasHtml(M, 'semana');
-    assert(/neta de las comisiones de E\*TRADE; moomoo no las da \(su P&L va sin descontarlas\)/.test(tl) && /ya descontadas del neto · las da E\*TRADE \(moomoo no\)/.test(tl) && !/comisiones ya descontadas/.test(tl),
-      '(arreglo 5) UTILIDAD: «neta de las comisiones de E*TRADE; moomoo no las da (su P&L va sin descontarlas)»; COMISIONES dice quién las da');
+    assert(/neta de las comisiones de E\*TRADE; 1 ida y vuelta de moomoo aún sin dato de comisión \(su P&L va sin descontarlas\)/.test(tl) && /ya descontadas del neto · las da E\*TRADE · 1 ida y vuelta de moomoo aún sin dato de comisión/.test(tl) && !/comisiones ya descontadas/.test(tl) && !/moomoo no/.test(tl),
+      '(arreglo 5, v71) UTILIDAD: «neta de las comisiones de E*TRADE; 1 ida y vuelta de moomoo aún sin dato de comisión (su P&L va sin descontarlas)»; COMISIONES dice quién las da y que la de moomoo aún no se sabe (nunca «moomoo no»)');
     const mm = ops.find(o => o.broker === 'moomoo');
     const solo = K.metricasCuentas(K.resumenPeriodo([mm], '2026-10-01').ops, '2026-10-01');
     const ts = K.tilesCuentasHtml(solo, 'semana');
-    assert(solo.comisiones === null && /COMISIONES<\/div><div class="vl" style="color:var\(--tx\)">—<\/div><div class="sb">moomoo no las da<\/div>/.test(ts) && !/\$0\.00/.test(ts) && /moomoo no las da: P&L sin descontarlas/.test(ts),
-      '(arreglo 5) solo moomoo en el período: COMISIONES «—» (no $0.00) y la utilidad dice que va sin descontarlas');
+    assert(solo.comisiones === null && /COMISIONES<\/div><div class="vl" style="color:var\(--tx\)">—<\/div><div class="sb">1 ida y vuelta de moomoo aún sin dato de comisión<\/div>/.test(ts) && !/\$0\.00/.test(ts) && /1 ida y vuelta de moomoo aún sin dato de comisión: P&L sin descontarlas/.test(ts),
+      '(arreglo 5, v71) solo moomoo en el período, aún sin su comisión: COMISIONES «—» (no $0.00) y la utilidad dice que va sin descontarlas');
     const cuatro = K.unirOperaciones([], [BT[0], BT[1], { ...b, broker: 'tasty', abierta_at: '2026-10-07T14:00:00Z', cerrada_at: '2026-10-07T15:00:00Z', resultado_usd: 98.7, fees: 1.3 },
       { ...b, broker: 'schwab', abierta_at: '2026-10-07T14:00:00Z', cerrada_at: '2026-10-07T15:00:00Z', resultado_usd: 100, fees: 0 }]).ops;
     const M4 = K.metricasCuentas(K.resumenPeriodo(cuatro, '2026-10-01').ops, '2026-10-01');
-    assert(M4.comisiones === 3.9 && /neta de las comisiones de E\*TRADE y tasty; Schwab y moomoo no las dan \(su P&L va sin descontarlas\)/.test(K.tilesCuentasHtml(M4, 'semana')),
-      '(arreglo 5) con los cuatro: «neta de las comisiones de E*TRADE y tasty; Schwab y moomoo no las dan (su P&L va sin descontarlas)»');
-    assert(/title="sin comisión del bróker"><b>\$100\.00<\/b><span class="csub">sin comisión<\/span>/.test(K.filaHistorialCuentas(mm, { fills: [], senales: [] })) && /sin comisión del bróker/.test(K.tarjetaHistorial(mm, {})),
-      '(arreglo 5) la tarjeta de moomoo dice «sin comisión del bróker» bajo su P&L; la fila (v62 rev2, en corto) «sin comisión» en una línea pequeña y el texto entero en el title');
+    assert(M4.comisiones === 3.9 && /neta de las comisiones de E\*TRADE y tasty; Schwab no las da; 1 ida y vuelta de moomoo aún sin dato de comisión \(su P&L va sin descontarlas\)/.test(K.tilesCuentasHtml(M4, 'semana')),
+      '(arreglo 5, v71) con los cuatro: «neta de las comisiones de E*TRADE y tasty; Schwab no las da; 1 ida y vuelta de moomoo aún sin dato de comisión (su P&L va sin descontarlas)»');
+    assert(/title="comisión de moomoo aún sin dato \(P&amp;L bruto hasta que moomoo la asiente y la Mesa la reparta\)"><b>\$100\.00<\/b><span class="csub">com\. sin dato<\/span>/.test(K.filaHistorialCuentas(mm, { fills: [], senales: [] })) && /comisión de moomoo aún sin dato/.test(K.tarjetaHistorial(mm, {})) && !/sin comisión del bróker/.test(K.tarjetaHistorial(mm, {}) + K.filaHistorialCuentas(mm, {})),
+      '(arreglo 5, v71) la tarjeta de moomoo con fees 0 dice «comisión de moomoo aún sin dato» bajo su P&L (nunca «sin comisión del bróker»); la fila «com. sin dato» en corto y el texto entero en el title');
     assert(!/sin comisión del bróker/.test(K.filaHistorialCuentas(ops.find(o => o.broker === 'etrade'), {})) && !/sin comisión del bróker/.test(K.filaHistorialCuentas(cuatro.find(o => o.broker === 'tasty'), {})), 'E*TRADE y tasty con comisión: «bruto», nunca «sin comisión del bróker»');
     igual(K.CTA_COLS[10], ['P&L $', 'neto si hay comisión', 0], '(arreglo 5) la columna se titula «P&L $ · neto si hay comisión»');
     igual([K.comisionDelBroker({ broker: 'etrade', fees: 0 }), K.comisionDelBroker({ broker: 'tasty', fees: 1.3 }), K.comisionDelBroker({ broker: 'moomoo', fees: 0 }), K.comisionDelBroker({ broker: 'schwab', fees: null }),
