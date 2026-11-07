@@ -7,7 +7,7 @@
    entera) y comision_at; y en broker_trades.fees la parte de cada ida y vuelta. La app (que ya descontaba fills.comision en
    los tramos) ahora:
      · Diario: el pie dice de QUÉ brókeres son las comisiones del período (de los datos) y cuántas ejecuciones de moomoo
-       tienen la comisión «pendiente» (comision 0, sin resolver, < 3 días) o «sin dato» (el worker no pudo, o null más
+       tienen la comisión «pendiente» (comision 0, sin resolver, < 4 días hábiles NY) o «sin dato» (el worker no pudo, o null más
        vieja); con alguna, el total es «neto de las comisiones conocidas». Sin las columnas de la 0023 no afirma nada.
      · Lista de ejecuciones: «com pendiente» / «com sin dato» / «com $0.00» (un 0 real) y el desglose de la ORDEN en corto
        (OCC, ORF, SEC, TAF, CAT, contrato, bolsa) con esc().
@@ -45,9 +45,10 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
   const DIA = 86400000;
   const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre',
     'diaADia', 'metricasDiario', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion', 'fechaCorta', 'fmtFechaNY',
-    'estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'tarjetasResumenDiario', 'seccionEjecucionesDiario', 'parteComision'],
+    'estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'tarjetasResumenDiario', 'seccionEjecucionesDiario', 'parteComision',
+    'comisionAunPendiente', 'diasHabilesDesde'],
     { hoyNY: () => HOY, ymdNY, subtituloPeriodoDiario: () => 'Todo el historial · 2026-11-02 → 2026-11-09' },
-    { consts: ['DIARIO_LADOS_SALIDA', 'FUENTES_SPOT', 'COMISION_PENDIENTE_MS', 'CONCEPTOS_COMISION_CORTO', 'esc', 'dineroD', 'dineroS', 'pctD2', 'colD', 'nOps', 'BROKER_NOMBRE', 'BROKER_CORTO', 'MESES_ES_C'] });
+    { consts: ['DIARIO_LADOS_SALIDA', 'FUENTES_SPOT', 'COMISION_PENDIENTE_HABILES', 'CONCEPTOS_COMISION_CORTO', 'esc', 'dineroD', 'dineroS', 'pctD2', 'colD', 'nOps', 'BROKER_NOMBRE', 'BROKER_CORTO', 'MESES_ES_C'] });
   // una ejecución de moomoo de juguete CON las columnas de la 0023 (comision_fuente null = nadie la resolvió aún)
   const FM = (clave, lado, contratos, precio, at, extra) => Object.assign({ id: clave, broker: 'moomoo', clave_ext: clave, symbol: 'TSLA', direccion: 'CALL', strike: 450,
     expiracion: '2026-11-13', lado, contratos, precio, comision: 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: 'worker',
@@ -57,8 +58,13 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
   {
     const E = (f) => D.estadoComisionFill(f, AHORA);
     igual(E(FM('p1', 'compra', 1, 1, iso(AHORA - 10 * 60000))), 'pendiente', 'moomoo, comision 0, fuente null, de hace 10 min: «pendiente»');
-    igual(E(FM('p2', 'compra', 1, 1, iso(AHORA - 3 * DIA + 1))), 'pendiente', '… hasta un milisegundo antes de los 3 días: «pendiente»');
-    igual(E(FM('p3', 'compra', 1, 1, iso(AHORA - 3 * DIA))), 'sin_dato', 'a los 3 días justos sin resolver: «sin dato» (nunca pendiente eterno)');
+    // v71 rev: en DÍAS HÁBILES NY como el worker (3) más uno de margen (el festivo que la app no conoce y la pasada)
+    igual(E(FM('p2', 'compra', 1, 1, '2026-11-06T20:00:00Z')), 'pendiente', 'una orden del VIERNES 6-nov 15:00 ET mirada el LUNES 9-nov 16:00 ET (75 h, 1 día hábil): «pendiente», no «sin dato» (el worker aún la resuelve)');
+    igual(D.estadoComisionFill(FM('p2b', 'compra', 1, 1, '2026-11-06T20:00:00Z'), Date.parse('2026-11-09T20:00:00Z')), 'pendiente', '… también a las 72 h justas (lunes 15:00 ET): con días de calendario ya decía «sin dato»');
+    igual(E(FM('p3', 'compra', 1, 1, '2026-11-04T15:00:00Z')), 'pendiente', 'miércoles 4-nov mirado el lunes (3 días hábiles: el plazo del worker): aún «pendiente» (un día de margen)');
+    igual(E(FM('p3b', 'compra', 1, 1, '2026-11-03T15:00:00Z')), 'sin_dato', 'martes 3-nov mirado el lunes (4 días hábiles): «sin dato» (nunca pendiente eterno)');
+    igual(D.estadoComisionFill(FM('p3c', 'compra', 1, 1, '2026-11-06T20:00:00Z'), Date.parse('2026-11-12T15:00:00Z')), 'sin_dato', 'la del viernes, el jueves siguiente (4 días hábiles): «sin dato»');
+    igual(D.estadoComisionFill(FM('p3d', 'compra', 1, 1, '2026-11-06T20:00:00Z'), Date.parse('2026-11-11T15:00:00Z')), 'pendiente', '… y el miércoles (3 días hábiles, cuando el worker la da por «sin dato» si no llega) todavía «pendiente»');
     igual(E(FM('p4', 'compra', 1, 1, '2026-10-01T14:00:00Z')), 'sin_dato', 'una null vieja (la app publicada antes de que el worker termine): «sin dato», nunca $0');
     igual(E(FM('p5', 'compra', 1, 1, 'no es fecha')), 'sin_dato', 'sin instante legible: «sin dato» (no se presume reciente)');
     igual(E(FM('p6', 'compra', 1, 1, iso(AHORA - 60000), { comision_fuente: 'moomoo_orden', comision: 0.38 })), 'orden', 'resuelta por el worker: «orden»');

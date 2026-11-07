@@ -12793,12 +12793,29 @@ function seccionAbiertosDiario(abiertos, comparacion, huerfanas) {
 // comision_fuente ('moomoo_orden': es dato, aunque sea $0; 'moomoo_sin_dato': no se pudo saber) y en comision_detalle los
 // conceptos de la ORDEN entera ({orden_total, ejecuciones, conceptos}). Hasta entonces la ejecución llega con comision 0 y
 // comision_fuente null. El Diario ya descontaba fills.comision en los tramos: lo nuevo es DECIR qué falta.
-const COMISION_PENDIENTE_MS = 3 * 86400000;   // una de moomoo sin resolver más vieja que esto ya no es «pendiente»: «sin dato»
+// v71 rev (juez de seguridad: «3 días de CALENDARIO, pero el worker decide por días HÁBILES NY») · «pendiente» se mide en
+// días HÁBILES NY, como el worker (comisiones_moomoo.decidir: un 0 es definitivo con la orden de ≥ 2 días hábiles; una
+// orden que no viene en la respuesta pasa a 'moomoo_sin_dato' con ≥ 3). Con 72 h, una orden del viernes con $0 real salía
+// «sin dato» el lunes por la tarde mientras el worker la seguía resolviendo, y el martes cambiaba a «com $0.00». La app no
+// lleva calendario de festivos (diasHabilesDesde: lunes a viernes, como antesDe1030NY) y un festivo le cuenta un día hábil
+// de más: un día de margen (el del festivo y el de la pasada que la marca) → pendiente mientras su día NY lleve menos de
+// COMISION_PENDIENTE_HABILES días hábiles hasta hoy. Pasados, «sin dato»: nunca un «pendiente» eterno.
+const COMISION_PENDIENTE_HABILES = 4;
+// PURA · ¿La comisión aún sin resolver de una ejecución de moomoo (instante `iso`; día NY `dia` si se sabe, si no el de
+// `iso`) sigue «pendiente» en `ahoraMs` (sin él, la hora del equipo)? Sin instante legible, no: no se presume reciente.
+function comisionAunPendiente(iso, dia, ahoraMs) {
+  if (!Number.isFinite(Date.parse(iso || ''))) return false;
+  const ahora = Number.isFinite(ahoraMs) ? ahoraMs : Date.now();
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(String(dia || '').slice(0, 10)) ? String(dia).slice(0, 10) : diaOpNY(iso);
+  const n = diasHabilesDesde(d, ymdNY(new Date(ahora).toISOString()));
+  return n != null && n < COMISION_PENDIENTE_HABILES;
+}
 // PURA · El estado de la comisión de UNA ejecución de moomoo; null en cualquier otro caso (nada que decir aparte del monto):
 //   'orden'     el worker la resolvió con order_fee_query: comision es la parte de ESTA ejecución (un 0 es un 0 real)
-//   'pendiente' comision 0, sin resolver y ejecutada hace < 3 días (moomoo la asienta minutos después; la Mesa la pide a los 30 min)
-//   'sin_dato'  el worker no pudo saberla, o sigue sin resolver pasados 3 días (p. ej. la app publicada antes de que el worker
-//               termine): nunca $0 ni «pendiente» eterno
+//   'pendiente' comision 0, sin resolver y de hace < 4 días hábiles NY (comisionAunPendiente: los 3 del worker y uno de
+//               margen; moomoo la asienta minutos después y la Mesa la pide a los 30 min)
+//   'sin_dato'  el worker no pudo saberla, o sigue sin resolver pasado ese plazo (p. ej. la app publicada antes de que el
+//               worker termine): nunca $0 ni «pendiente» eterno
 // Sin las columnas de la 0023 (la fila no trae comision_fuente) no se afirma nada: null. Un vencimiento tampoco cuenta
 // (fillSoloVencimiento: anotarlo no es una orden). Una fuente que esta versión no conoce no se interpreta.
 function estadoComisionFill(f, ahoraMs) {
@@ -12810,8 +12827,7 @@ function estadoComisionFill(f, ahoraMs) {
   if (fu != null && fu !== '') return null;
   const c = Number(f.comision);
   if (Number.isFinite(c) && c !== 0) return null;      // trae monto sin fuente (no debería): el monto ya se enseña
-  const t = Date.parse(f.ejecutado_at || ''), ahora = Number.isFinite(ahoraMs) ? ahoraMs : Date.now();
-  return (Number.isFinite(t) && ahora - t < COMISION_PENDIENTE_MS) ? 'pendiente' : 'sin_dato';
+  return comisionAunPendiente(f.ejecutado_at, f.fecha_ny, ahoraMs) ? 'pendiente' : 'sin_dato';
 }
 // Los conceptos de order_fee_query (texto libre: puede haber otros) en corto para la lista de ejecuciones; uno que no
 // está aquí va con su nombre sin « Fees».
