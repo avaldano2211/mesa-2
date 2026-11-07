@@ -14,6 +14,11 @@
      · Cuentas: moomoo con fees 0 es «aún sin dato», nunca «no la da» ni «sin comisión del bróker»; con datos mezclados se
        dice a la vez quién las da y cuántas idas y vueltas de moomoo aún no la traen. moomoo NO entra en BROKERS_CON_COMISION.
      · Versión v71 (index.html ?v=71, sw.js mesa2-v60).
+   v71 rev (dos jueces, 7-nov): (1) Cuentas lee NETA la fila de moomoo con fees > 0 que el worker 0.1.15 deja en BRUTO
+   (filasMoomooNetas; nunca dos descuentos si ya viene neta); (2) el FIFO del Diario reparte la comisión por ACUMULADO como el
+   worker (Σ tramos = Σ fills.comision al centavo); (3) el pie del Diario mira también las ejecuciones de otro período que
+   entran en sus tramos; (4) Cuentas dice POR QUÉ falta la comisión de moomoo con el libro (pendiente / sin dato / $0 real /
+   sin libro) y solo promete la que el worker va a escribir; (5) «pendiente» en días HÁBILES NY (3 del worker + 1 de margen).
    Funciones REALES del fuente (casa_pruebas.js) y el módulo ENTERO en un DOM de juguete con un supabase de juguete (el
    Diario pintado de punta a punta). Datos de juguete: ni una cifra real. No toca la red, ni Supabase, ni ningún bróker.
    Uso: node test_comisiones_moomoo.js mesa-2-app/app/main.js */
@@ -434,6 +439,48 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     const R2 = await diarioPintado(hoyRes.concat(pend).map(sinCols));
     assert(!R2.error && /EJECUCIONES DEL PERÍODO · 4/.test(R2.vista) && !/com pendiente|sin dato de comisión|comisión pendiente|com sin dato/.test(R2.vista),
       'SIN la sql 0023 (las filas no traen las columnas): el Diario se pinta igual y no afirma nada de pendientes', R2.error || '');
+  }
+
+  // ════════════════ 9. v71 rev · Cuentas ENTERA pintada (módulo real, supabase de juguete) con lo que escribe el worker ════════════════
+  {
+    const ahora = Date.now(), at = (h) => new Date(ahora - h * 3600000).toISOString();
+    const OSI = 'TSLA  991231C00450000', base = { broker: 'moomoo', symbol: 'TSLA', direccion: 'CALL', expiracion: '2099-12-31', prima_fill: 2.0 };
+    const fila = (strike, n, ps, ab, ce, res, fees, ids) => ({ ...base, strike, contratos: n, prima_salida: ps, abierta_at: ab, cerrada_at: ce, resultado_usd: res, fees,
+      clave_ext: `${OSI}|${ab}|${ce}|${n}|${ids}`, raw: { fuente: 'moomoo OpenD history_deal_list_query', fees: 'moomoo order_fee_query, repartidas por contratos' } });
+    // la operación de la 7b (bruto + fees, como el emparejar REAL) y otra con su venta aún sin resolver (fees 0, pendiente)
+    const BTW = [fila(450, 1, 2.5, at(3), at(2.9), 50.0, 0.43, 'd1>d2'), fila(450, 2, 3.0, at(3), at(2.8), 200.0, 0.81, 'd1>d3'), fila(460, 1, 3.0, at(2), at(1), 100.0, 0, 'p1>p2')];
+    const FW = [FM('d1', 'compra', 3, 2.00, at(3), { expiracion: '2099-12-31', comision: 0.57, comision_fuente: 'moomoo_orden' }), FM('d2', 'venta', 1, 2.50, at(2.9), { expiracion: '2099-12-31', comision: 0.24, comision_fuente: 'moomoo_orden' }),
+      FM('d3', 'venta', 2, 3.00, at(2.8), { expiracion: '2099-12-31', comision: 0.43, comision_fuente: 'moomoo_orden' }),
+      FM('p1', 'compra', 1, 2.00, at(2), { strike: 460, expiracion: '2099-12-31', comision: 0.19, comision_fuente: 'moomoo_orden' }), FM('p2', 'venta', 1, 3.00, at(1), { strike: 460, expiracion: '2099-12-31' })];
+    async function cuentasPintada(op) {
+      const sb = sbFalso((tabla) => {
+        if (tabla === 'broker_trades') return { data: JSON.parse(JSON.stringify(BTW)), error: null };
+        if (tabla === 'fills') return op.fillsError ? { data: null, error: { message: 'timeout' } } : { data: JSON.parse(JSON.stringify(FW)), error: null };
+        return { data: [], error: null };
+      });
+      const canal = () => { const c = { on() { return c; }, subscribe() { return c; } }; return c; };
+      const m = C.cargarModuloEntero({ src: './app/main.js?v=71', supabase: { createClient: () => ({ from: sb.from, channel: canal, auth: { onAuthStateChange() {}, getSession: () => Promise.resolve({ data: { session: null } }) } }) } });
+      if (!m.cargo) return { error: m.error };
+      m.win.innerWidth = op.ancho || 1400;
+      let html = '';
+      m.win.document.querySelector = (s) => { const n = nodo(); if (s === '#vista') Object.defineProperty(n, 'innerHTML', { set(v) { html = v; }, get() { return html; } }); return n; };
+      m.ev("location.hash = '#/cuentas'; _cuentasVista = 'cuentas'; _periodoSel = 'ytd';");
+      let error = null;
+      try { await m.ev('vistaCuentasSaldos()'); } catch (e) { error = String((e && e.stack) || e); }
+      await respirar();
+      return { html, error };
+    }
+    const P = await cuentasPintada({});
+    assert(!P.error && /UTILIDAD · YTD/.test(P.html), 'Cuentas se pinta entera con las filas del worker y el libro', P.error || P.html.slice(0, 200));
+    assert(/\+?\$348\.76/.test(P.html), 'la utilidad es NETA de la comisión que ya está: $250 − $1.24 + $100 (la otra, aún bruta) = $348.76 (antes $350.00)');
+    assert(/neta de las comisiones de moomoo; 1 ida y vuelta de moomoo aún sin dato de comisión \(su P&L va sin descontarlas\)/.test(P.html), 'el tile: «neta de las comisiones de moomoo; 1 ida y vuelta de moomoo aún sin dato de comisión»');
+    assert(/title="neto · bruto \$250\.00 − comisión \$1\.24"><b>\+?\$248\.76<\/b><span class="csub">bruto \$250\.00<\/span>/.test(P.html), 'la fila de la operación con comisión: $248.76 neto, «bruto $250.00» (no $251.24)');
+    assert(/title="comisión de moomoo aún sin dato \(P&amp;L bruto hasta que moomoo la asiente y la Mesa la reparta\)"><b>\+?\$100\.00<\/b><span class="csub">com\. pendiente<\/span>/.test(P.html), 'la que tiene su venta aún sin resolver: «com. pendiente» y la promesa (el worker SÍ la va a escribir)');
+    const T = await cuentasPintada({ ancho: 390 });
+    assert(!T.error && /neto · bruto \$250\.00 − comisión \$1\.24/.test(T.html) && /comisión de moomoo aún sin dato/.test(T.html), 'a 390 px (tarjetas): lo mismo bajo el P&L');
+    const S = await cuentasPintada({ fillsError: true });
+    assert(!S.error && /\+?\$348\.76/.test(S.html) && /title="P&amp;L bruto \(sin la comisión de moomoo\)"><b>\+?\$100\.00<\/b><span class="csub">bruto<\/span>/.test(S.html) && !/la Mesa la reparta/.test(S.html)
+      && /1 ida y vuelta de moomoo sin dato de comisión/.test(S.html), 'con la lectura del libro caída: la neta sigue neta, la otra «P&L bruto (sin la comisión de moomoo)» y «sin dato» en los tiles, sin promesa');
   }
 
   C.resumen();
