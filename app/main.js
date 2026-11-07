@@ -5991,6 +5991,57 @@ function marcarLotesAbiertosCuentas(ops, abiertos) {
   });
 }
 
+// v71 rev (jueces de dinero y de seguridad: «toda ida y vuelta de moomoo con fees 0 dice "aún sin dato … hasta que la
+// Mesa la reparta", y muchas no van a cambiar nunca») · broker_trades no distingue un 0 pendiente de uno que el worker no
+// va a llenar: el worker 0.1.15 escribe fees en una ida y vuelta solo cuando sabe las DOS partes (la de su compra y la de
+// su venta) y la suma da > 0. El LIBRO sí lo distingue (fills.comision_fuente, sql 0023): la ida y vuelta de moomoo lleva en
+// su clave los deal_id de su compra y de su venta (moomoo_cuenta.emparejar: «osi|ts|ts|n|lote>venta»), que son la
+// clave_ext de esas ejecuciones en fills. Su estado, PURO:
+//   'con'         fees > 0: su comisión ya está (y su resultado es neto: filasMoomooNetas)
+//   'cero'        sin fees, con las DOS ejecuciones resueltas a $0: moomoo no cobró nada (un $0 real, neto)
+//   'pendiente'   alguna aún sin resolver y joven (comisionAunPendiente), o las dos resueltas con monto y el worker aún
+//                 no la escribió en la ida y vuelta (lo hace en su pasada siguiente; con un plazo, como lo demás)
+//   'sin_dato'    alguna que el worker no pudo saber ('moomoo_sin_dato') o sin resolver pasado el plazo: nunca la va a
+//                 escribir (P&L bruto) y no se le promete nada
+//   'desconocido' sin libro, sin la sql 0023 o sin las ejecuciones de su clave: no se afirma nada (P&L bruto, sin promesa)
+// `porClave` = Map clave_ext → fill de moomoo. null si no es de moomoo.
+function estadoComisionTramoMoomoo(t, porClave, ahoraMs) {
+  if (!t || t.broker !== 'moomoo') return null;
+  const fees = Number(t.fees);
+  if (t.fees != null && t.fees !== '' && Number.isFinite(fees) && fees > 0) return 'con';
+  const ids = String((String(t.clave_ext || '').split('|')[4]) || '').split('>');
+  const fl = (ids.length === 2 && ids[0] && porClave) ? porClave.get(ids[0]) : null;
+  const fv = (ids.length === 2 && ids[1] && porClave) ? porClave.get(ids[1]) : null;
+  if (!fl || !fv) return 'desconocido';
+  const eL = estadoComisionCrudo(fl, ahoraMs), eV = estadoComisionCrudo(fv, ahoraMs);
+  if (!eL || !eV) return 'desconocido';
+  if (eL === 'sin_dato' || eV === 'sin_dato') return 'sin_dato';
+  if (eL === 'pendiente' || eV === 'pendiente') return 'pendiente';
+  if (!(Number(fl.comision) || 0) && !(Number(fv.comision) || 0)) return 'cero';
+  const at = [fl.comision_at, fv.comision_at].filter(x => Number.isFinite(Date.parse(x || ''))).sort().pop() || fv.ejecutado_at;
+  return comisionAunPendiente(at, null, ahoraMs) ? 'pendiente' : 'sin_dato';
+}
+// El estado de una ida y vuelta de moomoo ya marcada (marcarComisionMoomooCuentas) o, sin marca, el que se sabe sin el
+// libro: 'con' si trae fees > 0, si no 'desconocido' (nunca una promesa). PURA.
+function comMoomooFila(t) {
+  if (t && t._com_mm) return t._com_mm;
+  const f = Number(t && t.fees);
+  return (t && t.fees != null && t.fees !== '' && Number.isFinite(f) && f > 0) ? 'con' : 'desconocido';
+}
+// Cuentas marca `_com_mm` (estadoComisionTramoMoomoo) en cada ida y vuelta de moomoo de cada operación, con el libro de
+// fills que ya lee (sin consultas nuevas). Solo AÑADE el campo, en copias (como marcarLotesAbiertosCuentas); sin libro
+// (lectura fallida: `fills` null) quedan 'desconocido' salvo las que traen fees. PURA.
+function marcarComisionMoomooCuentas(ops, fills, ahoraMs) {
+  if (!Array.isArray(ops)) return ops;
+  const porClave = new Map();
+  for (const f of (Array.isArray(fills) ? fills : [])) if (f && f.broker === 'moomoo' && f.clave_ext != null) porClave.set(String(f.clave_ext), f);
+  const marca = (t) => (t && t.broker === 'moomoo') ? { ...t, _com_mm: estadoComisionTramoMoomoo(t, porClave, ahoraMs) } : t;
+  return ops.map(op => {
+    if (!op || op.broker !== 'moomoo' || !Array.isArray(op._partes_filas) || !op._partes_filas.length) return op;
+    return { ...op, _partes_filas: op._partes_filas.map(marca) };
+  });
+}
+
 // ---------- v62 · CUENTAS CON TODO EL DETALLE Y A PANTALLA COMPLETA (Andrés 2026-10-11, desde el laptop, viendo la
 // vista «Cuentas» en la columna de 440 px: «dame más detalles y completa la pantalla en la computadora») ----------
 // Cada operación decía compra, venta, duración, costo, venta y ×N. Ahora: (A) se leen además el libro de fills (el
@@ -6235,7 +6286,9 @@ function dteEntrada(op) {
 // v71 · `com_sin_dato` = las idas y vueltas de moomoo del período (FILAS, no operaciones: con datos mezclados una operación
 // puede llevar unas con su comisión y otras aún sin ella) con fees 0: su comisión aún no se sabe (el worker la reparte
 // cuando moomoo la asienta). moomoo sigue en sin_com_brokers si ninguna de sus operaciones la trae; el tile ya no dice
-// que «no la da».
+// que «no la da». v71 rev: por su estado (comMoomooFila, marcado con el libro): `com_pend_mm` las que el worker aún va a
+// escribir («aún sin dato») y `com_sin_mm` las que no (sin dato definitivo, o sin libro: sin promesa); com_sin_dato es la
+// suma de las dos. Las de $0 real ('cero') no faltan: una operación de moomoo con todas 'con' o 'cero' es neta.
 function metricasCuentas(ops, desde) {
   const d0 = String(desde || '');
   const r2 = (n) => Math.round(n * 100) / 100;
@@ -6247,10 +6300,12 @@ function metricasCuentas(ops, desde) {
     if (!filas.length && !a.plana) continue;
     const fees = filas.map(f => num(f.fees)).filter(v => v != null);
     const fs = fees.length ? fees.reduce((a, b) => a + b, 0) : null;
+    const mm = op.broker === 'moomoo' ? filas.map(comMoomooFila) : [];   // v71 rev: el estado de la comisión de cada una
     xs.push({ op, plana: a.plana, util: a.util, res: a.res != null ? r2(a.res) : null,   // v67 rev69: de las filas que cuentan
       capital: filas.reduce((s, f) => s + (num(f.prima_fill) || 0) * (num(f.contratos) || 0) * 100, 0),
-      fees: fs, daCom: comisionDelBroker({ broker: op.broker, fees: fs }),
-      comSinDato: op.broker === 'moomoo' ? filas.filter(f => !(num(f.fees) > 0)).length : 0,
+      // v71 rev: una operación de moomoo cuyas idas y vueltas del período tienen todas su comisión (o $0 real) es neta
+      fees: fs, daCom: comisionDelBroker({ broker: op.broker, fees: fs }) || (mm.length > 0 && mm.every(e => e === 'con' || e === 'cero')),
+      comPend: mm.filter(e => e === 'pendiente').length, comSin: mm.filter(e => e === 'sin_dato' || e === 'desconocido').length,
       cierre: a.cierre });
   }
   const agregar = (lista) => {
@@ -6290,7 +6345,8 @@ function metricasCuentas(ops, desde) {
     gan_media: T.ganadoras ? r2(gb / T.ganadoras) : null, perd_media: T.perdedoras ? r2(pb / T.perdedoras) : null,
     factor: pb < 0 ? Math.round(gb / -pb * 100) / 100 : null,
     capital: T.capital, rentabilidad: T.rentabilidad, comisiones: coms.length ? r2(coms.reduce((a, b) => a + b, 0)) : null,
-    com_brokers: conCom, sin_com_brokers: sinCom, com_sin_dato: xs.reduce((a, x) => a + x.comSinDato, 0),
+    com_brokers: conCom, sin_com_brokers: sinCom, com_sin_dato: xs.reduce((a, x) => a + x.comPend + x.comSin, 0),
+    com_pend_mm: xs.reduce((a, x) => a + x.comPend, 0), com_sin_mm: xs.reduce((a, x) => a + x.comSin, 0),
     mejor: T.res.length ? Math.max(...T.res) : null, peor: T.res.length ? Math.min(...T.res) : null, racha,
     por_activo: grupos(op => String(op.symbol || '?').toUpperCase()), por_broker: grupos(op => op.broker || 'manual') };
 }
@@ -6308,7 +6364,14 @@ function detalleOpCuentas(p, ctx) {
   const costo = pe != null ? r2(pe * c * 100) : null, venta = ps != null ? r2(ps * c * 100) : null;
   const neto = num(p.resultado_usd) != null ? num(p.resultado_usd) : (venta != null && costo != null ? r2(venta - costo) : null);
   const fees = num(p.fees);
-  const com = fees != null && fees > 0 ? r2(fees) : null;       // Schwab manda 0 y moomoo 0 mientras no se sabe: nada que enseñar
+  // v71 rev: el estado de la comisión de cada ida y vuelta de moomoo (comMoomooFila: marcado con el libro en Cuentas; sin
+  // marca, 'con' o 'desconocido'). Todas 'con' o 'cero' ($0 real): la comisión es un dato, también si es $0.00.
+  const filasB = Array.isArray(p._partes_filas) ? p._partes_filas : [];
+  const partesMM = p.broker === 'moomoo' ? (filasB.length ? filasB : [p]) : [];
+  const estMM = partesMM.map(comMoomooFila);
+  const nPendMM = estMM.filter(e => e === 'pendiente').length, nSinMM = estMM.filter(e => e === 'sin_dato' || e === 'desconocido').length;
+  const ceroMM = estMM.length > 0 && estMM.every(e => e === 'con' || e === 'cero');
+  const com = fees != null && fees > 0 ? r2(fees) : ceroMM ? 0 : null;   // Schwab manda 0 y moomoo 0 mientras no se sabe: nada que enseñar
   // v62 rev: el día de apertura y el de cierre con diaOpNY (una FECHA a medianoche UTC no es el día anterior)
   const dia = diaAperturaOp(p), diaC = p.cerrada_at ? diaOpNY(p.cerrada_at) : '';
   const ix = ctx.idx || null;
@@ -6329,20 +6392,20 @@ function detalleOpCuentas(p, ctx) {
     : (Array.isArray(p._filas) && p._filas.length > 1) ? { filas: p._filas, tipo: 'tramos' } : null;
   // v62 rev: un grupo del bróker queda siempre «cerrada» en unirOperaciones; si TODAS sus filas cerraron por vencimiento
   // (la «>venc» de Schwab, 'Option Expired' de E*TRADE) es una expirada, y su hora de cierre no existió.
-  const filasB = Array.isArray(p._partes_filas) ? p._partes_filas : [];
   const expirada = p.estado === 'expirada' || (filasB.length > 0 && filasB.every(filaVencioCuentas));
   // v65 rev6: un grupo con una venta real y el RESTO vencido (el cierre más tardío del grupo es una fila de vencimiento)
   // tampoco tiene hora de salida: la del grupo sería la del vencimiento (16:30 ET, instanteVencimiento), que no es una
   // ejecución. Lo dice como el Diario («venció en parte») y su duración va en días hasta el vencimiento.
   const vencioEnParte = !expirada && !!p.cerrada_at && filasB.some(t => filaVencioCuentas(t) && t.cerrada_at === p.cerrada_at);
-  // v71: moomoo SÍ da la comisión (worker 0.1.15) pero la asienta después: con fees 0 la suya está «aún sin dato» (no «sin
-  // comisión del bróker»); con datos mezclados, cuántas de sus idas y vueltas aún no la traen (comPendParte de comPendTotal)
-  const partesMM = p.broker === 'moomoo' ? (filasB.length ? filasB : [p]) : [];
-  const pendMM = partesMM.filter(t => !(num(t.fees) > 0)).length;
+  // v71: moomoo SÍ da la comisión (worker 0.1.15) pero la asienta después: con fees 0 la suya no es «sin comisión del
+  // bróker»; con datos mezclados, cuántas de sus idas y vueltas aún no la traen (comPendParte / comSinParte de comPendTotal).
+  // v71 rev: comMM dice POR QUÉ falta ('pendiente': el worker la va a escribir; 'sin_dato': no la va a escribir;
+  // 'desconocido': sin libro o sin la 0023, no se afirma nada) y solo 'pendiente' promete algo.
+  const comMM = (com == null && p.broker === 'moomoo') ? (estMM.includes('sin_dato') ? 'sin_dato' : nPendMM ? 'pendiente' : 'desconocido') : null;
   return { c, pe, ps, costo, venta, neto, com, bruto: (com != null && neto != null) ? r2(neto + com) : null,
     sinComBroker: com == null && p.broker === 'schwab',
-    comPendiente: com == null && p.broker === 'moomoo',
-    comPendParte: com != null && pendMM > 0 ? pendMM : 0, comPendTotal: partesMM.length,
+    comMM, comPendiente: comMM === 'pendiente',
+    comPendParte: com != null ? nPendMM : 0, comSinParte: com != null ? nSinMM : 0, comPendTotal: partesMM.length,
     pct: (neto != null && costo > 0) ? Math.round(neto / costo * 1000) / 10 : null,
     dia, diaC, dir, dte: dteEntrada(p), sinHora, expirada, vencioEnParte, presunta: (expirada || vencioEnParte) && filasB.some(filaPresuntaCuentas),
     spot: ctx.errFills ? null : spotDeOperacion(p, fillsOp), senal, senalDespues: despues, senalOtra: otra,
@@ -6534,13 +6597,26 @@ function tramosOpCuentasHtml(p, d) {
 }
 // v71 · Lo que se dice de la comisión de una operación bajo su P&L (tarjeta) y en el title de la celda (fila), en texto plano:
 // el neto con su bruto y su comisión (y, de moomoo con datos mezclados, cuántas idas y vueltas aún no la traen); Schwab
-// «sin comisión del bróker»; moomoo con fees 0, «comisión de moomoo aún sin dato» (la asienta después: no es un $0). PURA.
+// «sin comisión del bróker»; moomoo con fees 0, «comisión de moomoo aún sin dato» (la asienta después: no es un $0).
+// v71 rev: la promesa («hasta que moomoo la asiente y la Mesa la reparta») solo para la que el worker VA a escribir
+// (comMM 'pendiente'); la que no («sin dato»: no se pudo saber) y la que no se sabe sin el libro («P&L bruto») no la
+// llevan. PURA.
 function textoComisionOpCuentas(d) {
-  if (d.com != null) return `neto · bruto ${dineroD(d.bruto)} − comisión ${dineroD(d.com)}`
-    + (d.comPendParte ? ` (${d.comPendParte} de ${d.comPendTotal} idas y vueltas aún sin dato de comisión)` : '');
-  if (d.comPendiente) return 'comisión de moomoo aún sin dato (P&L bruto hasta que moomoo la asiente y la Mesa la reparta)';
+  if (d.com != null) {
+    const n = d.comPendTotal, iv = (k) => `${k} de ${n} ${n > 1 ? 'idas y vueltas' : 'ida y vuelta'}`;
+    const falta = [d.comPendParte ? `${iv(d.comPendParte)} aún sin dato de comisión` : '', d.comSinParte ? `${iv(d.comSinParte)} sin dato de comisión` : ''].filter(Boolean).join('; ');
+    return `neto · bruto ${dineroD(d.bruto)} − comisión ${dineroD(d.com)}` + (falta ? ` (${falta})` : '');
+  }
+  if (d.comMM === 'pendiente') return 'comisión de moomoo aún sin dato (P&L bruto hasta que moomoo la asiente y la Mesa la reparta)';
+  if (d.comMM === 'sin_dato') return 'comisión de moomoo sin dato (P&L bruto: no se pudo saber)';
+  if (d.comMM === 'desconocido') return 'P&L bruto (sin la comisión de moomoo)';
   if (d.sinComBroker) return 'sin comisión del bróker';
   return '';
+}
+// v71 rev · El rótulo corto bajo el P&L de la fila de la tabla (computadora). PURA.
+function cortoComisionOpCuentas(d) {
+  if (d.com != null) return `bruto ${dineroD(d.bruto)}${d.comPendParte || d.comSinParte ? ' · parcial' : ''}`;
+  return ({ pendiente: 'com. pendiente', sin_dato: 'com. sin dato', desconocido: 'bruto' })[d.comMM] || (d.sinComBroker ? 'sin comisión' : '');
 }
 // B · La TARJETA de una operación (teléfono, < 900 px). Antes: compra, venta, duración, costo, venta y ×N bróker.
 function tarjetaHistorial(p, ctx) {
@@ -6548,7 +6624,7 @@ function tarjetaHistorial(p, ctx) {
   return `<div class="card">
     <div class="fila"><h3>${k.titulo} <span class="fresco">${k.sub}</span></h3>
       <span class="mono" style="font-weight:700;color:${colUtil(d.neto)};white-space:nowrap">${dineroD(d.neto)}${d.pct != null ? ` · ${pctD(d.pct)}` : ''}</span></div>
-    ${d.com != null || d.sinComBroker || d.comPendiente ? `<div class="fresco" style="text-align:right">${esc(textoComisionOpCuentas(d))}</div>` : ''}
+    ${textoComisionOpCuentas(d) ? `<div class="fresco" style="text-align:right">${esc(textoComisionOpCuentas(d))}</div>` : ''}
     <div class="hist">
       <div><span>entrada</span><b>${entradaOpCuentas(p, d, false)}</b></div>
       <div><span>salida</span><b>${salidaOpCuentas(p, d)}</b></div>
@@ -6587,7 +6663,7 @@ function filaHistorialCuentas(p, ctx) {
     <td>${dineroD(d.costo)}</td>
     <td>${dineroD(d.venta)}</td>
     <td>${d.com != null ? dineroD(d.com) : '<span class="fresco">—</span>'}</td>
-    <td style="color:${colUtil(d.neto)}"${textoComisionOpCuentas(d) ? ` title="${esc(textoComisionOpCuentas(d))}"` : ''}><b>${dineroD(d.neto)}</b>${d.com != null ? `<span class="csub">bruto ${dineroD(d.bruto)}${d.comPendParte ? ' · parcial' : ''}</span>` : d.comPendiente ? '<span class="csub">com. sin dato</span>' : d.sinComBroker ? '<span class="csub">sin comisión</span>' : ''}</td>
+    <td style="color:${colUtil(d.neto)}"${textoComisionOpCuentas(d) ? ` title="${esc(textoComisionOpCuentas(d))}"` : ''}><b>${dineroD(d.neto)}</b>${cortoComisionOpCuentas(d) ? `<span class="csub">${esc(cortoComisionOpCuentas(d))}</span>` : ''}</td>
     <td style="color:${colUtil(d.neto)}">${pctD(d.pct)}</td>
     <td class="ctxt cacc" title="${tituloCelda(A.accion)} · contrato ${tituloCelda(A.vs)}"><span class="c1">${A.corta.linea}</span><span class="csub">${['contrato ' + pctEsp(d.pct, 1)].concat(A.corta.etq).map(esc).join(' · ')}</span></td>
     <td class="ctxt cstk" title="${tituloCelda(A.strike)}"><span class="c1">${A.corta.strike}</span>${A.corta.strikeEtq.length ? `<span class="csub">${A.corta.strikeEtq.map(esc).join(' · ')}</span>` : ''}</td>
@@ -6598,7 +6674,8 @@ function filaHistorialCuentas(p, ctx) {
 // v62 rev: «neto» solo lo que lo es — la utilidad descuenta las comisiones de los brókeres que las MANDAN y dice cuáles
 // no (Schwab: su P&L va sin descontarlas); sin ninguno que las mande, COMISIONES dice «—», no $0.00.
 // v71: moomoo ya no es de los que «no las dan» (worker 0.1.15): sus idas y vueltas con fees 0 (M.com_sin_dato) van «aún sin
-// dato de comisión», y con datos mezclados se dice a la vez que moomoo las da y cuántas suyas aún no la traen.
+// dato de comisión», y con datos mezclados se dice a la vez que moomoo las da y cuántas suyas aún no la traen. v71 rev: «aún
+// sin dato» solo las que el worker va a escribir (M.com_pend_mm); las que no, o sin libro, «sin dato» (M.com_sin_mm).
 function tilesCuentasHtml(M, periodo) {
   const t = (lbl, val, sub, col, chico) => `<div class="dcard"><div class="lb">${esc(lbl)}</div><div class="vl${chico ? ' vl2' : ''}" style="color:${col || 'var(--tx)'}">${val}</div><div class="sb">${sub || ''}</div></div>`;
   const tit = ({ dia: 'HOY' })[periodo] || String(periodo || '').toUpperCase();
@@ -6608,9 +6685,13 @@ function tilesCuentasHtml(M, periodo) {
   const con = M.com_brokers || [], sinT = M.sin_com_brokers || [];
   const sin = sinT.filter(b => b !== 'moomoo');                 // v71: moomoo sí las da; la suya, si falta, «aún sin dato»
   const noDan = sin.length ? `${esc(lista(sin))} no ${sin.length > 1 || sin[0] === 'manual' ? 'las dan' : 'las da'}` : '';
-  const nMM = Number(M.com_sin_dato) || 0;
-  const mmSin = nMM ? `${nMM} ${nMM > 1 ? 'idas y vueltas' : 'ida y vuelta'} de moomoo aún sin dato de comisión`
-    : sinT.includes('moomoo') ? 'moomoo aún sin dato de comisión' : '';
+  // v71 rev: «aún sin dato» solo las que el worker va a escribir (com_pend_mm); las demás (sin dato definitivo, o sin libro)
+  // «sin dato», sin «aún». Unas métricas sin el desglose (quien llame como antes) cuentan todo como «sin dato».
+  const desglose = M.com_pend_mm != null || M.com_sin_mm != null;
+  const nP = desglose ? (Number(M.com_pend_mm) || 0) : 0, nS = desglose ? (Number(M.com_sin_mm) || 0) : (Number(M.com_sin_dato) || 0);
+  const ivMM = (n) => `${n} ${n > 1 ? 'idas y vueltas' : 'ida y vuelta'} de moomoo`;
+  const mmSin = [nP ? `${ivMM(nP)} aún sin dato de comisión` : '', nS ? `${ivMM(nS)} sin dato de comisión` : ''].filter(Boolean).join(' y ')
+    || (sinT.includes('moomoo') ? 'moomoo sin dato de comisión' : '');
   const faltan = [noDan, mmSin].filter(Boolean).join('; ');
   const subUtil = con.length ? `neta de las comisiones de ${esc(lista(con))}${faltan ? `; ${faltan} (su P&L va sin descontarlas)` : ''}`
     : faltan ? `${faltan}: P&L sin descontarlas` : 'lo que bajó cada bróker';
@@ -6759,6 +6840,9 @@ async function vistaCuentasSaldos() {
   // (marcarLotesAbiertosCuentas, con los abiertos del Diario). Sin libro, como siempre.
   let todas = unidas;
   if (!fillsR.error) { try { todas = marcarLotesAbiertosCuentas(unidas, emparejarFillsFIFO(fillsR.filas || [], hoyNY()).abiertos); } catch (_) { todas = unidas; } }
+  // v71 rev: el estado de la comisión de cada ida y vuelta de moomoo (pendiente / sin dato / $0 real) con el MISMO libro;
+  // sin libro ninguna se marca y la vista no promete nada (comMoomooFila: 'desconocido')
+  try { todas = marcarComisionMoomooCuentas(todas, fillsR.error ? null : fillsR.filas, Date.now()); } catch (_) {}
   // El historial enseña las operaciones cerradas Y el tramo ya cobrado de una que sigue
   // abierta (una GTC llenada a medias): ese dinero existe, tiene su fecha y antes no
   // aparecía en ninguna parte de esta pantalla.
@@ -12852,8 +12936,12 @@ function comisionAunPendiente(iso, dia, ahoraMs) {
 // Sin las columnas de la 0023 (la fila no trae comision_fuente) no se afirma nada: null. Un vencimiento tampoco cuenta
 // (fillSoloVencimiento: anotarlo no es una orden). Una fuente que esta versión no conoce no se interpreta.
 function estadoComisionFill(f, ahoraMs) {
+  return (f && typeof f === 'object' && fillSoloVencimiento(f)) ? null : estadoComisionCrudo(f, ahoraMs);
+}
+// v71 rev · Lo mismo SIN quitar los vencimientos (para el pie del Diario un vencimiento no es una orden; para la ida y
+// vuelta de Cuentas que cierra con él, su lado de venta es la parte que el worker necesita para escribir su fees). PURA.
+function estadoComisionCrudo(f, ahoraMs) {
   if (!f || typeof f !== 'object' || f.broker !== 'moomoo' || !('comision_fuente' in f)) return null;
-  if (fillSoloVencimiento(f)) return null;
   const fu = f.comision_fuente;
   if (fu === 'moomoo_orden') return 'orden';
   if (fu === 'moomoo_sin_dato') return 'sin_dato';

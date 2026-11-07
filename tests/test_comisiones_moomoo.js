@@ -31,7 +31,8 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     assert(/config\.js\?v=71"/.test(html) && /app\/main\.js\?v=71"/.test(html), 'index.html carga config.js?v=71 y app/main.js?v=71');
     assert(/const VER = 'mesa2-v60';/.test(sw), 'sw.js VER mesa2-v60 (la caché vieja se borra al activarse)');
   }
-  const NUEVAS = ['estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'textoComisionOpCuentas', 'parteComision'];
+  const NUEVAS = ['estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'textoComisionOpCuentas', 'parteComision',
+    'comisionAunPendiente', 'estadoComisionCrudo', 'filasMoomooNetas', 'estadoComisionTramoMoomoo', 'comMoomooFila', 'marcarComisionMoomooCuentas', 'cortoComisionOpCuentas'];   // v71 rev
   const faltan = NUEVAS.filter(n => { try { extraer(n); return false; } catch (_) { return true; } });
   NUEVAS.forEach(n => assert(!faltan.includes(n), `existe function ${n} en el fuente`));
   // el pie fijo de la v70 ya no puede estar en ningún sitio
@@ -45,7 +46,7 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
   const DIA = 86400000;
   const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre',
     'diaADia', 'metricasDiario', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion', 'fechaCorta', 'fmtFechaNY',
-    'estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'tarjetasResumenDiario', 'seccionEjecucionesDiario', 'parteComision',
+    'estadoComisionFill', 'estadoComisionCrudo', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'tarjetasResumenDiario', 'seccionEjecucionesDiario', 'parteComision',
     'comisionAunPendiente', 'diasHabilesDesde'],
     { hoyNY: () => HOY, ymdNY, subtituloPeriodoDiario: () => 'Todo el historial · 2026-11-02 → 2026-11-09' },
     { consts: ['DIARIO_LADOS_SALIDA', 'FUENTES_SPOT', 'COMISION_PENDIENTE_HABILES', 'CONCEPTOS_COMISION_CORTO', 'esc', 'dineroD', 'dineroS', 'pctD2', 'colD', 'nOps', 'BROKER_NOMBRE', 'BROKER_CORTO', 'MESES_ES_C'] });
@@ -256,7 +257,7 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     assert(!/\.(insert|update|upsert|delete)\(/.test(extraer('comisionesDiario') + extraer('estadoComisionFill') + extraer('detalleComisionFill') + extraer('textoDetalleComision')), 'nada de esto escribe en la base: la app solo LEE lo que escribe el worker');
   }
 
-  // ════════════════ 7. Cuentas (el módulo ENTERO): moomoo «aún sin dato», datos mezclados ════════════════
+  // ════════════════ 7. Cuentas (el módulo ENTERO): moomoo «aún sin dato» / «sin dato» / $0 real, datos mezclados ════════════════
   const mod = C.cargarModuloEntero({ src: './app/main.js?v=71', hash: '#/informe' });
   assert(mod.cargo, 'main.js entero carga en el DOM de juguete', mod.error);
   if (mod.cargo) {
@@ -265,51 +266,107 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     igual([W.comisionDelBroker({ broker: 'moomoo', fees: 0.81 }), W.comisionDelBroker({ broker: 'moomoo', fees: 0 }), W.comisionDelBroker({ broker: 'moomoo', fees: null })], [true, false, false],
       'comisionDelBroker: moomoo con fees > 0 es neta; con 0 o sin fees, no');
     const b = { symbol: 'TSLA', direccion: 'CALL', strike: 450, expiracion: '2026-11-13', contratos: 1, prima_fill: 2, prima_salida: 3 };
+    // v71 rev: las idas y vueltas de moomoo llevan la clave de moomoo_cuenta.emparejar («osi|ts|ts|n|lote>venta»): sus deal_id
+    // son la clave_ext de sus ejecuciones en el libro, y Cuentas las MARCA con él (marcarComisionMoomooCuentas)
+    const cl = (osi, ab, ce, n, ids) => `${osi}|${ab}|${ce}|${n}|${ids}`;
     const BT = [
       { ...b, broker: 'etrade', abierta_at: '2026-11-03T14:00:00Z', cerrada_at: '2026-11-03T15:00:00Z', resultado_usd: 97.4, fees: 2.6, clave_ext: 'e1' },
-      { ...b, broker: 'moomoo', strike: 455, abierta_at: '2026-11-04T14:00:00Z', cerrada_at: '2026-11-04T15:00:00Z', resultado_usd: 99.19, fees: 0.81, clave_ext: 'm1' },
-      { ...b, broker: 'moomoo', strike: 460, abierta_at: '2026-11-05T14:00:00Z', cerrada_at: '2026-11-05T15:00:00Z', resultado_usd: 100, fees: 0, clave_ext: 'm2' },
+      { ...b, broker: 'moomoo', strike: 455, abierta_at: '2026-11-04T14:00:00Z', cerrada_at: '2026-11-04T15:00:00Z', resultado_usd: 99.19, fees: 0.81, clave_ext: cl('T455', '2026-11-04T14:00:00Z', '2026-11-04T15:00:00Z', 1, 'a1>b1') },
+      { ...b, broker: 'moomoo', strike: 460, abierta_at: '2026-11-05T14:00:00Z', cerrada_at: '2026-11-05T15:00:00Z', resultado_usd: 100, fees: 0, clave_ext: cl('T460', '2026-11-05T14:00:00Z', '2026-11-05T15:00:00Z', 1, 'a2>b2') },
     ];
-    const ops = W.unirOperaciones([], BT).ops;
-    const M = W.metricasCuentas(W.resumenPeriodo(ops, '2026-11-01').ops, '2026-11-01');
-    igual([M.comisiones, M.com_brokers, M.sin_com_brokers, M.com_sin_dato], [3.41, ['etrade', 'moomoo'], [], 1],
-      'datos mezclados: comisiones de E*TRADE y moomoo ($3.41) y 1 ida y vuelta de moomoo aún sin la suya (com_sin_dato)');
+    // el libro: a1/b1 resueltas (su ida y vuelta ya trae fees); a2/b2 de hace 2 días hábiles, aún sin resolver (pendientes)
+    const LIB = [FM('a1', 'compra', 1, 2, '2026-11-04T14:00:00Z', { strike: 455, comision: 0.38, comision_fuente: 'moomoo_orden' }), FM('b1', 'venta', 1, 3, '2026-11-04T15:00:00Z', { strike: 455, comision: 0.43, comision_fuente: 'moomoo_orden' }),
+      FM('a2', 'compra', 1, 2, '2026-11-05T14:00:00Z', { strike: 460 }), FM('b2', 'venta', 1, 3, '2026-11-05T15:00:00Z', { strike: 460 })];
+    const mk = (ops, lib) => W.marcarComisionMoomooCuentas(ops, lib === undefined ? LIB : lib, AHORA);
+    const met = (ops) => W.metricasCuentas(W.resumenPeriodo(ops, '2026-11-01').ops, '2026-11-01');
+    const ops = mk(W.unirOperaciones([], BT).ops);
+    const M = met(ops);
+    igual([M.comisiones, M.com_brokers, M.sin_com_brokers, M.com_sin_dato, M.com_pend_mm, M.com_sin_mm], [3.41, ['etrade', 'moomoo'], [], 1, 1, 0],
+      'datos mezclados: comisiones de E*TRADE y moomoo ($3.41) y 1 ida y vuelta de moomoo aún sin la suya (pendiente: el worker la va a escribir)');
     const tl = W.tilesCuentasHtml(M, 'semana');
     assert(/neta de las comisiones de E\*TRADE y moomoo; 1 ida y vuelta de moomoo aún sin dato de comisión \(su P&L va sin descontarlas\)/.test(tl), 'UTILIDAD: «neta de las comisiones de E*TRADE y moomoo; 1 ida y vuelta de moomoo aún sin dato de comisión (su P&L va sin descontarlas)»', tl.slice(0, 400));
     assert(/<div class="sb">ya descontadas del neto · las dan E\*TRADE y moomoo · 1 ida y vuelta de moomoo aún sin dato de comisión<\/div>/.test(tl), 'COMISIONES: «las dan E*TRADE y moomoo · 1 ida y vuelta de moomoo aún sin dato de comisión»');
     assert(!/moomoo no|no las da/.test(tl), 'nunca «moomoo no las da»');
-    const todas = W.metricasCuentas(W.resumenPeriodo(W.unirOperaciones([], BT.slice(0, 2)).ops, '2026-11-01').ops, '2026-11-01');
+    const todas = met(mk(W.unirOperaciones([], BT.slice(0, 2)).ops));
     const tlt = W.tilesCuentasHtml(todas, 'semana');
-    assert(todas.com_sin_dato === 0 && /neta de las comisiones de E\*TRADE y moomoo<\/div>/.test(tlt) && !/aún sin dato/.test(tlt), 'todas resueltas: «neta de las comisiones de E*TRADE y moomoo», sin «aún sin dato»');
-    const solo = W.metricasCuentas(W.resumenPeriodo(W.unirOperaciones([], [BT[2]]).ops, '2026-11-01').ops, '2026-11-01');
+    assert(todas.com_sin_dato === 0 && /neta de las comisiones de E\*TRADE y moomoo<\/div>/.test(tlt) && !/sin dato/.test(tlt), 'todas resueltas: «neta de las comisiones de E*TRADE y moomoo», sin «sin dato»');
+    const solo = met(mk(W.unirOperaciones([], [BT[2]]).ops));
     const tls = W.tilesCuentasHtml(solo, 'semana');
     assert(solo.comisiones === null && /COMISIONES<\/div><div class="vl" style="color:var\(--tx\)">—<\/div><div class="sb">1 ida y vuelta de moomoo aún sin dato de comisión<\/div>/.test(tls) && !/\$0\.00/.test(tls),
       'solo moomoo aún sin dato: COMISIONES «—» (nunca $0.00) y por qué');
-    const con2 = W.metricasCuentas(W.resumenPeriodo(W.unirOperaciones([], [BT[0], BT[2], { ...BT[2], strike: 465, clave_ext: 'm3' }, { ...b, broker: 'schwab', abierta_at: '2026-11-05T14:00:00Z', cerrada_at: '2026-11-05T15:00:00Z', resultado_usd: 100, fees: 0, clave_ext: 's1' }]).ops, '2026-11-01').ops, '2026-11-01');
+    const m3 = { ...BT[2], strike: 465, clave_ext: cl('T465', '2026-11-05T14:00:00Z', '2026-11-05T15:00:00Z', 1, 'a3>b3') };
+    const LIB3 = LIB.concat([FM('a3', 'compra', 1, 2, '2026-11-05T14:00:00Z', { strike: 465 }), FM('b3', 'venta', 1, 3, '2026-11-05T15:00:00Z', { strike: 465 })]);
+    const con2 = met(mk(W.unirOperaciones([], [BT[0], BT[2], m3, { ...b, broker: 'schwab', abierta_at: '2026-11-05T14:00:00Z', cerrada_at: '2026-11-05T15:00:00Z', resultado_usd: 100, fees: 0, clave_ext: 's1' }]).ops, LIB3));
     assert(/neta de las comisiones de E\*TRADE; Schwab no las da; 2 idas y vueltas de moomoo aún sin dato de comisión \(su P&L va sin descontarlas\)/.test(W.tilesCuentasHtml(con2, 'semana')),
       'con Schwab: «Schwab no las da; 2 idas y vueltas de moomoo aún sin dato de comisión»');
     // la operación: tarjeta y fila
     const mmSin = ops.find(o => o.broker === 'moomoo' && Number(o.fees) === 0), mmCon = ops.find(o => o.broker === 'moomoo' && Number(o.fees) > 0);
     const tS = W.tarjetaHistorial(mmSin, {}), fS = W.filaHistorialCuentas(mmSin, { fills: [], senales: [] });
-    assert(/comisión de moomoo aún sin dato \(P&amp;L bruto hasta que moomoo la asiente y la Mesa la reparta\)/.test(tS) && !/sin comisión del bróker/.test(tS + fS), 'moomoo con fees 0: «comisión de moomoo aún sin dato», nunca «sin comisión del bróker»');
-    assert(/<span class="csub">com\. sin dato<\/span>/.test(fS) && /title="comisión de moomoo aún sin dato/.test(fS), 'la fila: «com. sin dato» en corto y el texto entero en el title');
+    assert(/comisión de moomoo aún sin dato \(P&amp;L bruto hasta que moomoo la asiente y la Mesa la reparta\)/.test(tS) && !/sin comisión del bróker/.test(tS + fS), 'moomoo con fees 0 y sus ejecuciones aún sin resolver: «comisión de moomoo aún sin dato», nunca «sin comisión del bróker»');
+    assert(/<span class="csub">com\. pendiente<\/span>/.test(fS) && /title="comisión de moomoo aún sin dato/.test(fS), 'la fila: «com. pendiente» en corto y el texto entero en el title');
     const tC = W.tarjetaHistorial(mmCon, {});
-    assert(/neto · bruto \$100\.00 − comisión \$0\.81/.test(tC) && !/aún sin dato/.test(tC), 'moomoo con su comisión: «neto · bruto $100.00 − comisión $0.81»');
+    assert(/neto · bruto \$100\.00 − comisión \$0\.81/.test(tC) && !/comisión de moomoo|sin dato de comisión/.test(tC), 'moomoo con su comisión: «neto · bruto $100.00 − comisión $0.81»');
     const sw = W.unirOperaciones([], [{ ...b, broker: 'schwab', abierta_at: '2026-11-05T14:00:00Z', cerrada_at: '2026-11-05T15:00:00Z', resultado_usd: 100, fees: 0 }]).ops[0];
-    assert(/sin comisión del bróker/.test(W.tarjetaHistorial(sw, {})) && !/aún sin dato/.test(W.tarjetaHistorial(sw, {})), 'Schwab sigue «sin comisión del bróker»');
+    assert(/sin comisión del bróker/.test(W.tarjetaHistorial(sw, {})) && !/comisión de moomoo|sin dato de comisión/.test(W.tarjetaHistorial(sw, {})), 'Schwab sigue «sin comisión del bróker»');
     // una operación de moomoo con dos idas y vueltas: una con su comisión y otra aún sin ella
-    const dosIV = W.unirOperaciones([], [
+    const AB6 = '2026-11-06T14:40:00Z';
+    const dosIV = mk(W.unirOperaciones([], [
       // v71 rev: como las escribe el worker 0.1.15 (resultado_usd en BRUTO de sus primas, fees aparte; filasMoomooNetas lo lee neto)
-      { ...b, broker: 'moomoo', prima_salida: 2.5, abierta_at: '2026-11-06T14:40:00Z', cerrada_at: '2026-11-06T15:00:00Z', resultado_usd: 50, fees: 0.43, clave_ext: 'm1|m2' },
-      { ...b, broker: 'moomoo', contratos: 2, abierta_at: '2026-11-06T14:40:00Z', cerrada_at: '2026-11-06T15:10:00Z', resultado_usd: 200, fees: 0, clave_ext: 'm1|m3' }]).ops;
+      { ...b, broker: 'moomoo', prima_salida: 2.5, abierta_at: AB6, cerrada_at: '2026-11-06T15:00:00Z', resultado_usd: 50, fees: 0.43, clave_ext: cl('T450', AB6, '2026-11-06T15:00:00Z', 1, 'f1>f2') },
+      { ...b, broker: 'moomoo', contratos: 2, abierta_at: AB6, cerrada_at: '2026-11-06T15:10:00Z', resultado_usd: 200, fees: 0, clave_ext: cl('T450', AB6, '2026-11-06T15:10:00Z', 2, 'f1>f3') }]).ops,
+      [FM('f1', 'compra', 3, 2, AB6, { comision: 0.57, comision_fuente: 'moomoo_orden' }), FM('f2', 'venta', 1, 2.5, '2026-11-06T15:00:00Z', { comision: 0.24, comision_fuente: 'moomoo_orden' }),
+        FM('f3', 'venta', 2, 3, '2026-11-06T15:10:00Z')]);
     const op2 = dosIV.find(o => Array.isArray(o._partes_filas) && o._partes_filas.length === 2);
     assert(!!op2, 'las dos idas y vueltas del mismo contrato y día forman UNA operación (para probar los datos mezclados dentro de ella)', JSON.stringify(dosIV.map(o => (o._partes_filas || []).length)));
     if (op2) {
       const d2 = W.detalleOpCuentas(op2, {});
-      igual([d2.com, d2.comPendParte, d2.comPendTotal, d2.comPendiente], [0.43, 1, 2, false], 'detalle: comisión conocida $0.43 y 1 de 2 idas y vueltas aún sin dato');
+      igual([d2.com, d2.comPendParte, d2.comSinParte, d2.comPendTotal, d2.comPendiente], [0.43, 1, 0, 2, false], 'detalle: comisión conocida $0.43 y 1 de 2 idas y vueltas aún sin dato (su venta aún sin resolver)');
       assert(/neto · bruto \$250\.00 − comisión \$0\.43 \(1 de 2 idas y vueltas aún sin dato de comisión\)/.test(W.tarjetaHistorial(op2, {})), 'la tarjeta lo dice: «(1 de 2 idas y vueltas aún sin dato de comisión)»');
       assert(/<span class="csub">bruto \$250\.00 · parcial<\/span>/.test(W.filaHistorialCuentas(op2, { fills: [], senales: [] })), 'la fila: «bruto $250.00 · parcial»');
       igual([d2.neto, d2.bruto], [249.57, 250], '… y su neto es $249.57 = $250 − $0.43 (la fila con comisión, leída neta)');
+    }
+
+    // ── 7c. v71 rev · POR QUÉ falta (jueces de dinero y de seguridad: «toda ida y vuelta de moomoo con fees 0 promete "hasta que
+    // la Mesa la reparta", y muchas no van a cambiar nunca»): el estado de cada una sale de SUS ejecuciones en el libro
+    {
+      const E = (lib, extra) => W.estadoComisionTramoMoomoo({ ...BT[2], ...(extra || {}) }, new Map(lib.map(f => [f.clave_ext, f])), AHORA);
+      const a = (x) => FM('a2', 'compra', 1, 2, '2026-11-05T14:00:00Z', x), v = (x) => FM('b2', 'venta', 1, 3, '2026-11-05T15:00:00Z', x);
+      const OR = (c, at) => ({ comision: c, comision_fuente: 'moomoo_orden', comision_at: at || '2026-11-05T15:40:00Z' });
+      igual(E([a(), v()]), 'pendiente', 'las dos aún sin resolver y jóvenes: «pendiente» (el worker la va a escribir)');
+      igual(E([a({ comision_fuente: 'moomoo_sin_dato' }), v(OR(0.24))]), 'sin_dato', 'la compra que el worker no pudo saber y la venta resuelta: «sin dato» (el worker nunca escribe esa ida y vuelta)');
+      igual(E([a(OR(0)), v(OR(0))]), 'cero', 'las dos órdenes cobraron $0 de verdad: «cero» (un $0 real, no un pendiente eterno)');
+      igual(E([a(OR(0.38)), v(OR(0.24))]), 'pendiente', 'las dos resueltas con monto y la ida y vuelta aún en 0: «pendiente» (el worker la escribe en su pasada siguiente)');
+      igual(E([a(OR(0.38, '2026-10-27T15:00:00Z')), v(OR(0.24, '2026-10-27T15:00:00Z'))]), 'sin_dato', '… pero resueltas hace ≥ 4 días hábiles y aún en 0: «sin dato» (no se promete para siempre)');
+      igual(E([FM('a2', 'compra', 1, 2, '2026-10-27T14:00:00Z'), FM('b2', 'venta', 1, 3, '2026-10-27T15:00:00Z')]), 'sin_dato', 'sin resolver pasado el plazo: «sin dato»');
+      igual(E([a(), v()].map(sinCols)), 'desconocido', 'SIN la sql 0023 (el libro no trae comision_fuente): «desconocido», nada se afirma');
+      igual(E([a()]), 'desconocido', 'falta una de sus ejecuciones en el libro: «desconocido»');
+      igual(E([a(), v()], { clave_ext: 'm2' }), 'desconocido', 'una clave sin la forma de emparejar: «desconocido»');
+      igual(E([a(), v()], { fees: 0.4 }), 'con', 'con fees > 0: «con» (lo demás no importa)');
+      igual(W.estadoComisionTramoMoomoo({ ...BT[0] }, new Map(), AHORA), null, 'otro bróker: null');
+      igual(E([a(OR(0.57)), FM('b2', 'venta', 1, 0, '2026-11-14T06:22:00Z', { expiracion: '2026-11-13', comision_fuente: 'moomoo_sin_dato' })], { cerrada_at: '2026-11-14T06:22:00Z' }), 'sin_dato',
+        'la ida y vuelta que cierra con el VENCIMIENTO (venta a $0) que el worker dio por «sin dato»: «sin dato» (el lado del vencimiento cuenta aquí)');
+      // la operación y los tiles con cada estado
+      const pinta = (lib) => { const o = mk(W.unirOperaciones([], [BT[2]]).ops, lib)[0]; return { d: W.detalleOpCuentas(o, {}), t: W.tarjetaHistorial(o, {}), f: W.filaHistorialCuentas(o, { fills: [], senales: [] }), M: met([o]) }; };
+      const sd = pinta([a({ comision_fuente: 'moomoo_sin_dato' }), v(OR(0.24))]);
+      assert(sd.d.comMM === 'sin_dato' && /comisión de moomoo sin dato \(P&amp;L bruto: no se pudo saber\)/.test(sd.t) && !/aún sin dato|la Mesa la reparta/.test(sd.t + sd.f) && /<span class="csub">com\. sin dato<\/span>/.test(sd.f),
+        'sin dato: «comisión de moomoo sin dato (P&L bruto: no se pudo saber)», «com. sin dato», sin «aún» ni promesa');
+      const tsd = W.tilesCuentasHtml(sd.M, 'semana');
+      assert(sd.M.com_pend_mm === 0 && sd.M.com_sin_mm === 1 && /1 ida y vuelta de moomoo sin dato de comisión/.test(tsd) && !/aún sin dato/.test(tsd), 'los tiles: «1 ida y vuelta de moomoo sin dato de comisión» (sin «aún»)');
+      const ce = pinta([a(OR(0)), v(OR(0))]);
+      assert(ce.d.com === 0 && ce.d.comMM === null && /neto · bruto \$100\.00 − comisión \$0\.00/.test(ce.t) && !/comisión de moomoo|com\. sin dato|com\. pendiente/.test(ce.t + ce.f), '$0 real: «neto · bruto $100.00 − comisión $0.00» (un dato, no un pendiente)');
+      igual([ce.M.comisiones, ce.M.com_brokers, ce.M.sin_com_brokers, ce.M.com_sin_dato, ce.M.util], [0, ['moomoo'], [], 0, 100], 'los tiles: la de moomoo es $0.00 descontado (neta), nada «sin dato»');
+      const de = pinta(null);
+      assert(de.d.comMM === 'desconocido' && /P&amp;L bruto \(sin la comisión de moomoo\)/.test(de.t) && !/la Mesa la reparta|aún sin dato/.test(de.t + de.f) && /<span class="csub">bruto<\/span>/.test(de.f),
+        'sin libro (lectura fallida): «P&L bruto (sin la comisión de moomoo)», sin promesa');
+      const ne = pinta([a(), v()].map(sinCols));
+      assert(ne.d.comMM === 'desconocido' && !/la Mesa la reparta|aún sin dato/.test(ne.t), 'sin la 0023: lo mismo (nada se afirma)');
+      // marcar: solo AÑADE el campo, en copias
+      const crudas = W.unirOperaciones([], BT).ops, marcadas = mk(crudas);
+      assert(crudas.every(o => (o._partes_filas || []).every(t => !('_com_mm' in t))) && marcadas.find(o => o.broker === 'etrade') === crudas.find(o => o.broker === 'etrade'),
+        'marcarComisionMoomooCuentas no toca las leídas (copias) ni las operaciones de otros brókeres');
+      igual(marcadas.filter(o => o.broker === 'moomoo').map(o => o._partes_filas.map(t => t._com_mm)), [['con'], ['pendiente']], 'marca cada ida y vuelta de moomoo');
+      igual([W.marcarComisionMoomooCuentas(null, LIB, AHORA), W.marcarComisionMoomooCuentas([null], LIB, AHORA)], [null, [null]], 'sin operaciones o con basura: no se rompe');
+      assert(/todas = marcarComisionMoomooCuentas\(todas, fillsR\.error \? null : fillsR\.filas, Date\.now\(\)\)/.test(extraer('vistaCuentasSaldos')), 'vistaCuentasSaldos marca con el MISMO libro que ya lee (sin consultas nuevas); sin él, null');
     }
 
     // ── 7b. v71 rev · las filas TAL CUAL las escribe moomoo_cuenta.emparejar del worker 0.1.15: resultado_usd en BRUTO y la

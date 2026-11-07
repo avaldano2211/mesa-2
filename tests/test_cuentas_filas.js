@@ -18,7 +18,7 @@ const existe = (n) => new RegExp('^(?:async )?function ' + n + '\\s*\\(', 'm').t
 // Cuentas (unirOperaciones y sus lectores, los períodos y los tiles) y el Diario (el FIFO del libro y el día a día)
 const NOMBRES = ['unirOperaciones', 'filasEtradeVigentes', 'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill', 'claveContrato', 'instanteVencimiento',
   'vencimientoMoomoo', 'filasMoomooVencimiento', 'filasMoomooNetas', 'filasSchwabVencimiento', 'cerradasDesde', 'aportePeriodoCuentas', 'resumenPeriodo', 'metricasCuentas',
-  'comisionDelBroker', 'tilesCuentasHtml', 'detalleOpCuentas', 'diaOpNY', 'diaAperturaOp', 'sinHoraIso', 'horaNY', 'fechaNyTransaccion', 'dteEntrada',
+  'comisionDelBroker', 'comMoomooFila', 'tilesCuentasHtml', 'detalleOpCuentas', 'diaOpNY', 'diaAperturaOp', 'sinHoraIso', 'horaNY', 'fechaNyTransaccion', 'dteEntrada',
   'diasEntre', 'filaVencioCuentas', 'filaPresuntaCuentas', 'spotDeOperacion', 'partesOpCuentas', 'senalDeOperacion', 'spotDeFill', 'peorFuenteSpot',
   'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'parteComision', 'durMin', 'diaADia', 'marcarLotesAbiertosCuentas'].filter(existe);
 const CONSTS = ['ET_PROV_ANTES_MS', 'ET_PROV_DESPUES_MS', 'ET_TIPO_PROVISIONAL', 'DIARIO_LADOS_SALIDA', 'FUENTES_SPOT', 'BROKERS_CON_COMISION', 'BROKER_CORTO',
