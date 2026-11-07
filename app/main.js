@@ -12867,7 +12867,11 @@ function textoDetalleComision(dt) {
 // PURA · Las comisiones del período para el pie del Diario: cuánto descontaron los TRAMOS cerrados de cada bróker (de los
 // datos, no de una lista fija) y cuántas ejecuciones de moomoo del período tienen la comisión pendiente o sin dato
 // (estadoComisionFill). Sin las columnas de la 0023 los dos conteos dan 0: no se afirma nada.
-function comisionesDiario(cerradas, fills, ahoraMs) {
+// v71 rev (juez de dinero: «una compra del viernes sin dato pesa en el P&L del lunes y el total dice "neto de comisiones"
+// sin ningún aviso») · se miran también las ejecuciones que ENTRAN en los tramos cerrados del período aunque sean de otro
+// (ids.abre / ids.cierra, buscadas en `libro` —el libro entero— por bróker y clave_ext), cada una una sola vez: la comisión
+// de esa compra se descuenta (o se deja de descontar) en ESTE período.
+function comisionesDiario(cerradas, fills, ahoraMs, libro) {
   const r2 = (n) => Math.round(n * 100) / 100;
   const por = {};
   for (const c of (cerradas || [])) {
@@ -12875,8 +12879,23 @@ function comisionesDiario(cerradas, fills, ahoraMs) {
     if (c && c.broker && Number.isFinite(v) && v > 0) por[c.broker] = (por[c.broker] || 0) + v;
   }
   Object.keys(por).forEach(b => { por[b] = r2(por[b]); });
+  const vistas = new Set(), lista = [];
+  const meter = (f) => {
+    if (!f || typeof f !== 'object') return;
+    if (f.clave_ext != null) { const k = (f.broker || '') + '|' + String(f.clave_ext); if (vistas.has(k)) return; vistas.add(k); }
+    lista.push(f);
+  };
+  (fills || []).forEach(meter);
+  if (Array.isArray(libro) && libro.length) {
+    const ix = new Map();
+    libro.forEach(f => { if (f && f.clave_ext != null) ix.set((f.broker || '') + '|' + String(f.clave_ext), f); });
+    for (const c of (cerradas || [])) {
+      const ids = c && c.ids;
+      if (ids) [ids.abre, ids.cierra].forEach(id => { if (id != null) meter(ix.get((c.broker || '') + '|' + String(id))); });
+    }
+  }
   let pendientes = 0, sinDato = 0;
-  for (const f of (fills || [])) {
+  for (const f of lista) {
     const e = estadoComisionFill(f, ahoraMs);
     if (e === 'pendiente') pendientes++; else if (e === 'sin_dato') sinDato++;
   }
@@ -13267,7 +13286,7 @@ async function vistaDiario(forzar) {
   const dias = diaADia(cerradasSel, null, null, viajesSel);
   const fillsSelDias = fills.filter(f => enPeriodoDiario(sel, f.fecha_ny));   // días operados = días con cualquier ejecución
   const M = metricasDiario(cerradasSel, dias, viajesSel, fillsSelDias);
-  M.com = comisionesDiario(cerradasSel, fillsSelDias, Date.now());   // v71: de qué brókeres son y las de moomoo que aún no se saben
+  M.com = comisionesDiario(cerradasSel, fillsSelDias, Date.now(), fills);   // v71: de qué brókeres son y las de moomoo que aún no se saben (v71 rev: también las de los tramos del período)
   const meses = resumenPorPeriodo(F.cerradas, 'mes', null, null, F.viajes, fills), semanas = resumenPorPeriodo(F.cerradas, 'semana', null, null, F.viajes, fills);
   const sesiones = {
     etrade: etCreds() ? (etDiaVencido() ? 'caducada' : 'ok') : 'sin',

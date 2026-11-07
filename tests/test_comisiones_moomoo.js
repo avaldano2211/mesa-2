@@ -198,6 +198,26 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     assert(!/pendiente|sin dato/.test(pie(hs)) && /comisiones ya descontadas: \$2\.60 \(E\*TRADE \$2\.60\)/.test(pie(hs)) && / · neto de comisiones$/.test(sub(hs)), 'sin la 0023 el pie solo dice lo que hay: nada se rompe, nada se afirma');
   }
 
+  // ════════════════ 4b. v71 rev · el pie mira también las ejecuciones de OTRO período que entran en sus tramos ════════════════
+  // (juez de dinero: una compra del viernes sin dato pesa en el P&L del lunes y el total decía «neto de comisiones» sin aviso)
+  {
+    const L = [FM('d1', 'compra', 2, 2.00, '2026-11-06T15:00:00Z', { expiracion: '2026-11-20', comision_fuente: 'moomoo_sin_dato' }),
+      FM('d2', 'venta', 2, 2.50, '2026-11-09T15:00:00Z', { expiracion: '2026-11-20', comision: 0.43, comision_fuente: 'moomoo_orden' })];
+    const F = D.emparejarFillsFIFO(L, HOY);
+    const cer = F.cerradas.filter(c => c.fecha_ny === '2026-11-09'), delDia = L.filter(f => f.fecha_ny === '2026-11-09');
+    igual([cer.length, cer[0] && cer[0].pnl], [1, 99.57], 'el lunes cierra un tramo con la compra del viernes: $100 − $0.43 de la venta (la de la compra no se sabe)');
+    igual(D.comisionesDiario(cer, delDia, AHORA), { por_broker: { moomoo: 0.43 }, pendientes: 0, sin_dato: 0 }, 'sin el libro (quien llame como antes): solo las ejecuciones del período');
+    const Cl = D.comisionesDiario(cer, delDia, AHORA, L);
+    igual(Cl, { por_broker: { moomoo: 0.43 }, pendientes: 0, sin_dato: 1 }, 'con el libro: la compra del VIERNES sin dato que entra en el tramo del lunes cuenta (1 sin dato)');
+    const h = D.tarjetasResumenDiario({ ...MB, comisiones: 0.43, com: Cl }, { modo: 'todo' }, [], HOY);
+    assert(/ · neto de las comisiones conocidas$/.test(sub(h)) && /1 ejecución de moomoo sin dato de comisión/.test(pie(h)), 'el total del lunes es «neto de las comisiones conocidas» y el pie lo cuenta', sub(h));
+    const Cp = D.comisionesDiario(cer, delDia, AHORA, [{ ...L[0], comision_fuente: null }, L[1]]);
+    igual([Cp.pendientes, Cp.sin_dato], [1, 0], 'la compra del viernes aún sin resolver (worker parado o más lento): 1 pendiente');
+    igual(D.comisionesDiario(cer, L, AHORA, L).sin_dato, 1, 'una ejecución del período que además entra en un tramo se cuenta UNA sola vez');
+    igual(D.comisionesDiario(cer, delDia, AHORA, [{ ...L[0], broker: 'etrade' }, L[1]]).sin_dato, 0, 'la misma clave_ext de OTRO bróker no se confunde con la del tramo');
+    igual(D.comisionesDiario(cer, delDia, AHORA, L.map(sinCols)), { por_broker: { moomoo: 0.43 }, pendientes: 0, sin_dato: 0 }, 'sin la 0023 en el libro: nada se afirma');
+  }
+
   // ════════════════ 5. la lista de ejecuciones ════════════════
   {
     const L = (fills, ahora) => D.seccionEjecucionesDiario(fills, 'todos', true, ahora == null ? AHORA : ahora);
@@ -230,8 +250,8 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
   // ════════════════ 6. el cableado en vistaDiario ════════════════
   {
     const vd = extraer('vistaDiario');
-    assert(/const M = metricasDiario\(cerradasSel, dias, viajesSel, fillsSelDias\);\s*M\.com = comisionesDiario\(cerradasSel, fillsSelDias, Date\.now\(\)\);/.test(vd),
-      'vistaDiario: M.com = comisionesDiario(cerradasSel, fillsSelDias, Date.now()) con los tramos y las ejecuciones DEL PERÍODO');
+    assert(/const M = metricasDiario\(cerradasSel, dias, viajesSel, fillsSelDias\);\s*M\.com = comisionesDiario\(cerradasSel, fillsSelDias, Date\.now\(\), fills\);/.test(vd),
+      'vistaDiario: M.com = comisionesDiario(cerradasSel, fillsSelDias, Date.now(), fills) con los tramos y las ejecuciones DEL PERÍODO y el libro entero (v71 rev)');
     assert(/tarjetasResumenDiario\(M, sel, cob, hoy\)/.test(vd) && /seccionEjecucionesDiario\(fillsSel, _diario\.brokerFiltro, _diario\.masEjec\)/.test(vd), 'las llamadas de siempre (el pie lee M.com; la lista, la hora del equipo)');
     assert(!/\.(insert|update|upsert|delete)\(/.test(extraer('comisionesDiario') + extraer('estadoComisionFill') + extraer('detalleComisionFill') + extraer('textoDetalleComision')), 'nada de esto escribe en la base: la app solo LEE lo que escribe el worker');
   }
