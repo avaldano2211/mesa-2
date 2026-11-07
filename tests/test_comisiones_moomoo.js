@@ -151,10 +151,13 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     igual([ab.cerradas[0].comisiones, ab.abiertos[0].comision], [0.39, 0.39], 'lote abierto: le queda la parte de sus 2 contratos aún sin cerrar ($0.58 − $0.19 = $0.39)');
     const vc = D.emparejarFillsFIFO(R([['x1', 'compra', 3, 2.00, '2026-11-02T14:40:00Z', 0.58], ['x2', 'venta', 1, 2.50, '2026-11-02T15:00:00Z', 0.20]]).map(f => ({ ...f, expiracion: '2026-11-06' })), HOY);
     igual(vc.cerradas.map(c => [c.contratos, c.comisiones, c.vencido]), [[1, 0.39, false], [2, 0.39, true]], 'el resto que vence sin venderse lleva la parte que le queda al lote ($0.39): Σ = $0.78 = $0.58 + $0.20');
-    const et = D.emparejarFillsFIFO(R([['y1', 'compra', 3, 1.00, T0, 1.9725], ['y2', 'venta', 1, 1.10, T1, 0.6575], ['y3', 'venta', 2, 1.20, T2, 1.315]]).map(f => ({ ...f, broker: 'etrade', comision_fuente: null })), HOY);
-    const p4 = [D.parteComision(1.9725, 0, 1, 3), D.parteComision(1.9725, 1, 2, 3), D.parteComision(1.9725, 2, 3, 3)];
-    igual(p4, [0.6575, 0.6575, 0.6575], 'E*TRADE con 4 decimales (0.6575 por contrato): el acumulado va en diezmilésimas, no en centavos');
-    cerca(et.cerradas.reduce((s, c) => s + c.pnl, 0), 50 - 3.945, 'y el neto de sus tramos es el bruto menos la comisión exacta (al centavo de redondeo de cada tramo, como siempre)', 0.0101);
+    // E*TRADE y tasty: proporcional como sus emparejadores (emparejarEtrade / tasty_cuenta escriben así broker_trades): lote de 3
+    // con $1.97, ventas de 1 ($0.65) y 2 ($1.30) → 1.97/3 + 0.65 y 2·1.97/3 + 1.30 → P&L 8.69 y 37.39, como su fila en Cuentas
+    const et = D.emparejarFillsFIFO(R([['y1', 'compra', 3, 1.00, T0, 1.97], ['y2', 'venta', 1, 1.10, T1, 0.65], ['y3', 'venta', 2, 1.20, T2, 1.30]]).map(f => ({ ...f, broker: 'etrade', comision_fuente: null })), HOY);
+    igual(et.cerradas.map(c => [c.comisiones, c.pnl]), [[1.31, 8.69], [2.61, 37.39]], 'E*TRADE sigue con el reparto proporcional de emparejarEtrade (Diario = Cuentas tramo a tramo)');
+    const mmIgual = D.emparejarFillsFIFO(R([['y1', 'compra', 3, 1.00, T0, 1.97], ['y2', 'venta', 1, 1.10, T1, 0.65], ['y3', 'venta', 2, 1.20, T2, 1.30]]), HOY);
+    igual(mmIgual.cerradas.map(c => [c.comisiones, c.pnl]), [[1.30, 8.70], [2.62, 37.38]], 'las mismas ejecuciones de moomoo: por acumulado (0.65 + 0.65 y 1.32 + 1.30), como el worker');
+    igual([D.parteComision(1.9725, 0, 1, 3), D.parteComision(1.9725, 1, 2, 3), D.parteComision(1.9725, 2, 3, 3)], [0.6575, 0.6575, 0.6575], 'parteComision con 4 decimales: el acumulado va en diezmilésimas, no en centavos');
     igual([D.parteComision(0.58, 0, 1, 3), D.parteComision(0.58, 1, 2, 3), D.parteComision(0.58, 2, 3, 3), D.parteComision(0, 0, 1, 3), D.parteComision(0.58, 0, 1, 0), D.parteComision('x', 0, 1, 3)],
       [0.19, 0.19, 0.2, 0, 0, 0], 'parteComision: el acumulado de la casa; con F = 0, q = 0 o basura, 0');
   }
