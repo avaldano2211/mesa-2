@@ -12897,7 +12897,7 @@ function seccionDiaADia(dias, brokers, diasSel, partir) {
     <table class="tbl tbl-dias"><tr><th>Día</th>${bs.map(b => `<th>${esc(BROKER_CORTO[b] || b)}</th>`).join('')}<th>Total</th><th>Acum.</th></tr>
     ${filas.map(d => `<tr class="pick${selD.has(String(d.fecha_ny)) ? ' sel' : ''}" onclick="MZ.diarioPeriodo('dia','${esc(d.fecha_ny)}',true)"><td><b>${esc(fechaCorta(d.fecha_ny))}</b><br><small class="fresco">${d.ops ? `${d.ops} op${d.ops === 1 ? '' : 's'} · ${d.aciertos} ✓` : 'tramo de un viaje que cerró otro día'}</small></td>
       ${bs.map(b => { const c = d.por_broker[b]; const pc = (partir && b === 'moomoo' && d.por_cuenta) || null;
-        const sub = pc ? [['CASH', 'ef'], ['MARGIN', 'mg']].filter(([t]) => pc['moomoo:' + t]).map(([t, r]) => `<br><small style="color:${colD(pc['moomoo:' + t].pnl)};font-weight:500">${r} ${dineroS(pc['moomoo:' + t].pnl)}</small>`).join('') : '';
+        const sub = pc ? [['CASH', 'ef'], ['MARGIN', 'mg']].filter(([t]) => pc['moomoo:' + t]).map(([t, r]) => `<br><small style="color:${colD(pc['moomoo:' + t].pnl)};font-weight:500">${r} ${pc['moomoo:' + t].pnl > 0 ? '+' : ''}${dineroD(pc['moomoo:' + t].pnl)}</small>`).join('') : '';
         return `<td style="color:${c ? colD(c.pnl) : 'var(--tx3)'}">${c ? dineroS(c.pnl) : '—'}${c && c.vencidos ? ` <span style="color:var(--oro)" title="contratos que vencieron sin venderse">⚠${esc(c.vencidos)}</span>` : ''}${sub}</td>`; }).join('')}
       <td style="color:${colD(d.total)};font-weight:700">${dineroS(d.total)}<br><small class="fresco" style="font-weight:500">${pctD(d.pct)}</small></td>
       <td style="color:${colD(d.acumulado)}">${dineroS(d.acumulado)}</td></tr>`).join('')}
@@ -12907,8 +12907,8 @@ function seccionDiaADia(dias, brokers, diasSel, partir) {
 // de moomoo del período salieron de un emparejamiento POR CUENTA con su tipo (por_cuenta + cuenta_tipo) y operaron las DOS
 // cuentas, bajo la cifra de moomoo van en pequeño «ef» (efectivo) y «mg» (margen), para cotejar con cada cuenta de la app de
 // moomoo. Con alguno sin eso (emparejado junto, antes del relleno del worker), nada: nunca un desglose que no sea el real.
-// Va DEBAJO de la celda y no en columnas aparte (juez de la columna: a 375 px una columna más sacaba «Acum.» de la pantalla).
-// PURA.
+// Va DEBAJO de la celda y no en columnas aparte (juez de la columna: a 375 px una columna más sacaba «Acum.» de la pantalla),
+// con CENTAVOS (redondeadas a dólares, «ef» y «mg» podían no sumar la cifra de arriba; y moomoo los enseña). PURA.
 function partirMoomooDiaADia(cerradas, multi) {
   if (!multi) return false;
   const mm = (Array.isArray(cerradas) ? cerradas : []).filter(c => c && c.broker === 'moomoo');

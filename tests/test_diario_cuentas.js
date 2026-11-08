@@ -413,7 +413,7 @@ if (D71) {
 // ef + mg = moomoo al centavo.
 {
   const V = construir(['diaADia', 'partirMoomooDiaADia', 'seccionDiaADia', 'fechaCorta'],
-    {}, { consts: ['esc', 'colD', 'pctD', 'dineroS', 'BROKER_CORTO', 'MESES_ES_C'].filter(n => C.existeConst(n)) });
+    {}, { consts: ['esc', 'colD', 'pctD', 'dineroS', 'dineroD', 'BROKER_CORTO', 'MESES_ES_C'].filter(n => C.existeConst(n)) });
   const t = (broker, fecha, pnl, tipo, extra) => ({ broker, fecha_ny: fecha, pnl, costo: 100, contratos: 1, cuenta_tipo: tipo || null,
     cuenta: tipo ? (tipo === 'CASH' ? EF : MG) : null, por_cuenta: broker === 'moomoo' && !!tipo, ...(extra || {}) });
   // el viernes 6-nov de juguete: margen gana, efectivo pierde un vencimiento, Schwab otro
@@ -443,8 +443,12 @@ if (D71) {
   }
   const h = V.seccionDiaADia(dias, ['schwab', 'moomoo'], [], true);
   assert(/<th>Schwab<\/th><th>moomoo<\/th><th>Total<\/th>/.test(h), 'seccionDiaADia: las mismas columnas de siempre (ninguna de más: el ancho del teléfono)', h.slice(0, 260));
-  assert(/<small style="color:var\(--rojo\);font-weight:500">ef -\$110<\/small><br><small style="color:var\(--verde\);font-weight:500">mg \+\$211<\/small>/.test(h),
-    'seccionDiaADia: bajo la cifra de moomoo, «ef» y «mg» en pequeño con su color');
+  assert(/<small style="color:var\(--rojo\);font-weight:500">ef -\$110\.09<\/small><br><small style="color:var\(--verde\);font-weight:500">mg \+\$211\.30<\/small>/.test(h),
+    'seccionDiaADia: bajo la cifra de moomoo, «ef» y «mg» en pequeño, con su color y CON CENTAVOS (redondeados a dólares podían no sumar)');
+  {
+    const hm = V.seccionDiaADia(V.diaADia([t('moomoo', '2026-11-06', 100.5, 'CASH'), t('moomoo', '2026-11-06', 100.5, 'MARGIN')], null, null, []), ['moomoo'], [], true);
+    assert(hm.includes('ef +$100.50') && hm.includes('mg +$100.50'), 'seccionDiaADia: ef = mg = +$100.50 se leen con centavos (juez: «+$101 + +$101 ≠ +$201»)');
+  }
   assert(h.includes('ANTES de comisiones') && h.includes('desde el cierre de ayer'), 'seccionDiaADia: la nota explica en qué difiere del Today\'s P/L de moomoo');
   const h1 = V.seccionDiaADia(dias, ['schwab', 'moomoo'], [], false);
   assert(!/>ef |>mg /.test(h1) && !h1.includes('ANTES de comisiones'), 'seccionDiaADia: sin desglose (una cuenta o emparejado junto), sin «ef»/«mg» ni nota');
