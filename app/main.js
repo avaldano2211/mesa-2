@@ -5974,6 +5974,11 @@ function aportePeriodoCuentas(op, desde) {
 // lote abierto en la cuenta de EFECTIVO no deja «sin quedar plana» una operación de la de MARGEN. Un lote sin cuenta
 // conocida se sigue mirando (puede ser de esa cuenta: como en la v71), y un grupo con alguna fila sin `raw.cuenta` mira
 // todos los lotes de su contrato, como siempre.
+// v72 rev (juez de dinero: «un grupo de EFECTIVO con un lote aún abierto se da por plano») · solo se filtra por cuenta si
+// TODOS los lotes de ese contrato salieron de un emparejamiento POR CUENTA (`por_cuenta` de emparejarFillsFIFO). Si el
+// Diario lo emparejó JUNTO, la cuenta de un lote es la de su compra y no la de quien lo conserva (EF compra 2 sin cuenta,
+// MG compra 1, EF vende 1 y MG vende 1: FIFO junto deja «abierto» el lote de MG y el de EF parecía plano): ahí se miran
+// todos los lotes del contrato, como en la v71 (nunca peor).
 function marcarLotesAbiertosCuentas(ops, abiertos) {
   if (!Array.isArray(ops) || !Array.isArray(abiertos) || !abiertos.length) return ops;
   const ms = (s) => { const t = Date.parse(s || ''); return Number.isFinite(t) ? t : null; };
@@ -5990,7 +5995,7 @@ function marcarLotesAbiertosCuentas(ops, abiertos) {
     const todos = k ? lotes.get((op.broker || '') + '|' + k) : null;
     if (!todos) return op;
     const ctas = op.broker === 'moomoo' ? op._partes_filas.map(t => (t && t.raw && typeof t.raw === 'object' && t.raw.cuenta != null && String(t.raw.cuenta).trim()) || null) : [];
-    const deCuenta = ctas.length && ctas.every(Boolean) ? new Set(ctas) : null;
+    const deCuenta = ctas.length && ctas.every(Boolean) && todos.every(a => a.por_cuenta === true) ? new Set(ctas) : null;
     const ls = deCuenta ? todos.filter(a => !a.cuenta || deCuenta.has(a.cuenta)) : todos;
     const sinHora = sinHoraIso(op.cerrada_at), cierre = ms(op.cerrada_at), diaC = diaOpNY(op.cerrada_at);
     const antes = ls.some(a => sinHora ? (diaOpNY(a.entrada_at) || '9999-99-99') <= diaC
@@ -11127,12 +11132,15 @@ function calcDatosDeItem(it) {
   if (!it || !it.symbol) return null;
   return { contrato: calcContrato(it), lotes: [calcLote(it.contratos, it.prima_fill)], origen: 'costo medio de ' + (BROKER_NOMBRE[it.broker] || it.broker || 'tu bróker') };
 }
-// v72 · La clave de «Calcular limit» de un lote abierto del Diario: `bróker|contrato`, y en moomoo, cuando el lote sabe su
-// cuenta (cuentaFill de su compra), `moomoo|cuenta|contrato`: la calculadora nunca mezcla compras de las dos cuentas (cada
-// una se vende en la suya). Un lote de moomoo sin cuenta conocida va con los demás sin cuenta, como en la v71. PURA.
+// v72 · La clave de «Calcular limit» de un lote abierto del Diario: `bróker|contrato`, y en moomoo, cuando su contrato se
+// emparejó POR CUENTA (`por_cuenta` de emparejarFillsFIFO: la misma cola que el Diario), `moomoo|cuenta|contrato`: la
+// calculadora nunca mezcla compras de las dos cuentas (cada una se vende en la suya). v72 rev (juez de dinero): un contrato
+// emparejado JUNTO (alguna fila de moomoo sin cuenta: antes del relleno, sin la sql 0024, CUENTAS_FILLS=0) va entero por
+// `bróker|contrato` aunque el lote sepa la cuenta de su compra, como el Diario y la v71: con la cuenta de la compra, una
+// posición de UNA cuenta (2 a 1.00 sin cuenta + 2 a 3.00 con ella) se partía en dos enlaces de 2 contratos cada uno. PURA.
 function claveAbiertoCalc(a) {
   if (!a) return '';
-  return (a.broker === 'moomoo' && a.cuenta) ? `moomoo|${a.cuenta}|${a.contrato}` : `${a.broker}|${a.contrato}`;
+  return (a.broker === 'moomoo' && a.cuenta && a.por_cuenta === true) ? `moomoo|${a.cuenta}|${a.contrato}` : `${a.broker}|${a.contrato}`;
 }
 // Los lotes que quedan ABIERTOS de un contrato según el libro de fills (Diario: FIFO, una fila por compra viva). PURA.
 // v72: `clave` es la de claveAbiertoCalc (en moomoo, con la cuenta).
@@ -12375,6 +12383,11 @@ function viajeDe(v) {
 // se empareja junto, como en la v71: nunca peor. Tramos, viajes, abiertos y huérfanas llevan `cuenta` y `cuenta_tipo`
 // (null si no se sabe; en los demás brókeres, siempre null). Todo lo demás (comisiones por acumulado, vencimientos, orden)
 // es idéntico: el día a día sigue siendo una columna por bróker, la suma de sus cuentas.
+// v72 rev (juez de dinero: «Calcular limit parte en dos la posición de UNA cuenta» y «Cuentas da por plano un grupo de
+// EFECTIVO con un lote abierto») · cada abierto dice además `por_cuenta`: true solo si su contrato se emparejó POR CUENTA
+// (su cola fue `moomoo|cuenta|contrato`). En un contrato emparejado JUNTO, la `cuenta` de un abierto es la de SU compra (sirve
+// para el rótulo), pero no dice qué cuenta conserva el lote: FIFO junto pudo cerrar con la venta de una cuenta el lote de la
+// otra. Ahí la calculadora (claveAbiertoCalc) y Cuentas (marcarLotesAbiertosCuentas) van por `bróker|contrato`, como la v71.
 function emparejarFillsFIFO(fills, hoy) {
   const hoyY = String(hoy || hoyNY()).slice(0, 10);
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -12457,7 +12470,8 @@ function emparejarFillsFIFO(fills, hoy) {
       abiertosLista.push({ broker: ap.f.broker, symbol: ap.f.symbol, direccion: ap.f.direccion, strike: ap.f.strike, expiracion: ap.f.expiracion, contrato: ap.f._c,
         contratos: r4(ap.qty), prima: ap.precio, costo: r2(ap.precio * ap.qty * 100), comision: r2(ap.com), entrada_at: ap.at, fecha_ny: ap.fecha,
         dias_abiertos: diasEntre(ap.fecha, hoyY), vence_en: diasEntre(hoyY, exp), clave_ext: ap.id,
-        cuenta: ap.f._cta || null, cuenta_tipo: ap.f._cta ? ap.f._tipo : null });   // v72: la cuenta de ESA compra (cuentaFill)
+        cuenta: ap.f._cta || null, cuenta_tipo: ap.f._cta ? ap.f._tipo : null,       // v72: la cuenta de ESA compra (cuentaFill)
+        por_cuenta: ap.f.broker === 'moomoo' && !!ap.f._cta && porCuenta[ap.f._c] === true });   // v72 rev: ¿su cola fue la de SU cuenta (claveCola)?
     }
     if (vencidoAlgo && colaVacia(k)) cerrarViaje(k);    // todo el lote venció: el viaje cierra el día de la expiración
   }

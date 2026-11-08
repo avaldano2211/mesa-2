@@ -12,6 +12,8 @@
         con una columna por bróker (la suma de sus cuentas).
      4. «Calcular limit» de un abierto: la clave lleva la cuenta (claveAbiertoCalc); nunca mezcla compras de dos cuentas.
      5. marcarLotesAbiertosCuentas: un grupo de moomoo con raw.cuenta mira solo los lotes de esa cuenta.
+     4b. (v72 rev, juez de dinero) un contrato emparejado JUNTO (alguna fila sin cuenta): cada abierto dice `por_cuenta`
+        falso, y la calculadora y Cuentas van por `bróker|contrato`, como la v71 (nunca peor).
      6. comprasLibroHoy (good faith): sin las compras de MARGEN (la regla solo existe en la de EFECTIVO).
      7. compararAbiertos con dos lotes del mismo contrato en dos cuentas: cuadra contra el total del bróker.
      8. Versión v72 (index.html ?v=72, sw.js mesa2-v61).
@@ -78,7 +80,7 @@ const FL = (broker, lado, contratos, precio, at, op) => {
   }
   return f;
 };
-const sinCuenta = (o) => { const c = { ...o }; delete c.cuenta; delete c.cuenta_tipo; if (Array.isArray(c.tramos)) c.tramos = c.tramos.map(sinCuenta); return c; };
+const sinCuenta = (o) => { const c = { ...o }; delete c.cuenta; delete c.cuenta_tipo; delete c.por_cuenta; if (Array.isArray(c.tramos)) c.tramos = c.tramos.map(sinCuenta); return c; };
 const limpio = (R) => ({ cerradas: R.cerradas.map(sinCuenta), viajes: R.viajes.map(sinCuenta), abiertos: R.abiertos.map(sinCuenta), huerfanas: R.huerfanas.map(sinCuenta) });
 const quitarCuentas = (fs0) => fs0.map(f => { const c = { ...f, crudo: { ...f.crudo } }; delete c.cuenta; delete c.cuenta_tipo; delete c.crudo.cuenta; return c; });
 
@@ -234,7 +236,7 @@ if (D71) {
 
 // ════════════════ 4. marcarLotesAbiertosCuentas (Cuentas): cada grupo de moomoo mira SU cuenta ════════════════
 {
-  const lotes = [{ broker: 'moomoo', contrato: 'SPY|CALL|600|2026-11-20', entrada_at: '2026-11-09T15:00:00Z', cuenta: EF, cuenta_tipo: 'CASH' }];
+  const lotes = [{ broker: 'moomoo', contrato: 'SPY|CALL|600|2026-11-20', entrada_at: '2026-11-09T15:00:00Z', cuenta: EF, cuenta_tipo: 'CASH', por_cuenta: true }];
   const grupo = (raws) => ({ broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 600, expiracion: '2026-11-20', estado: 'cerrada', cerrada_at: '2026-11-09T16:00:00Z',
     _partes_filas: raws.map((r, i) => ({ broker: 'moomoo', clave_ext: 'x' + i, cerrada_at: '2026-11-09T16:00:00Z', raw: r })) });
   const M = (op, ls) => !!D.marcarLotesAbiertosCuentas([op], ls || lotes)[0]._lote_abierto;
@@ -246,6 +248,54 @@ if (D71) {
   igual(D.marcarLotesAbiertosCuentas([{ ...grupo([{ cuenta: MG }]), broker: 'etrade', _partes_filas: [{ broker: 'etrade', raw: { cuenta: MG } }] }], [{ ...lotes[0], broker: 'etrade' }])[0]._lote_abierto, true,
     'E*TRADE: raw.cuenta no se mira (solo moomoo empareja por cuenta)');
   if (D71) igual(!!D71.marcarLotesAbiertosCuentas([grupo([{ cuenta: MG }])], lotes)[0]._lote_abierto, true, 'v71 (lo que se arregla): el lote de EFECTIVO dejaba «abierta» la operación de MARGEN');
+  igual([M(grupo([{ cuenta: MG }]), [{ ...lotes[0], por_cuenta: false }]), M(grupo([{ cuenta: MG }]), [{ ...lotes[0], por_cuenta: undefined }]),
+    M(grupo([{ cuenta: MG }]), [lotes[0], { ...lotes[0], cuenta: MG, cuenta_tipo: 'MARGIN', por_cuenta: false }])], [true, true, true],
+    '(v72 rev) un lote de un contrato emparejado JUNTO (por_cuenta falso o ausente) no filtra por cuenta: todos los lotes, como la v71');
+}
+
+// ════════════════ 4b. (v72 rev, juez de dinero) un contrato emparejado JUNTO: la calculadora y Cuentas, como la v71 ════════════════
+// Alguna fila de moomoo del contrato sin cuenta (antes del relleno, sin la 0024, CUENTAS_FILLS=0, o escrita con el roster
+// vacío): el Diario lo empareja junto, y la calculadora y Cuentas no pueden separar por la cuenta de la compra.
+{
+  // D1 · EFECTIVO ×2 a 1.00 (2-nov, fila vieja SIN cuenta) + EFECTIVO ×2 a 3.00 (9-nov, crudo.cuenta): UNA posición de 4 a 2.00
+  const fs6 = [FL('moomoo', 'compra', 2, 1.00, '2026-11-02T15:00:00Z', { clave: 'viejo' }), FL('moomoo', 'compra', 2, 3.00, '2026-11-09T15:00:00Z', { clave: 'nuevo', cta: [EF], crudo: true })];
+  const A = D.emparejarFillsFIFO(fs6, HOY).abiertos;
+  igual(A.map(a => [a.clave_ext, a.cuenta, a.por_cuenta]), [['viejo', null, false], ['nuevo', EF, false]],
+    'contrato junto: cada abierto conserva la cuenta de SU compra (el rótulo) y dice por_cuenta falso');
+  igual(A.map(D.claveAbiertoCalc), ['moomoo|SPY|CALL|600|2026-11-20', 'moomoo|SPY|CALL|600|2026-11-20'], 'claveAbiertoCalc: los dos enlaces con la clave del contrato (la cola del Diario)');
+  const lotesCalc = A.map(a => D.calcDatosDeAbiertos(D.claveAbiertoCalc(a), A).lotes);
+  igual(lotesCalc, [[{ n: '2', p: '1' }, { n: '2', p: '3' }], [{ n: '2', p: '1' }, { n: '2', p: '3' }]], 'los dos enlaces abren los 4 contratos (2 a 1.00 + 2 a 3.00): la posición real, no la mitad');
+  igual(D.calcDatosDeAbiertos('moomoo|' + EF + '|SPY|CALL|600|2026-11-20', A), null, 'y no existe una clave por cuenta para un contrato junto');
+  if (D71) {
+    const A71 = D71.emparejarFillsFIFO(fs6, HOY).abiertos;
+    igual(lotesCalc, A71.map(a => D71.calcDatosDeAbiertos(`${a.broker}|${a.contrato}`, A71).lotes), 'idéntico a la v71 (nunca peor)');
+  }
+  // con las DOS filas con cuenta (después del relleno) el contrato va por cuenta y la calculadora también
+  const B = D.emparejarFillsFIFO([fs6[0], { ...fs6[1] }].map((f, i) => i === 0 ? { ...f, cuenta: EF, cuenta_tipo: 'CASH' } : f), HOY).abiertos;
+  igual(B.map(a => [a.por_cuenta, D.claveAbiertoCalc(a)]), [[true, 'moomoo|' + EF + '|SPY|CALL|600|2026-11-20'], [true, 'moomoo|' + EF + '|SPY|CALL|600|2026-11-20']],
+    'tras el relleno: por_cuenta verdadero y la clave con la cuenta');
+  igual(D.calcDatosDeAbiertos(D.claveAbiertoCalc(B[0]), B).lotes, [{ n: '2', p: '1' }, { n: '2', p: '3' }], 'y la calculadora sigue con los 4 contratos de esa cuenta');
+  // otros brókeres: por_cuenta siempre falso
+  igual(D.emparejarFillsFIFO([FL('etrade', 'compra', 1, 1, '2026-11-09T15:00:00Z', { clave: 'e' })], HOY).abiertos.map(a => a.por_cuenta), [false], 'E*TRADE: por_cuenta falso');
+}
+{
+  // D2 · EF compra ×2 (2-nov, sin cuenta), MG compra ×1 (9-nov), EF vende 1 (15:10), MG vende 1 (15:20). Realidad: EF con 1
+  // abierto, MG plana. El Diario (junto) deja «abierto» el lote de MG: el grupo de EFECTIVO NO puede darse por plano.
+  const fs7 = [FL('moomoo', 'compra', 2, 1.00, '2026-11-02T15:00:00Z', { clave: 'ef-c' }), FL('moomoo', 'compra', 1, 1.00, '2026-11-09T15:00:00Z', { clave: 'mg-c', cta: [MG], crudo: true }),
+    FL('moomoo', 'venta', 1, 1.50, '2026-11-09T15:10:00Z', { clave: 'ef-v', cta: [EF], crudo: true }), FL('moomoo', 'venta', 1, 1.50, '2026-11-09T15:20:00Z', { clave: 'mg-v', cta: [MG], crudo: true })];
+  const A = D.emparejarFillsFIFO(fs7, HOY).abiertos;
+  igual(A.map(a => [a.clave_ext, a.contratos, a.cuenta, a.por_cuenta]), [['mg-c', 1, MG, false]], 'el Diario empareja junto (como la v71): queda «abierto» el lote de MG, con por_cuenta falso');
+  const grupo = (cta, cierre, id) => ({ broker: 'moomoo', symbol: 'SPY', direccion: 'CALL', strike: 600, expiracion: '2026-11-20', estado: 'cerrada', cerrada_at: cierre,
+    _partes_filas: [{ broker: 'moomoo', clave_ext: id, cerrada_at: cierre, raw: { cuenta: cta } }] });
+  const gEF = grupo(EF, '2026-11-09T15:10:00Z', 'ef'), gMG = grupo(MG, '2026-11-09T15:20:00Z', 'mg');
+  const m = D.marcarLotesAbiertosCuentas([gEF, gMG], A).map(o => !!o._lote_abierto);
+  igual(m[0], true, 'Cuentas: el grupo de EFECTIVO (que SÍ tiene un lote abierto) no se da por plano');
+  if (D71) igual(m, D71.marcarLotesAbiertosCuentas([gEF, gMG], D71.emparejarFillsFIFO(fs7, HOY).abiertos).map(o => !!o._lote_abierto), 'idéntico a la v71 en los dos grupos (nunca peor)');
+  // el mismo libro con TODAS las filas con cuenta: por cuenta, y cada grupo mira lo suyo (EF abierto, MG plana)
+  const fs8 = fs7.map((f, i) => i === 0 ? { ...f, cuenta: EF, cuenta_tipo: 'CASH' } : f);
+  const A8 = D.emparejarFillsFIFO(fs8, HOY).abiertos;
+  igual(A8.map(a => [a.clave_ext, a.contratos, a.cuenta, a.por_cuenta]), [['ef-c', 1, EF, true]], 'tras el relleno: por cuenta, sigue abierto 1 de EFECTIVO');
+  igual(D.marcarLotesAbiertosCuentas([gEF, gMG], A8).map(o => !!o._lote_abierto), [true, false], 'y Cuentas acierta en las dos: EFECTIVO abierto, MARGEN plana');
 }
 
 // ════════════════ 5. good faith: comprasLibroHoy sin las compras de MARGEN ════════════════
