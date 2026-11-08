@@ -9,7 +9,7 @@
         `cuenta` y `cuenta_tipo`. Lo demás idéntico (comisiones por acumulado, vencimientos, orden).
      3. Pantalla: con MÁS de una cuenta de moomoo en el libro, operaciones, abiertos y ejecuciones de moomoo dicen
         «efectivo» / «margen» (sin tipo, la máscara); con una sola, el HTML es el de la v71 byte a byte. El día a día sigue
-        con una columna por bróker (la suma de sus cuentas).
+        con una columna por bróker (la suma de sus cuentas); con las dos cuentas, «ef»/«mg» en pequeño bajo moomoo (sección 10).
      4. «Calcular limit» de un abierto: la clave lleva la cuenta (claveAbiertoCalc); nunca mezcla compras de dos cuentas.
      5. marcarLotesAbiertosCuentas: un grupo de moomoo con raw.cuenta mira solo los lotes de esa cuenta.
      4b. (v72 rev, juez de dinero) un contrato emparejado JUNTO (alguna fila sin cuenta): cada abierto dice `por_cuenta`
@@ -358,8 +358,9 @@ if (D71) {
   assert(/const multiCta = cuentasMoomooLibro\(fills\)\.length > 1;/.test(vd), 'vistaDiario: multiCta = más de una cuenta de moomoo en el LIBRO (no solo en el período)');
   assert(/seccionOperacionesDiario\(viajesSel, null, multiCta\)/.test(vd) && /seccionAbiertosDiario\(F\.abiertos, cmp, F\.huerfanas, multiCta\)/.test(vd)
     && /seccionEjecucionesDiario\(fillsSel, _diario\.brokerFiltro, _diario\.masEjec, Date\.now\(\), multiCta\)/.test(vd), 'vistaDiario pasa multiCta a operaciones, abiertos y ejecuciones');
-  assert(/const brokersDias = columnasDiaADia\(cerradasSel, cuentasMoomooLibro\(fills\)\.length > 1\);/.test(vd),
-    'el día a día: una columna por bróker y, con dos cuentas de moomoo en el LIBRO, una por cuenta (columnasDiaADia, sección 10)');
+  assert(/const brokersDias = \['etrade', 'schwab', 'tasty', 'moomoo'\]\.filter/.test(vd), 'el día a día sigue con una columna por bróker');
+  assert(/const partirDias = partirMoomooDiaADia\(cerradasSel, cuentasMoomooLibro\(fills\)\.length > 1\);/.test(vd)
+    && /seccionDiaADia\(dias, brokersDias, [^\n]*, partirDias\)/.test(vd), 'vistaDiario: el desglose «ef»/«mg» con las cuentas del LIBRO (partirMoomooDiaADia, sección 10)');
 }
 
 // ════════════════ 8. «Historial de cada cuenta»: hasta cuándo hay datos de una cuenta sin conexión ════════════════
@@ -405,24 +406,28 @@ if (D71) {
     'nada de esto escribe en la base: la app solo LEE lo que escribe el worker');
 }
 
-// ════════════════ 10. DÍA A DÍA con una columna por cuenta de moomoo (las capturas de Andrés del 8-nov) ════════════════
-// moomoo enseña el «Today's P/L» de CADA cuenta (antes de comisiones); el Diario sumaba las dos en una columna. Con más de una
-// cuenta en el libro y TODOS los tramos de moomoo del período con su tipo, la columna se parte en efectivo y margen;
-// por_broker no cambia (otras pantallas lo usan) y la suma de las dos columnas es la de moomoo al centavo.
+// ════════════════ 10. DÍA A DÍA con el desglose por cuenta de moomoo (las capturas de Andrés del 8-nov) ════════════════
+// moomoo enseña el «Today's P/L» de CADA cuenta (antes de comisiones); el Diario sumaba las dos en una cifra. Con más de una
+// cuenta en el libro y TODOS los tramos de moomoo del período emparejados POR CUENTA con su tipo, bajo la cifra de moomoo
+// van «ef» y «mg» en pequeño (no columnas aparte: a 375 px sacaban «Acum.» de la pantalla). por_broker no cambia y
+// ef + mg = moomoo al centavo.
 {
-  const V = construir(['diaADia', 'columnasDiaADia', 'seccionDiaADia', 'fechaCorta'],
+  const V = construir(['diaADia', 'partirMoomooDiaADia', 'seccionDiaADia', 'fechaCorta'],
     {}, { consts: ['esc', 'colD', 'pctD', 'dineroS', 'BROKER_CORTO', 'MESES_ES_C'].filter(n => C.existeConst(n)) });
-  const t = (broker, fecha, pnl, tipo, extra) => ({ broker, fecha_ny: fecha, pnl, costo: 100, contratos: 1, cuenta_tipo: tipo || null, ...(extra || {}) });
+  const t = (broker, fecha, pnl, tipo, extra) => ({ broker, fecha_ny: fecha, pnl, costo: 100, contratos: 1, cuenta_tipo: tipo || null,
+    cuenta: tipo ? (tipo === 'CASH' ? EF : MG) : null, por_cuenta: broker === 'moomoo' && !!tipo, ...(extra || {}) });
   // el viernes 6-nov de juguete: margen gana, efectivo pierde un vencimiento, Schwab otro
   const tramos = [t('moomoo', '2026-11-06', 211.3, 'MARGIN'), t('moomoo', '2026-11-06', -110.09, 'CASH', { vencido: true, contratos: 25 }),
     t('schwab', '2026-11-06', -10, null, { vencido: true, contratos: 5 }), t('moomoo', '2026-11-05', 92.2, 'CASH')];
   const viajes = tramos.map(x => ({ ...x }));
-  igual(V.columnasDiaADia(tramos, true), ['schwab', 'moomoo:CASH', 'moomoo:MARGIN'], 'columnasDiaADia: con dos cuentas y todos los tramos de moomoo con tipo, moomoo se parte en efectivo y margen (en su sitio)');
-  igual(V.columnasDiaADia(tramos, false), ['schwab', 'moomoo'], 'columnasDiaADia: con una sola cuenta en el libro, una columna como siempre');
-  igual(V.columnasDiaADia(tramos.concat([t('moomoo', '2026-11-04', 5, null)]), true), ['schwab', 'moomoo'],
-    'columnasDiaADia: con UN tramo de moomoo sin tipo (emparejado junto, antes del relleno) no se parte: nunca una columna que no sume');
-  igual(V.columnasDiaADia(tramos.filter(x => x.cuenta_tipo !== 'MARGIN'), true), ['schwab', 'moomoo'], 'columnasDiaADia: si en el período solo operó una cuenta, una columna');
-  igual([V.columnasDiaADia([], true), V.columnasDiaADia(null, true)], [[], []], 'columnasDiaADia: sin tramos, sin columnas');
+  igual([V.partirMoomooDiaADia(tramos, true), V.partirMoomooDiaADia(tramos, false)], [true, false],
+    'partirMoomooDiaADia: con dos cuentas en el libro y todo emparejado por cuenta, sí; con una sola cuenta en el libro, no');
+  igual(V.partirMoomooDiaADia(tramos.concat([t('moomoo', '2026-11-04', 5, null)]), true), false,
+    'partirMoomooDiaADia: con UN tramo de moomoo sin tipo no se desglosa: nunca un reparto que no sume');
+  igual(V.partirMoomooDiaADia(tramos.concat([t('moomoo', '2026-11-04', 5, 'CASH', { por_cuenta: false })]), true), false,
+    'partirMoomooDiaADia: con UN tramo con tipo pero de un contrato emparejado JUNTO (por_cuenta falso), no se desglosa (juez de la columna)');
+  igual([V.partirMoomooDiaADia(tramos.filter(x => x.cuenta_tipo !== 'MARGIN'), true), V.partirMoomooDiaADia([], true), V.partirMoomooDiaADia(null, true)],
+    [false, false, false], 'partirMoomooDiaADia: si en el período operó una sola cuenta, o no hay tramos, no');
   const dias = V.diaADia(tramos, null, null, viajes);
   const v6 = dias.find(d => d.fecha_ny === '2026-11-06');
   igual([v6.por_cuenta['moomoo:MARGIN'].pnl, v6.por_cuenta['moomoo:CASH'].pnl, v6.por_broker.moomoo.pnl, v6.total], [211.3, -110.09, 101.21, 91.21],
@@ -430,17 +435,28 @@ if (D71) {
   cerca(v6.por_cuenta['moomoo:MARGIN'].pnl + v6.por_cuenta['moomoo:CASH'].pnl, v6.por_broker.moomoo.pnl, 'diaADia: efectivo + margen = moomoo al centavo', 0.005);
   igual([v6.por_cuenta['moomoo:CASH'].vencidos, v6.por_cuenta['moomoo:MARGIN'].vencidos, v6.por_broker.moomoo.vencidos], [25, 0, 25], 'diaADia: los vencidos van a su cuenta');
   igual(Object.keys(v6.por_cuenta).sort(), ['moomoo:CASH', 'moomoo:MARGIN'], 'diaADia: Schwab y lo que no tiene tipo no entran en por_cuenta');
+  const junto = V.diaADia([t('moomoo', '2026-11-04', -250, 'MARGIN', { por_cuenta: false })], null, null, []);
+  igual(junto[0].por_cuenta, {}, 'diaADia: un tramo de un contrato emparejado JUNTO no entra en el desglose aunque traiga tipo');
   if (D71) {
-    const viejo = D71.diaADia(tramos, null, null, viajes).map(d => { const c = { ...d }; return c; });
-    igual(dias.map(d => { const c = { ...d }; delete c.por_cuenta; return c; }), viejo, 'diaADia: sin por_cuenta, idéntico a la v71 (mismo por_broker, totales, ops y acumulado)');
+    igual(dias.map(d => { const c = { ...d }; delete c.por_cuenta; return c; }), D71.diaADia(tramos, null, null, viajes),
+      'diaADia: sin por_cuenta, idéntico a la v71 (mismo por_broker, totales, ops y acumulado)');
   }
-  if (V.seccionDiaADia) {
-    const h = V.seccionDiaADia(dias, V.columnasDiaADia(tramos, true), []);
-    assert(/<th>moomoo<br><small>efectivo<\/small><\/th><th>moomoo<br><small>margen<\/small><\/th>/.test(h), 'seccionDiaADia: dos cabeceras, «moomoo efectivo» y «moomoo margen»', h.slice(0, 300));
-    assert(h.includes('NETO de comisiones'), 'seccionDiaADia: la nota dice que es neto de comisiones, a diferencia del Today\'s P/L de moomoo');
-    const h1 = V.seccionDiaADia(dias, ['schwab', 'moomoo'], []);
-    assert(!h1.includes('efectivo') && !h1.includes('NETO de comisiones'), 'seccionDiaADia: con una columna de moomoo, sin rótulos ni nota de cuentas');
-  }
+  const h = V.seccionDiaADia(dias, ['schwab', 'moomoo'], [], true);
+  assert(/<th>Schwab<\/th><th>moomoo<\/th><th>Total<\/th>/.test(h), 'seccionDiaADia: las mismas columnas de siempre (ninguna de más: el ancho del teléfono)', h.slice(0, 260));
+  assert(/<small style="color:var\(--rojo\);font-weight:500">ef -\$110<\/small><br><small style="color:var\(--verde\);font-weight:500">mg \+\$211<\/small>/.test(h),
+    'seccionDiaADia: bajo la cifra de moomoo, «ef» y «mg» en pequeño con su color');
+  assert(h.includes('ANTES de comisiones') && h.includes('desde el cierre de ayer'), 'seccionDiaADia: la nota explica en qué difiere del Today\'s P/L de moomoo');
+  const h1 = V.seccionDiaADia(dias, ['schwab', 'moomoo'], [], false);
+  assert(!/>ef |>mg /.test(h1) && !h1.includes('ANTES de comisiones'), 'seccionDiaADia: sin desglose (una cuenta o emparejado junto), sin «ef»/«mg» ni nota');
+  if (D71 && D71.seccionDiaADia) igual(h1, D71.seccionDiaADia(D71.diaADia(tramos, null, null, viajes), ['schwab', 'moomoo'], []), 'seccionDiaADia sin desglose: el HTML de la v71 byte a byte');
+  // los tramos del contable dicen si su contrato se emparejó por cuenta
+  const L = [FL('moomoo', 'compra', 1, 1, '2026-11-02T15:00:00Z', { cta: [EF, 'CASH'] }), FL('moomoo', 'venta', 1, 2, '2026-11-02T16:00:00Z', { cta: [EF, 'CASH'] }),
+    FL('moomoo', 'compra', 1, 1, '2026-11-02T15:00:00Z', { cta: [MG, 'MARGIN'], strike: 601 }), FL('moomoo', 'venta', 1, 2, '2026-11-02T16:00:00Z', { cta: [MG, 'MARGIN'], strike: 601 }),
+    FL('moomoo', 'compra', 1, 1, '2026-11-02T15:00:00Z', { strike: 602 }), FL('moomoo', 'compra', 1, 1, '2026-11-02T15:10:00Z', { cta: [EF, 'CASH'], strike: 602 }),
+    FL('moomoo', 'venta', 2, 2, '2026-11-02T16:00:00Z', { cta: [EF, 'CASH'], strike: 602 })];
+  const R = D.emparejarFillsFIFO(L, HOY);
+  igual(R.cerradas.map(c => [c.strike, c.por_cuenta]).sort(), [[600, true], [601, true], [602, false], [602, false]],
+    'emparejarFillsFIFO: por_cuenta en cada tramo (verdadero solo si su contrato se emparejó por cuenta)');
+  igual(R.viajes.map(v => [v.strike, v.por_cuenta]).sort(), [[600, true], [601, true], [602, false]], 'emparejarFillsFIFO: y en cada viaje');
 }
-
 C.resumen();
