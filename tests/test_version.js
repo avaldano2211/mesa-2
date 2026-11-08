@@ -498,7 +498,7 @@ function armarBusqueda(E) {
       caches: { open: () => Promise.resolve({ put: (req) => { guardadas.push(req.url); }, addAll: () => Promise.resolve() }), match: () => Promise.resolve(null), keys: () => Promise.resolve([]), delete: () => Promise.resolve(true) } };
     vm.createContext(ctx);
     vm.runInContext(swTxt, ctx, { filename: 'sw.js' });
-    igual(/const VER = '(mesa2-v\d+)'/.exec(swTxt)[1], 'mesa2-v60', '(v71) sw.js VER mesa2-v60 (la caché vieja se borra al activarse)');
+    igual(/const VER = '(mesa2-v\d+)'/.exec(swTxt)[1], 'mesa2-v61', '(v72) sw.js VER mesa2-v61 (la caché vieja se borra al activarse)');
     const pedir = async (req) => { let resp = null; pedidas.length = 0; oyentes.fetch({ request: req, respondWith: (p) => { resp = p; } }); if (resp) await resp; await C.respirar(); return resp; };
     const B = 'https://avaldano2211.github.io/mesa-2/';
     guardadas.length = 0;

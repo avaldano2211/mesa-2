@@ -186,7 +186,7 @@ function sbGrabador(respuestas) {
   // ════════════════ 2. EL CONTABLE: emparejarFillsFIFO ════════════════
   const claveContrato = construir(['claveContrato']).claveContrato;
   // v60: el contable lleva el spot de la acción (spotDeFill / peorFuenteSpot y FUENTES_SPOT): se prueban en test_spot.js
-  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
+  const D = construir(['emparejarFillsFIFO', 'cuentaFill', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre', 'diaADia', 'resumenPorPeriodo', 'lunesDe', 'viernesDe', 'metricasDiario',
     'periodoDiarioNormalizar', 'enPeriodoDiario', 'periodoDiarioToggle', 'periodoDiarioRapido', 'tituloPeriodoDiario', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'coberturaFills', 'compararAbiertos', 'spotDeFill', 'peorFuenteSpot', 'sinHoraIso', 'horaNY'],   // v62 rev2: «sin hora» por instante (sinHoraIso)
     { claveContrato, hoyNY, ymdNY, DIARIO_LADOS_SALIDA: constante('DIARIO_LADOS_SALIDA'), FUENTES_SPOT: constante('FUENTES_SPOT'), MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C') });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, comision) => ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: comision || 0, ejecutado_at: at, fecha_ny: ymdNY(at), origen: broker === 'tasty' ? 'worker' : 'dispositivo' });
@@ -426,7 +426,8 @@ function sbGrabador(respuestas) {
     'seccionEjecucionesDiario', 'seccionNotasDiario', 'selectorCuentas', 'textoDuracionOp', 'fechaHoraD', 'periodoDiarioNormalizar', 'lunesDe', 'viernesDe', 'nombreMesYm', 'textoSemana', 'fechaCorta', 'tituloPeriodoDiario', 'diasEntre', 'claveFill',
     'rangoPeriodoDiario', 'subtituloPeriodoDiario', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion',   // v62 rev2: fechas y duración por instante
     'vencimientoMoomoo', 'instanteVencimiento',   // v65 rev7: la venta a $0 de moomoo tras el vencimiento se rotula VENCIMIENTO
-    'estadoComisionFill', 'estadoComisionCrudo', 'detalleComisionFill', 'textoDetalleComision', 'fillSoloVencimiento', 'comisionAunPendiente', 'diasHabilesDesde'],   // v71: la comisión de moomoo (se prueba en test_comisiones_moomoo.js)
+    'estadoComisionFill', 'estadoComisionCrudo', 'detalleComisionFill', 'textoDetalleComision', 'fillSoloVencimiento', 'comisionAunPendiente', 'diasHabilesDesde',   // v71: la comisión de moomoo (se prueba en test_comisiones_moomoo.js)
+    'textoCuentaMoomoo', 'cuentaFill', 'claveAbiertoCalc', 'fechaDiaMes'],   // v72: las dos cuentas de moomoo y «hasta cuándo» (se prueban en test_diario_cuentas.js)
     { esc, usd, colUtil, BROKER_NOMBRE, hoyNY, ymdNY, fmtFechaNY, durTxt, claveContrato, filaAccionDiario: () => '',   // v60: la fila de la acción se prueba en test_spot.js
       COMISION_PENDIENTE_HABILES: constante('COMISION_PENDIENTE_HABILES'), CONCEPTOS_COMISION_CORTO: constante('CONCEPTOS_COMISION_CORTO'),
       MESES_ES: constante('MESES_ES'), MESES_ES_C: constante('MESES_ES_C'), BROKER_CORTO: constante('BROKER_CORTO'),
@@ -777,7 +778,7 @@ function sbGrabador(respuestas) {
       TICKERS: ['AAPL'], periodoDiarioSel: () => ({ modo: 'todo' }), emparejarFillsFIFO: () => ({ cerradas: [], viajes: [], abiertos: [], huerfanas: [], vencidas: [] }), enPeriodoDiario: () => true,
       diaADia: () => [], metricasDiario: () => ({ total: 0, ops: 0, aciertos: 0, comisiones: 0, vencidas: 0, dias_operados: 0 }), resumenPorPeriodo: () => [],
       comisionesDiario: () => ({ por_broker: {}, pendientes: 0, sin_dato: 0 }),   // v71
-      coberturaFills: () => [], brokersLeidos: () => [], itemsCartera: () => [], compararAbiertos: () => [], _cart: {}, resumenPeriodo: () => ({ util: 0 }), unirOperaciones: () => ({ ops: [] }), dineroD: () => '$0',
+      coberturaFills: () => [], cuentasMoomooLibro: () => [], brokersLeidos: () => [], itemsCartera: () => [], compararAbiertos: () => [], _cart: {}, resumenPeriodo: () => ({ util: 0 }), unirOperaciones: () => ({ ops: [] }), dineroD: () => '$0',
       selectorCuentas: () => '', seccionPeriodoDiario: () => '', tarjetasResumenDiario: () => '', seccionCoberturaDiario: () => '', seccionDiaADia: () => '', seccionResumenesDiario: () => '',
       seccionOperacionesDiario: () => '', seccionAbiertosDiario: () => '', seccionEjecucionesDiario: () => '', seccionNotasDiario: () => '<textarea id="nTexto"></textarea>', esc, _notas: { lista: [], editando: null, err: null },
       localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -1041,8 +1042,8 @@ function sbGrabador(respuestas) {
 
   // ════════════════ 9. LA VERSIÓN y el módulo ENTERO ════════════════
   // v54: 31184c9 (v53) ya está publicado; sin subir el número la Mesa instalada no se actualiza sola
-  assert(/config\.js\?v=71/.test(INDEX) && /app\/main\.js\?v=71/.test(INDEX), 'index.html carga config.js?v=71 y app/main.js?v=71 (v66: la Mesa se actualiza sola también en la computadora)');
-  assert(/const VER = 'mesa2-v60';/.test(SW), 'sw.js VER mesa2-v60');
+  assert(/config\.js\?v=72/.test(INDEX) && /app\/main\.js\?v=72/.test(INDEX), 'index.html carga config.js?v=72 y app/main.js?v=72 (v66: la Mesa se actualiza sola también en la computadora)');
+  assert(/const VER = 'mesa2-v61';/.test(SW), 'sw.js VER mesa2-v61');
   // v55: el CSS del Diario (envoltorio ancho solo con el Diario, rejilla de tarjetas, historial en línea/apilado por @container)
   assert(/@media \(min-width:900px\)\{#app\.ancho\{max-width:1180px\}/.test(INDEX) && /\.diario\{[^}]*container-type:inline-size/.test(INDEX) && /@container \(min-width:860px\)\{/.test(INDEX), 'v55 CSS: #app.ancho a 1180 px desde 900 px y .diario como contenedor de @container (min-width:860px)');
   assert(/\.dcards\{display:grid;grid-template-columns:1fr 1fr/.test(INDEX) && /\.dcards\{grid-template-columns:repeat\(auto-fill,minmax\(168px,1fr\)\)\}/.test(INDEX) && /\.dcard \.vl\{font-family:var\(--mono\)/.test(INDEX), 'v55 CSS: tarjetas a dos columnas en el iPhone, en filas en el Mac, número monoespaciado');
@@ -1050,7 +1051,7 @@ function sbGrabador(respuestas) {
   assert(/\.tbl-res td\.util\{font-size:14\.5px\}/.test(INDEX) && /\.tw\{overflow-x:auto/.test(INDEX), 'v55 CSS: el $ de los resúmenes en grande y las tablas se desplazan de lado dentro de su tarjeta');
   // v55: el cableado del envoltorio ancho y el orden de la vista
   const vd = extraer('vistaDiario');
-  assert(vd.indexOf('seccionPeriodoDiario(sel') < vd.indexOf('seccionCoberturaDiario(cob') && vd.indexOf('seccionCoberturaDiario(cob') < vd.indexOf('tarjetasResumenDiario(M, sel, cob, hoy)') && vd.indexOf('tarjetasResumenDiario(M, sel, cob, hoy)') < vd.indexOf('seccionResumenesDiario(meses') && vd.indexOf('seccionResumenesDiario(meses') < vd.indexOf('seccionDiaADia(dias') && vd.indexOf('seccionDiaADia(dias') < vd.indexOf('seccionOperacionesDiario(viajesSel)'),
+  assert(vd.indexOf('seccionPeriodoDiario(sel') < vd.indexOf('seccionCoberturaDiario(cob') && vd.indexOf('seccionCoberturaDiario(cob') < vd.indexOf('tarjetasResumenDiario(M, sel, cob, hoy)') && vd.indexOf('tarjetasResumenDiario(M, sel, cob, hoy)') < vd.indexOf('seccionResumenesDiario(meses') && vd.indexOf('seccionResumenesDiario(meses') < vd.indexOf('seccionDiaADia(dias') && vd.indexOf('seccionDiaADia(dias') < vd.indexOf('seccionOperacionesDiario(viajesSel'),
     'v55 vistaDiario pinta en el orden de la mesa vieja: período → historial de cada cuenta → tarjetas → resúmenes mensual y semanal → día a día → operaciones → …');
   assert(/pintarConservandoFoco\(\$\('#vista'\), `<div class="diario">\$\{h\}<\/div>`\)/.test(vd), 'v55 vistaDiario envuelve todo en <div class="diario"> (el contenedor del CSS)');
   assert(/diarioAncho\(_cuentasVista === 'diario'\)/.test(extraer('vistaCuentas')) && /diarioAncho\(_cuentasVista === 'diario'\); if \(_cuentasVista === 'diario'\) vistaDiario\(true\)/.test(FUENTE) && /if \(tab !== 'cuentas' && typeof diarioAncho === 'function'\) diarioAncho\(false\);/.test(extraer('ruta')), 'v55 el envoltorio ancho se enciende al entrar al Diario (ruta → vistaCuentas y MZ.cuentasVista) y se apaga en cualquier otra pestaña');

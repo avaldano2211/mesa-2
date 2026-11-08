@@ -29,7 +29,7 @@ const HOY = '2026-10-03';
     igual([D.distanciaStrike('CALL', 372.5, null), D.distanciaStrike('CALL', null, 370.7), D.distanciaStrike('CALL', 372.5, 0), D.distanciaStrike('CALL', 'x', 370.7)], [null, null, null, null], 'sin spot, sin strike, spot 0 o basura → null (no se inventa una distancia)');
   }
   // ════════════════ 2. el contable: el spot viaja del fill al tramo y al viaje (ponderado, fuente PEOR) ════════════════
-  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY'],
+  const D = construir(['emparejarFillsFIFO', 'cuentaFill', 'instanteVencimiento', 'vencimientoMoomoo', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY'],
     { hoyNY: () => HOY, ymdNY: C.ymdNY }, { consts: ['DIARIO_LADOS_SALIDA', 'FUENTES_SPOT'] });
   const F = (broker, clave, symbol, direccion, strike, expiracion, lado, contratos, precio, at, spot, fuente) =>
     ({ broker, clave_ext: clave, symbol, direccion, strike, expiracion, lado, contratos, precio, comision: 0, ejecutado_at: at, fecha_ny: C.ymdNY(at), spot, spot_fuente: fuente });
@@ -72,7 +72,7 @@ const HOY = '2026-10-03';
   }
   // ════════════════ 3. la tarjeta de la operación cerrada: la tercera fila en sus variantes ════════════════
   {
-    const V = construir(['seccionOperacionesDiario', 'filaAccionDiario', 'distanciaStrike', 'pctEsp', 'usdSigno', 'diaOpNY', 'sinHoraIso', 'fechaNyTransaccion', 'horaNY'],
+    const V = construir(['seccionOperacionesDiario', 'textoCuentaMoomoo', 'cuentaFill', 'filaAccionDiario', 'distanciaStrike', 'pctEsp', 'usdSigno', 'diaOpNY', 'sinHoraIso', 'fechaNyTransaccion', 'horaNY'],
       { esc, ymdNY, fechaHoraD: () => 'FECHA', textoDuracionOp: () => 'DURO', fechaCorta: (s) => String(s || '') },
       { consts: ['LADO_DINERO', 'FUENTE_SPOT_TXT', 'SIN_HORA_TXT', 'SIN_HORA_CORTO', 'BROKER_CORTO', 'dineroD', 'pctD', 'colD'] });
     igual([V.pctEsp(0.4856, 2), V.pctEsp(-1.544, 1), V.pctEsp(0, 1), V.pctEsp(null), V.usdSigno(1.8), V.usdSigno(-9.3), V.usdSigno(0), V.usdSigno(null)], ['+0.49 %', '-1.5 %', '0.0 %', '—', '+$1.80', '-$9.30', '+$0.00', '—'], 'pctEsp / usdSigno: signo siempre, espacio antes del %');
@@ -333,8 +333,8 @@ const HOY = '2026-10-03';
     assert(!/por_accion\[[^\]]*\]\s*=.*(user_id|posicion_id)/.test(FUENTE), 'muralla: nada personal viaja con la cotización de una acción');
     const raiz = path.join(path.dirname(process.argv[2]), '..');
     const html = fs.readFileSync(path.join(raiz, 'index.html'), 'utf8'), sw = fs.readFileSync(path.join(raiz, 'sw.js'), 'utf8');
-    assert(/config\.js\?v=71/.test(html) && /app\/main\.js\?v=71/.test(html), 'index.html carga config.js?v=71 y app/main.js?v=71');
-    assert(/const VER = 'mesa2-v60';/.test(sw), 'sw.js VER mesa2-v60');
+    assert(/config\.js\?v=72/.test(html) && /app\/main\.js\?v=72/.test(html), 'index.html carga config.js?v=72 y app/main.js?v=72');
+    assert(/const VER = 'mesa2-v61';/.test(sw), 'sw.js VER mesa2-v61');
     const mod = C.cargarModuloEntero({ src: './app/main.js?v=65' });
     assert(mod.cargo, 'main.js entero carga en el DOM de juguete', mod.error);
     if (mod.cargo) igual(mod.ev('typeof distanciaStrike + typeof filaAccionDiario + typeof celdaDistHtml + typeof _vivo.spot + typeof edadSpotWorker'), 'functionfunctionfunctionfunctionfunction', 'dentro del módulo REAL están las funciones nuevas, _vivo.spot y edadSpotWorker');

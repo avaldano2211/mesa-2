@@ -5969,6 +5969,11 @@ function aportePeriodoCuentas(op, desde) {
 // cierre (o en el mismo instante). Ese grupo no quedó plano: aporta su dinero y todavía no cuenta (aportePeriodoCuentas).
 // Una compra DESPUÉS del cierre es otra operación y no lo reabre. Con un cierre sin hora (sinHoraIso) se compara por día
 // NY. Solo AÑADE el campo, en copias. Sin libro (lectura fallida) no se marca nada y todo sigue como en la v66. PURA.
+// v72 · LAS DOS CUENTAS DE MOOMOO: un grupo de moomoo cuyas filas dicen su cuenta (`raw.cuenta`, que escribe el worker
+// 0.1.14+ al emparejar POR CUENTA) mira solo los lotes de ESA cuenta (o de esas, si el grupo junta filas de las dos): un
+// lote abierto en la cuenta de EFECTIVO no deja «sin quedar plana» una operación de la de MARGEN. Un lote sin cuenta
+// conocida se sigue mirando (puede ser de esa cuenta: como en la v71), y un grupo con alguna fila sin `raw.cuenta` mira
+// todos los lotes de su contrato, como siempre.
 function marcarLotesAbiertosCuentas(ops, abiertos) {
   if (!Array.isArray(ops) || !Array.isArray(abiertos) || !abiertos.length) return ops;
   const ms = (s) => { const t = Date.parse(s || ''); return Number.isFinite(t) ? t : null; };
@@ -5982,8 +5987,11 @@ function marcarLotesAbiertosCuentas(ops, abiertos) {
   return ops.map(op => {
     if (!op || !Array.isArray(op._partes_filas) || !op._partes_filas.length || !op.cerrada_at) return op;   // solo grupos del bróker
     const k = claveContrato(op);
-    const ls = k ? lotes.get((op.broker || '') + '|' + k) : null;
-    if (!ls) return op;
+    const todos = k ? lotes.get((op.broker || '') + '|' + k) : null;
+    if (!todos) return op;
+    const ctas = op.broker === 'moomoo' ? op._partes_filas.map(t => (t && t.raw && typeof t.raw === 'object' && t.raw.cuenta != null && String(t.raw.cuenta).trim()) || null) : [];
+    const deCuenta = ctas.length && ctas.every(Boolean) ? new Set(ctas) : null;
+    const ls = deCuenta ? todos.filter(a => !a.cuenta || deCuenta.has(a.cuenta)) : todos;
     const sinHora = sinHoraIso(op.cerrada_at), cierre = ms(op.cerrada_at), diaC = diaOpNY(op.cerrada_at);
     const antes = ls.some(a => sinHora ? (diaOpNY(a.entrada_at) || '9999-99-99') <= diaC
       : (cierre != null && ms(a.entrada_at) != null && ms(a.entrada_at) <= cierre));
@@ -7324,10 +7332,14 @@ function nombreContratoGfv(c) {
 }
 // Las compras de moomoo de `hoy` que ya están en el LIBRO de fills, como las lee el worker (liquidez.normalizar_fill: clave,
 // instante, contratos > 0, lado 'compra', día NY = fecha_ny o el de su instante), en orden de ejecución. PURA.
+// v72 · Sin las de la cuenta de MARGEN (`cuenta_tipo` 'MARGIN', sql 0024): la regla de good faith solo existe en la de
+// EFECTIVO y el worker solo evalúa esa (compras_no_liquidadas); una compra de margen salía «sin evaluar», un aviso falso.
+// Sin tipo (filas anteriores al relleno del worker 0.1.16), como siempre: se mira.
 function comprasLibroHoy(filas, hoy) {
   const out = [];
   (Array.isArray(filas) ? filas : []).forEach(f => {
     if (!f || f.broker !== 'moomoo' || f.lado !== 'compra' || f.clave_ext == null || f.clave_ext === '') return;
+    if (f.cuenta_tipo === 'MARGIN') return;
     const ms = Date.parse(f.ejecutado_at || ''), n = Number(f.contratos), px = f.precio == null || f.precio === '' ? NaN : Number(f.precio);
     if (!Number.isFinite(ms) || !(n > 0) || !Number.isFinite(px)) return;           // sin precio el worker no la evalúa
     if ((String(f.fecha_ny || '').slice(0, 10) || ymdNY(f.ejecutado_at)) !== hoy) return;
@@ -11115,9 +11127,17 @@ function calcDatosDeItem(it) {
   if (!it || !it.symbol) return null;
   return { contrato: calcContrato(it), lotes: [calcLote(it.contratos, it.prima_fill)], origen: 'costo medio de ' + (BROKER_NOMBRE[it.broker] || it.broker || 'tu bróker') };
 }
+// v72 · La clave de «Calcular limit» de un lote abierto del Diario: `bróker|contrato`, y en moomoo, cuando el lote sabe su
+// cuenta (cuentaFill de su compra), `moomoo|cuenta|contrato`: la calculadora nunca mezcla compras de las dos cuentas (cada
+// una se vende en la suya). Un lote de moomoo sin cuenta conocida va con los demás sin cuenta, como en la v71. PURA.
+function claveAbiertoCalc(a) {
+  if (!a) return '';
+  return (a.broker === 'moomoo' && a.cuenta) ? `moomoo|${a.cuenta}|${a.contrato}` : `${a.broker}|${a.contrato}`;
+}
 // Los lotes que quedan ABIERTOS de un contrato según el libro de fills (Diario: FIFO, una fila por compra viva). PURA.
+// v72: `clave` es la de claveAbiertoCalc (en moomoo, con la cuenta).
 function calcDatosDeAbiertos(clave, abiertos) {
-  const lista = (Array.isArray(abiertos) ? abiertos : []).filter(a => a && `${a.broker}|${a.contrato}` === String(clave || ''));
+  const lista = (Array.isArray(abiertos) ? abiertos : []).filter(a => a && claveAbiertoCalc(a) === String(clave || ''));
   if (!lista.length) return null;
   return { contrato: calcContrato(lista[0]), lotes: lista.map(a => calcLote(a.contratos, a.prima)),
     origen: lista.length > 1 ? `libro de fills: ${lista.length} compras abiertas` : 'libro de fills' };
@@ -12228,6 +12248,31 @@ function claveFill(f) {
   if (k) return k;
   return `${String((f && f.symbol) || '').toUpperCase()}|${String((f && f.direccion) || '').toUpperCase() || '?'}|${(f && f.strike != null) ? Number(f.strike) : '?'}|${String((f && f.expiracion) || '').slice(0, 10) || '?'}`;
 }
+// v72 · LAS DOS CUENTAS DE MOOMOO (desde el 6-nov-2026: EFECTIVO 283***520 y MARGEN 283***704). La cuenta real de moomoo
+// que ejecutó un fill: la columna `cuenta` (sql 0024, la escribe el worker 0.1.16 y su relleno) o, en las filas que aún no
+// la tienen, `crudo.cuenta` (lo escribe el worker desde 0.1.14). Solo moomoo: E*TRADE, Schwab y tasty → null. Sin dato, null
+// (no se inventa: nunca la regla de la fecha). Sirve igual para un tramo, un viaje o un abierto del Diario (llevan `cuenta`). PURA.
+function cuentaFill(f) {
+  if (!f || f.broker !== 'moomoo') return null;
+  const c = f.cuenta || (f.crudo && typeof f.crudo === 'object' && f.crudo.cuenta) || null;
+  return c == null || String(c).trim() === '' ? null : String(c).trim();
+}
+// v72 · Las cuentas de moomoo distintas que tiene el LIBRO (cuentaFill), ordenadas. Con más de una, la pantalla dice de cuál
+// es cada operación, abierto y ejecución de moomoo (textoCuentaMoomoo). PURA.
+function cuentasMoomooLibro(fills) {
+  const s = new Set();
+  (Array.isArray(fills) ? fills : []).forEach(f => { const c = cuentaFill(f); if (c) s.add(c); });
+  return [...s].sort();
+}
+// v72 · «efectivo» o «margen» (por `cuenta_tipo`; sin tipo, la máscara de la cuenta) de una fila de moomoo del Diario
+// (ejecución, viaje o abierto) cuando el libro tiene más de UNA cuenta de moomoo (`multi`); '' en cualquier otro caso (con
+// una sola cuenta nada cambia, y lo que no se sabe no se rotula). Texto plano: quien lo pinta usa esc(). PURA.
+function textoCuentaMoomoo(x, multi) {
+  if (!multi || !x || x.broker !== 'moomoo') return '';
+  if (x.cuenta_tipo === 'CASH') return 'efectivo';
+  if (x.cuenta_tipo === 'MARGIN') return 'margen';
+  return cuentaFill(x) || '';
+}
 function durMin(a, b) {
   const ta = Date.parse(a), tb = Date.parse(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return null;
@@ -12263,6 +12308,10 @@ function parteComision(total, a, b, q) {
 function operacionCerrada(f, ap, usa, costo, venta, com, ladoSalida, derivado) {
   const r2 = (n) => Math.round(n * 100) / 100;
   const pnl = r2(venta - costo - com);
+  // v72 · la cuenta de moomoo del TRAMO: la de su compra (ap.f) y la de su salida (f) cuando son LA MISMA (`_cta`/`_tipo`, que
+  // pone emparejarFillsFIFO con cuentaFill); si alguna no se sabe o no coinciden (un contrato que se empareja junto porque
+  // alguna fila aún no dice su cuenta), null: no se inventa. El tipo, el de cualquiera de las dos (misma cuenta, mismo tipo).
+  const ca = (ap.f && ap.f._cta) || null, cuenta = ca && ca === (f._cta || null) ? ca : null;
   const ss = spotDeFill(f);   // v60: el spot de la acción al entrar (del lote comprado) y al salir (de este fill)
   return { broker: f.broker, symbol: f.symbol, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion, contrato: f._c,
     contratos: Math.round(usa * 10000) / 10000, prima_entrada: ap.precio, prima_salida: Number(f.precio) || 0,
@@ -12272,7 +12321,8 @@ function operacionCerrada(f, ap, usa, costo, venta, com, ladoSalida, derivado) {
     sin_hora: sinHoraIso(ap.at) || sinHoraIso(f._at),       // v62 rev2: POR INSTANTE (una FECHA a 00:00), nunca por bróker
     costo: r2(costo), venta: r2(venta), comisiones: r2(com), pnl,
     pct: costo > 0 ? Math.round(pnl / costo * 10000) / 100 : null,
-    lado_salida: ladoSalida, vencido: ladoSalida === 'vencimiento', derivado: !!derivado, ids: { abre: ap.id, cierra: f.clave_ext } };
+    lado_salida: ladoSalida, vencido: ladoSalida === 'vencimiento', derivado: !!derivado, ids: { abre: ap.id, cierra: f.clave_ext },
+    cuenta, cuenta_tipo: cuenta ? ((ap.f && ap.f._tipo) || f._tipo || null) : null };
 }
 // Un VIAJE: desde la primera compra con el ciclo plano hasta quedar plano en ese contrato y bróker.
 // Es la OPERACIÓN que se cuenta (aciertos, mejor/peor, «N operaciones cerradas») y la que se lista,
@@ -12291,13 +12341,16 @@ function viajeDe(v) {
   const pond = (campo) => { let s = 0, n = 0; ts.forEach(t => { if (Number(t[campo]) > 0) { s += Number(t[campo]) * t.contratos; n += t.contratos; } }); return n > 0 ? r4(s / n) : null; };
   const spot_entrada = pond('spot_entrada'), spot_salida = pond('spot_salida');
   const spot_fuente_entrada = peorFuenteSpot(ts.map(t => t.spot_fuente_entrada)), spot_fuente_salida = peorFuenteSpot(ts.map(t => t.spot_fuente_salida));
+  // v72: la cuenta de moomoo del viaje, la de sus tramos si TODOS dicen la misma; si no, null (no se inventa)
+  const ctas = [...new Set(ts.map(t => t.cuenta || null))], cuenta = ctas.length === 1 ? ctas[0] : null;
   return { broker: v.broker, symbol: v.symbol, direccion: v.direccion, strike: v.strike, expiracion: v.expiracion, contrato: v.contrato,
     contratos, prima_entrada: contratos > 0 ? r4(costo / contratos / 100) : null, prima_salida: contratos > 0 ? r4(venta / contratos / 100) : null,
     spot_entrada, spot_salida, spot_fuente_entrada, spot_fuente_salida, spot_fuente: peorFuenteSpot([spot_fuente_entrada, spot_fuente_salida]),
     entrada_at: v.entrada_at, salida_at: u.salida_at, fecha_ny: u.fecha_ny, duracion_min: durMin(v.entrada_at, u.salida_at), sin_hora: ts.some(t => !!t.sin_hora),
     costo, venta, comisiones: com, pnl, pct: costo > 0 ? Math.round(pnl / costo * 10000) / 100 : null,
     lado_salida: u.lado_salida, vencido: ts.some(t => t.vencido), vencido_total: ts.every(t => t.vencido), derivado: ts.some(t => t.derivado),
-    compras: compras.length, salidas: salidas.length, tramos: ts, ids: { abre: ts[0].ids.abre, cierra: u.ids.cierra } };
+    compras: compras.length, salidas: salidas.length, tramos: ts, ids: { abre: ts[0].ids.abre, cierra: u.ids.cierra },
+    cuenta, cuenta_tipo: cuenta ? (ts.map(t => t.cuenta_tipo).find(Boolean) || null) : null };
 }
 // EL CONTABLE. Por contrato y por bróker, FIFO:
 //   · compra → lote en cola; venta/vencimiento/asignación/ejercicio → consume lotes por orden de
@@ -12316,14 +12369,23 @@ function viajeDe(v) {
 //   · huérfanas: venta sin compra en el libro. Se cuentan y se dicen, no se descartan: delatan
 //     historia incompleta (la compra es anterior a la ventana bajada, o falta un login).
 // Un contrato que vence HOY sigue vivo hasta las 16:00 ET y no se toca. `hoy` (YYYY-MM-DD en NY).
+// v72 · LAS DOS CUENTAS DE MOOMOO: la cola FIFO y el viaje de moomoo van por `moomoo|cuenta|contrato` cuando TODAS las filas
+// de moomoo de ese contrato dicen su cuenta (cuentaFill): una venta de la cuenta de MARGEN jamás cierra un lote de la de
+// EFECTIVO (el día y el % saldrían mal). Si alguna no la dice (filas anteriores al relleno del worker 0.1.16), ese contrato
+// se empareja junto, como en la v71: nunca peor. Tramos, viajes, abiertos y huérfanas llevan `cuenta` y `cuenta_tipo`
+// (null si no se sabe; en los demás brókeres, siempre null). Todo lo demás (comisiones por acumulado, vencimientos, orden)
+// es idéntico: el día a día sigue siendo una columna por bróker, la suma de sus cuentas.
 function emparejarFillsFIFO(fills, hoy) {
   const hoyY = String(hoy || hoyNY()).slice(0, 10);
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
   const r2 = (n) => Math.round(n * 100) / 100, r4 = (n) => Math.round(n * 10000) / 10000;
   const rango = (f) => (DIARIO_LADOS_SALIDA.includes(f.lado) ? 1 : 0);
   const esFecha = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  // v72: la cuenta (cuentaFill) y su tipo (solo los dos que existen; otro valor no se interpreta) viajan con cada fila
+  const tipoDe = (f) => (f.broker === 'moomoo' && (f.cuenta_tipo === 'CASH' || f.cuenta_tipo === 'MARGIN')) ? f.cuenta_tipo : null;
   const lista = (Array.isArray(fills) ? fills : [])
     .filter(f => f && f.broker && f.symbol && (f.lado === 'compra' || DIARIO_LADOS_SALIDA.includes(f.lado)) && num(f.contratos) > 0)
+    .map(f => ({ ...f, _cta: cuentaFill(f), _tipo: tipoDe(f) }))
     .map(f => {
       const exp = String(f.expiracion || '').slice(0, 10);
       // v65 rev6: el vencimiento va a las 16:30 ET del día de la expiración con su horario de NY (instanteVencimiento: 20:30Z
@@ -12340,14 +12402,18 @@ function emparejarFillsFIFO(fills, hoy) {
       return { ...f, _c: claveFill(f), _at: String(f.ejecutado_at || ''), _fecha: String(f.fecha_ny || '').slice(0, 10) || (ymdNY(f.ejecutado_at) || '') };
     })
     .sort((a, b) => (a._at < b._at ? -1 : a._at > b._at ? 1 : (rango(a) - rango(b)) || String(a.clave_ext).localeCompare(String(b.clave_ext))));
-  const abiertos = {};                                   // 'broker|contrato' → cola FIFO de lotes comprados
-  const enViaje = {};                                    // 'broker|contrato' → viaje abierto (tramos que lleva)
+  // v72: ¿TODAS las filas de moomoo de cada contrato dicen su cuenta? Solo entonces su cola va por cuenta (claveCola)
+  const porCuenta = {};
+  for (const f of lista) if (f.broker === 'moomoo') porCuenta[f._c] = porCuenta[f._c] !== false && !!f._cta;
+  const claveCola = (f) => (f.broker === 'moomoo' && f._cta && porCuenta[f._c]) ? 'moomoo|' + f._cta + '|' + f._c : f.broker + '|' + f._c;
+  const abiertos = {};                                   // 'broker|contrato' (moomoo: 'moomoo|cuenta|contrato') → cola FIFO de lotes comprados
+  const enViaje = {};                                    // la misma clave → viaje abierto (tramos que lleva)
   const cerradas = [], huerfanas = [], viajes = [];
   const tramo = (k, op) => { cerradas.push(op); if (enViaje[k]) enViaje[k].tramos.push(op); return op; };
   const cerrarViaje = (k) => { const v = enViaje[k]; delete enViaje[k]; if (v && v.tramos.length) viajes.push(viajeDe(v)); };
   const colaVacia = (k) => !(abiertos[k] || []).some(ap => ap.qty > 1e-9);
   for (const f of lista) {
-    const k = f.broker + '|' + f._c;
+    const k = claveCola(f);
     if (f.lado === 'compra') {
       if (!enViaje[k]) enViaje[k] = { broker: f.broker, symbol: f.symbol, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion, contrato: f._c, entrada_at: f._at, tramos: [] };
       const sf = spotDeFill(f);   // v60: el lote lleva el spot de la acción al comprar (y su fuente)
@@ -12371,7 +12437,8 @@ function emparejarFillsFIFO(fills, hoy) {
     }
     if (colaVacia(k)) cerrarViaje(k);                    // quedó plano: la operación se cierra en ESTE día
     if (rest > 1e-9) huerfanas.push({ broker: f.broker, symbol: f.symbol, direccion: f.direccion, strike: f.strike, expiracion: f.expiracion, contrato: f._c,
-      lado: f.lado, contratos: r4(rest), precio: num(f.precio), ejecutado_at: f._at, fecha_ny: f._fecha, clave_ext: f.clave_ext });
+      lado: f.lado, contratos: r4(rest), precio: num(f.precio), ejecutado_at: f._at, fecha_ny: f._fecha, clave_ext: f.clave_ext,
+      cuenta: f._cta || null, cuenta_tipo: f._cta ? f._tipo : null });
   }
   const abiertosLista = [];
   for (const k of Object.keys(abiertos)) {
@@ -12389,7 +12456,8 @@ function emparejarFillsFIFO(fills, hoy) {
       }
       abiertosLista.push({ broker: ap.f.broker, symbol: ap.f.symbol, direccion: ap.f.direccion, strike: ap.f.strike, expiracion: ap.f.expiracion, contrato: ap.f._c,
         contratos: r4(ap.qty), prima: ap.precio, costo: r2(ap.precio * ap.qty * 100), comision: r2(ap.com), entrada_at: ap.at, fecha_ny: ap.fecha,
-        dias_abiertos: diasEntre(ap.fecha, hoyY), vence_en: diasEntre(hoyY, exp), clave_ext: ap.id });
+        dias_abiertos: diasEntre(ap.fecha, hoyY), vence_en: diasEntre(hoyY, exp), clave_ext: ap.id,
+        cuenta: ap.f._cta || null, cuenta_tipo: ap.f._cta ? ap.f._tipo : null });   // v72: la cuenta de ESA compra (cuentaFill)
     }
     if (vencidoAlgo && colaVacia(k)) cerrarViaje(k);    // todo el lote venció: el viaje cierra el día de la expiración
   }
@@ -12580,6 +12648,11 @@ function fechaCorta(ymd) {
   const s = String(ymd || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   return `${Number(s.slice(8, 10))} ${MESES_ES_C[Number(s.slice(5, 7)) - 1]}`;
 }
+// v72 · «30-oct» (día y mes, con guion, como los avisos de la Mesa) de una fecha YYYY-MM-DD; si no es una fecha, tal cual. PURA.
+function fechaDiaMes(ymd) {
+  const s = String(ymd || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return `${Number(s.slice(8, 10))}-${MESES_ES_C[Number(s.slice(5, 7)) - 1]}`;
+}
 function tituloPeriodoDiario(sel) {
   const s = periodoDiarioNormalizar(sel);
   if (s.modo === 'meses') return s.vals.map(nombreMesYm).join(' + ');
@@ -12593,23 +12666,32 @@ function tituloPeriodoDiario(sel) {
 // tasty:'worker', moomoo:'worker'} — lo decide quien llama (aquí no se mira localStorage: PURA).
 // moomoo (v54: la escribe el worker, moomoo_fills) sale si tiene fills O si quien llama declaró su
 // sesión; sin lo uno ni lo otro (una cuenta que no está en la Mesa) no aparece.
+// v72 · HASTA cuándo hay datos de cada cuenta: `ultima_ejec` (la última fecha_ny de sus EJECUCIONES: una fila que solo
+// anota un vencimiento no es una, fillSoloVencimiento) y `leida_at` (el mayor creado_at de sus filas: la última vez que
+// algo de esa cuenta entró al libro). seccionCoberturaDiario lo dice de las que están sin conexión.
 function coberturaFills(fills, sesiones) {
-  const por = {};
+  const por = {}, leidaMs = {};
   for (const f of (fills || [])) {
     if (!f || !f.broker) continue;
     const d = String(f.fecha_ny || '').slice(0, 10);
-    const x = por[f.broker] || (por[f.broker] = { primera: null, ultima: null, n: 0, origen: {} });
+    const x = por[f.broker] || (por[f.broker] = { primera: null, ultima: null, n: 0, origen: {}, ultima_ejec: null, leida_at: null });
     x.n++;
     if (d) { if (!x.primera || d < x.primera) x.primera = d; if (!x.ultima || d > x.ultima) x.ultima = d; }
+    if (d && !fillSoloVencimiento(f) && (!x.ultima_ejec || d > x.ultima_ejec)) x.ultima_ejec = d;
+    const ms = Date.parse(f.creado_at || '');
+    if (Number.isFinite(ms) && !(leidaMs[f.broker] >= ms)) { leidaMs[f.broker] = ms; x.leida_at = String(f.creado_at); }
     if (f.origen) x.origen[f.origen] = (x.origen[f.origen] || 0) + 1;
   }
   const bs = ['etrade', 'schwab', 'tasty', 'moomoo'];
   return bs.filter(b => b !== 'moomoo' || por[b] || (sesiones && sesiones[b]))
-    .map(b => ({ broker: b, ...(por[b] || { primera: null, ultima: null, n: 0, origen: {} }), sesion: (sesiones && sesiones[b]) || 'sin' }));
+    .map(b => ({ broker: b, ...(por[b] || { primera: null, ultima: null, n: 0, origen: {}, ultima_ejec: null, leida_at: null }), sesion: (sesiones && sesiones[b]) || 'sin' }));
 }
 // Contratos ABIERTOS según el libro de fills, contra la cartera del bróker (v50 + foto de tasty) y
 // contra posiciones (el libro de la Mesa). Una fila por contrato+bróker con las tres cantidades;
 // `comprobado` solo si ese bróker se pudo leer (leidos). Solo se DICE: nada se cambia solo.
+// v72 · Con las dos cuentas de moomoo, la fila sigue siendo por bróker + contrato: los lotes de cada cuenta (el Diario los
+// empareja por separado) se SUMAN aquí, igual que las líneas de la cartera de moomoo (una por cuenta) y las fichas de la
+// Mesa; así un contrato comprado en las dos cuadra contra el total del bróker (test_diario_cuentas.js lo comprueba).
 function compararAbiertos(abiertosFills, itemsCartera, posiciones, leidos) {
   const m = {};
   const fila = (b, k) => { const id = b + '|' + k; return m[id] || (m[id] = { clave: id, broker: b, contrato: k, fills: 0, broker_n: null, libro: null }); };
@@ -12744,14 +12826,26 @@ function tarjetasResumenDiario(M, sel, cob, hoy) {
 // «Historial de cada cuenta», la línea de la mesa vieja: por cuenta, desde cuándo hay ejecuciones en
 // el libro y si ahora hay conexión (E*TRADE y Schwab desde este equipo; tastytrade y moomoo las
 // escribe el worker). Una sola línea en el Mac y apilada en el iPhone (.histcta). Solo se DICE.
+// v72 · De una cuenta SIN conexión ahora (sesión 'sin' o 'caducada') con ejecuciones en el libro se dice también HASTA
+// cuándo hay datos: «última ejecución el 30-oct · leída por última vez el 2-nov 13:50» (coberturaFills: ultima_ejec y
+// leida_at, en hora NY). Así se ve que lo posterior de E*TRADE o de Schwab no está en la utilidad del día. Con conexión o
+// del worker, como siempre.
 function seccionCoberturaDiario(cob, errLibro) {
   const nombre = (b) => (b === 'schwab' ? 'Charles Schwab (thinkorswim)' : (BROKER_NOMBRE[b] || b));
+  const hasta = (c) => {
+    if (!c.n || (c.sesion !== 'sin' && c.sesion !== 'caducada')) return '';
+    const partes = [];
+    if (c.ultima_ejec) partes.push(`última ejecución el ${esc(fechaDiaMes(c.ultima_ejec))}`);
+    const ms = Date.parse(c.leida_at || '');
+    if (Number.isFinite(ms)) partes.push(`leída por última vez el ${esc(fechaDiaMes(ymdNY(new Date(ms).toISOString())))} ${esc(horaNY(ms))}`);
+    return partes.length ? ` · <span class="fresco">${partes.join(' · ')}</span>` : '';
+  };
   const uno = (c) => {
     const hist = c.n ? `desde <b>${esc(c.primera)}</b>` : 'sin ejecuciones en el libro todavía';
     // las cuentas del worker no tienen «conexión» en este equipo: se dice entre paréntesis, sin « · »
     const ses = c.sesion === 'worker' ? ' <span class="fresco">(la escribe el worker)</span>'
       : c.sesion === 'ok' ? ' · con conexión ahora'
-      : ` · <span style="color:var(--oro)">sin conexión ahora (se muestra lo guardado)</span>`;
+      : ` · <span style="color:var(--oro)">sin conexión ahora (se muestra lo guardado)</span>${hasta(c)}`;
     return `<span class="hc" title="${c.n ? esc(c.n) + ' ejecuciones · última ' + esc(c.ultima || '') : ''}"><b>${esc(nombre(c.broker))}</b> ${hist}${ses}</span>`;
   };
   // en el orden de la mesa vieja: E*TRADE · moomoo · Charles Schwab (thinkorswim) · tastytrade (las principales primero)
@@ -12857,7 +12951,10 @@ function filaAccionDiario(c) {
 // Una tarjeta por VIAJE (viajeDe): la operación entera, con su costo, su venta y su % sobre lo que
 // costó; si hubo refuerzo o salida escalonada, sus tramos van debajo en letra pequeña. v60: una tercera
 // fila con la acción detrás del contrato (filaAccionDiario).
-function seccionOperacionesDiario(viajes, tope) {
+// v72: con más de una cuenta de moomoo en el libro (`multi`), el bróker de una operación de moomoo dice de cuál
+// (textoCuentaMoomoo: «moomoo margen»); con una sola, nada cambia.
+function seccionOperacionesDiario(viajes, tope, multi) {
+  const cta = (c) => { const t = textoCuentaMoomoo(c, multi); return t ? ' ' + esc(t) : ''; };
   const cs = (viajes || []).slice().reverse();
   const n = cs.length, T = tope || 150;
   if (!n) return `<div class="sec">OPERACIONES CERRADAS</div><div class="card vacio">Ninguna operación cerrada en el período.</div>`;
@@ -12877,21 +12974,24 @@ function seccionOperacionesDiario(viajes, tope) {
       <div class="hist">
         <div><span>costó</span><b class="mono">${dineroD(c.costo)}</b></div>
         <div><span>vendido</span><b class="mono">${dineroD(c.venta)}</b></div>
-        <div><span>×${esc(c.contratos)} · ${esc(BROKER_CORTO[c.broker] || c.broker)}</span><b class="mono">$${esc(Number(c.prima_entrada).toFixed(2))} → $${esc(Number(c.prima_salida).toFixed(2))}${c.comisiones ? ` <span class="fresco">com ${dineroD(c.comisiones)}</span>` : ''}</b></div></div>
+        <div><span>×${esc(c.contratos)} · ${esc(BROKER_CORTO[c.broker] || c.broker)}${cta(c)}</span><b class="mono">$${esc(Number(c.prima_entrada).toFixed(2))} → $${esc(Number(c.prima_salida).toFixed(2))}${c.comisiones ? ` <span class="fresco">com ${dineroD(c.comisiones)}</span>` : ''}</b></div></div>
       ${filaAccionDiario(c)}
       ${tramos(c)}${ejercida(c)}
     </div>`).join('')
     + (n > T ? `<div class="fresco" style="text-align:center;padding:6px">Se muestran las ${T} más recientes de ${n}: elige un mes o una semana para ver las demás.</div>` : '');
 }
-function seccionAbiertosDiario(abiertos, comparacion, huerfanas) {
+// v72: con más de una cuenta de moomoo en el libro (`multi`), cada lote de moomoo dice de cuál («moomoo efectivo»), y su
+// «Calcular limit» va con la clave de su cuenta (claveAbiertoCalc: nunca mezcla compras de las dos).
+function seccionAbiertosDiario(abiertos, comparacion, huerfanas, multi) {
+  const cta = (a) => { const t = textoCuentaMoomoo(a, multi); return t ? ' ' + esc(t) : ''; };
   let h = `<div class="sec">ABIERTOS SEGÚN EL LIBRO DE FILLS</div>`;
   if (!(abiertos || []).length) h += `<div class="card vacio">Ningún contrato abierto según las ejecuciones guardadas.</div>`;
   else h += `<div class="card" style="padding:4px 13px 8px">${abiertos.map(a => `<div class="fila" style="padding:8px 0;border-bottom:1px solid var(--line);align-items:flex-start">
       <div><b style="font-size:13.5px">${esc(a.symbol)} ${esc(a.direccion)} ${esc(a.strike)}</b> <span class="fresco">${esc(fechaCorta(a.expiracion))}</span>
-        <div class="fresco">${esc(BROKER_CORTO[a.broker] || a.broker)} · entró ${esc(fechaCorta(a.fecha_ny))}${a.dias_abiertos != null ? ` · ${a.dias_abiertos} d abierto` : ''}</div>${a.broker === 'moomoo' && typeof insigniaGfvLote === 'function' ? insigniaGfvLote(a) : ''}</div>
+        <div class="fresco">${esc(BROKER_CORTO[a.broker] || a.broker)}${cta(a)} · entró ${esc(fechaCorta(a.fecha_ny))}${a.dias_abiertos != null ? ` · ${a.dias_abiertos} d abierto` : ''}</div>${a.broker === 'moomoo' && typeof insigniaGfvLote === 'function' ? insigniaGfvLote(a) : ''}</div>
       <div class="mono" style="text-align:right;flex:none"><b>×${esc(a.contratos)} @ $${esc(Number(a.prima).toFixed(2))}</b>
         <div class="fresco">costó ${dineroD(a.costo)} · <span style="${a.vence_en != null && a.vence_en <= 0 ? 'color:var(--rojo);font-weight:700' : ''}">${a.vence_en == null ? 'sin vencimiento' : a.vence_en === 0 ? 'VENCE HOY' : a.vence_en < 0 ? 'vencido' : 'vence en ' + a.vence_en + ' d'}</span></div>${a.vence_en != null && a.vence_en < 0 ? '' : `
-        <a href="#" class="lnk" onclick="MZ.calcDeAbierto('${esc(a.broker + '|' + a.contrato)}');return false" style="font-family:var(--sans);font-weight:600;text-decoration:none" title="Calculadora de limit y stop con las compras abiertas de este contrato">Calcular limit</a>`}</div></div>`).join('')}
+        <a href="#" class="lnk" onclick="MZ.calcDeAbierto('${esc(claveAbiertoCalc(a))}');return false" style="font-family:var(--sans);font-weight:600;text-decoration:none" title="Calculadora de limit y stop con las compras abiertas de este contrato">Calcular limit</a>`}</div></div>`).join('')}
     <div class="fresco" style="padding:6px 0 0">No suman al realizado. Un contrato con expiración pasada y sin venta ya cuenta como pérdida total en su día.</div></div>`;
   const cmp = (comparacion || []);
   const malas = cmp.filter(x => !x.coincide);
@@ -13031,8 +13131,10 @@ function comisionesDiario(cerradas, fills, ahoraMs, libro) {
 // ejecución (contrato y lado/cantidad/precio; fecha, cuenta, monto y comisión): a 390 px se lee
 // entera, sin desplazar de lado. v71: la comisión de moomoo dice «pendiente» o «sin dato» cuando no se sabe
 // (estadoComisionFill; `ahoraMs` para probarlo) y, debajo, el desglose de su ORDEN (comision_detalle) en una línea pequeña.
-function seccionEjecucionesDiario(fills, filtro, todas, ahoraMs) {
+// v72: con más de una cuenta de moomoo en el libro (`multi`), cada ejecución de moomoo dice de cuál («moomoo margen»).
+function seccionEjecucionesDiario(fills, filtro, todas, ahoraMs, multi) {
   const bs = ['etrade', 'schwab', 'tasty', 'moomoo'];   // v54: moomoo entra al libro por el worker (moomoo_fills)
+  const cta = (x) => { const t = textoCuentaMoomoo(x, multi); return t ? ' ' + esc(t) : ''; };
   const f = filtro || 'todos';
   const lista = (fills || []).filter(x => f === 'todos' || x.broker === f).slice().sort((a, b) => (a.ejecutado_at < b.ejecutado_at ? 1 : a.ejecutado_at > b.ejecutado_at ? -1 : 0));
   const T = 120, n = lista.length, ver = todas ? lista : lista.slice(0, T);
@@ -13059,7 +13161,7 @@ function seccionEjecucionesDiario(fills, filtro, todas, ahoraMs) {
   h += `<div class="card" style="padding:2px 13px 8px">${ver.map(x => `<div class="ej" style="padding:8px 0;border-bottom:1px solid var(--line)">
       <div class="fila"><span><b style="font-size:13.5px">${esc(x.symbol)} ${esc(x.direccion || '')} ${x.strike != null ? esc(x.strike) : ''}</b> <span class="fresco">${esc(fechaCorta(x.expiracion))}</span></span>
         <span class="mono" style="font-size:12px;font-weight:700;white-space:nowrap">${lado(ladoDe(x))} ×${esc(x.contratos)} @ $${esc(Number(x.precio).toFixed(2))}</span></div>
-      <div class="fila fresco" style="margin-top:2px"><span>${sinHoraIso(x.ejecutado_at) ? esc(fechaCorta(String(x.fecha_ny || '').slice(0, 10) || diaOpNY(x.ejecutado_at))) + ' (sin hora)' : esc(fmtFechaNY(x.ejecutado_at, true))} · ${esc(BROKER_CORTO[x.broker] || x.broker)}</span>
+      <div class="fila fresco" style="margin-top:2px"><span>${sinHoraIso(x.ejecutado_at) ? esc(fechaCorta(String(x.fecha_ny || '').slice(0, 10) || diaOpNY(x.ejecutado_at))) + ' (sin hora)' : esc(fmtFechaNY(x.ejecutado_at, true))} · ${esc(BROKER_CORTO[x.broker] || x.broker)}${cta(x)}</span>
         <span>monto ${dineroD(Number(x.precio) * Number(x.contratos) * 100)}${comTxt(x)}</span></div>${detTxt(x)}</div>`).join('')}
     ${n > T && !todas ? `<div class="fila" style="margin-top:8px"><button class="btnsec" onclick="MZ.diarioMasEjec()">Ver las ${n - T} restantes</button></div>` : ''}
     <div class="fresco" style="padding:8px 0 0">Precio = prima por contrato · monto = precio × contratos × 100 · E*TRADE reporta comisión por ejecución; moomoo la cobra por ORDEN y la asienta minutos después: la Mesa la pide a los 30 min y la reparte entre las ejecuciones de la orden por contratos (el desglose es el de la orden entera; «pendiente» hasta entonces, «sin dato» si no se pudo saber); Schwab no manda comisiones en sus órdenes; una ejecución que llega sin hora (00:00) muestra solo la fecha.</div></div>`;
@@ -13423,7 +13525,10 @@ async function vistaDiario(forzar) {
   const brokersDias = ['etrade', 'schwab', 'tasty', 'moomoo'].filter(b => cerradasSel.some(c => c.broker === b));   // solo columnas con $ en el período
   const fillsSel = fills.filter(f => enPeriodoDiario(sel, f.fecha_ny));
   const leidos = brokersLeidos(_cart);
+  // v72: compararAbiertos va por bróker + contrato: los lotes de las dos cuentas de moomoo se SUMAN, como las líneas de la
+  // cartera del bróker (una por cuenta) y las fichas del libro de la Mesa: el cuadre es del bróker entero
   const cmp = compararAbiertos(F.abiertos, itemsCartera(_cart).filter(it => leidos.includes(it.broker)), posic, leidos);
+  const multiCta = cuentasMoomooLibro(fills).length > 1;   // v72: con más de una cuenta de moomoo, la pantalla dice de cuál es cada cosa
   // ¿Coincide con Cuentas (broker_trades/unirOperaciones) en lo que va del mes? Fuentes distintas:
   // se dice con una línea, sin alarma.
   let notaCuentas = '';
@@ -13442,9 +13547,9 @@ async function vistaDiario(forzar) {
   if (notaCuentas) h += `<div class="fresco" style="padding:0 4px">${esc(notaCuentas)}</div>`;
   h += seccionResumenesDiario(meses, semanas, sel);
   h += seccionDiaADia(dias, brokersDias, (sel && sel.modo === 'dias') ? sel.vals : [])   // sel ya viene normalizado (periodoDiarioSel);
-  h += seccionOperacionesDiario(viajesSel);
-  h += seccionAbiertosDiario(F.abiertos, cmp, F.huerfanas);
-  h += seccionEjecucionesDiario(fillsSel, _diario.brokerFiltro, _diario.masEjec);
+  h += seccionOperacionesDiario(viajesSel, null, multiCta);
+  h += seccionAbiertosDiario(F.abiertos, cmp, F.huerfanas, multiCta);
+  h += seccionEjecucionesDiario(fillsSel, _diario.brokerFiltro, _diario.masEjec, Date.now(), multiCta);
   h += `<div id="diarioNotas">${seccionNotasDiario(_notas.lista || [], notaBorradorLeer(), _diario.syms, posic, _notas.editando, _notas.err, _notas.edTexto)}</div>`;
   h += `<div class="mut" style="text-align:center;font-size:11px;padding:8px 12px">El Diario se calcula en este equipo sobre el libro de fills (compras y ventas guardadas para siempre). E*TRADE y Schwab lo alimentan desde aquí al sincronizar; tastytrade y moomoo los alimenta el worker (24/5). <a href="#" class="lnk" onclick="MZ.diarioSincronizar();return false">Sincronizar ahora</a></div>`;
   pintarConservandoFoco($('#vista'), `<div class="diario">${h}</div>`);   // .diario: contenedor de las @container del CSS (v55)

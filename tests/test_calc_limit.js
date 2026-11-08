@@ -579,7 +579,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
   const SCHW = { ...T1, id: 10, broker: 'schwab', contratos: 5, prima_fill: 0.40 };
   const AAPL = { broker: 'etrade', symbol: 'AAPL', direccion: 'CALL', strike: 235, expiracion: '2026-11-20', contratos: 2, prima_fill: 1.3233333, mark: 1.55, valor_actual: 310, invertido: 264.67, pnl_usd: 45.33, pnl_pct: 17.1, clave: 'etrade|AAPL|CALL|235|2026-11-20' };
   {
-    const B = construir(['calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'calcContrato', 'calcLote', 'claveCartera', 'claveContrato'], { BROKER_NOMBRE: C.BROKER_NOMBRE });
+    const B = construir(['calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'claveAbiertoCalc', 'calcContrato', 'calcLote', 'claveCartera', 'claveContrato'], { BROKER_NOMBRE: C.BROKER_NOMBRE });
     igual(B.calcLote(4, 0.52), { n: '4', p: '0.52' }, 'calcLote: el texto de los campos');
     igual(B.calcLote(2, 1.3233333), { n: '2', p: '1.323333' }, 'el costo medio de un bróker con 6 decimales (lo pagado cuadra al centavo)');
     igual([B.calcLote(null, null), B.calcLote(0, -1), B.calcLote('', ''), B.calcLote(NaN, 'x')], [{ n: '', p: '' }, { n: '', p: '' }, { n: '', p: '' }, { n: '', p: '' }], 'lo que no es un número positivo sale como campo vacío (nunca «NaN» ni «0»)');
@@ -663,7 +663,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
     function armarOrden(E) {
       E = E || {};
       const H = armarHoja({ mas: ['leerFormOrden', 'calcContrato', 'calcLote', 'calcDatosDePosicion', 'calcDatosDeItem', 'calcDeOrden', 'claveCartera',
-        'calcDatosDeAbiertos', 'calcHayOtroCuadro', 'calcDesdeLaPagina', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto'],
+        'calcDatosDeAbiertos', 'claveAbiertoCalc', 'calcHayOtroCuadro', 'calcDesdeLaPagina', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto'],
         prefijo: 'let _ord = null; let _gestor = { filas: [] }; let _cart = {};', sufijo: ' function __setOrd(o) { _ord = o; } function __setGestor(f) { _gestor.filas = f; } function __setCart(c) { _cart = c; }', extras: ['__setOrd', '__setGestor', '__setCart'],
         deps: { ajustarFormOrden: () => repintes.push('ajustar'), pintarAvisosOrden: () => repintes.push('avisos'), pintarTotalOrden: () => repintes.push('total'),
           itemsCartera: (c) => (c && c.etrade && c.etrade.items) || [], BROKER_NOMBRE: C.BROKER_NOMBRE,
@@ -881,7 +881,7 @@ const evLote = (c, i, valor) => ({ target: { id: 'c' + c.toUpperCase() + i, valu
       const nombres = ['calcLimitStop', 'calcArriba', 'calcNum', 'calcPrefsNormalizar', 'calcPrefsLeer', 'calcPrefsGuardar', 'calcEntrada', 'calcTitulo', 'calcLotesHtml', 'calcResumenHtml', 'calcLotesPartidos', 'calcChipsHtml',
         'calcObjetivoHtml', 'calcTickHtml', 'calcFeeNota', 'calcFaltaTxt', 'calcCifrasHtml', 'calcLimitHtml', 'calcStopHtml', 'calcFormulaHtml', 'calcHojaHtml', 'calcResultado', 'calcDestino', 'pintarCalcRes',
         'abrirCalc', 'cerrarCalc', 'calcTecla', 'calcManualAnotar', 'calcInput', 'calcLoteMas', 'calcLoteQuitar', 'calcModo', 'calcTick', 'calcChip', 'calcCopiar', 'calcContrato', 'calcLote',
-        'calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'calcHayOtroCuadro', 'calcDesdeLaPagina', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto', 'ordenParaCalc', 'estadoOrdenCalc', 'calcPonerEnOrden', 'calcDeOrden'];
+        'calcDatosDePosicion', 'calcDatosDeItem', 'calcDatosDeAbiertos', 'claveAbiertoCalc', 'calcHayOtroCuadro', 'calcDesdeLaPagina', 'calcDePosicion', 'calcDeBroker', 'calcDeAbierto', 'ordenParaCalc', 'estadoOrdenCalc', 'calcPonerEnOrden', 'calcDeOrden'];
       const todo = nombres.map(C.extraer).join('\n');
       ['ordenPreview', 'ordenPlace', 'etPost', 'swPost', 'abrirOrden', 'construirOrden', 'preSalida', '/etrade/', '/schwab/', 'cancelarOrden', 'cortarPosicion', 'venderGestor', 'armar(', 'pedirPin', 'unlock']
         .forEach(t => assert(!todo.includes(t), 'la calculadora no toca «' + t + '»: nada arma ni envía órdenes'));

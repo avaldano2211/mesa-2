@@ -34,7 +34,7 @@ const NOMBRES = ['spotDeOperacion', 'senalDeOperacion', 'dteEntrada', 'metricasC
   // v65 rev2: el libro VIGENTE de E*TRADE (la provisional con gemela contabilizada no cuenta)
   'fillsEtradeVigentes', 'tipoFillEtrade', 'claveFill',
   // v65 rev4: el tope por pareja de filasEtradeVigentes usa el FIFO del libro (el mismo contable que el Diario)
-  'emparejarFillsFIFO', 'viajeDe', 'operacionCerrada', 'parteComision', 'durMin',
+  'emparejarFillsFIFO', 'cuentaFill', 'viajeDe', 'operacionCerrada', 'parteComision', 'durMin',
   // v65 rev6: el instante de un vencimiento (16:30 ET del día de la expiración, con el horario de NY de ese día)
   'instanteVencimiento',
   // v65 rev7: la venta a $0 que moomoo anota tras el vencimiento es su vencimiento (el FIFO del libro y Cuentas la leen así)

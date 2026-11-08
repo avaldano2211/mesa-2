@@ -33,8 +33,8 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
   // ════════════════ 0. versión v71 y lo que tiene que existir ════════════════
   {
     const html = fs.readFileSync(path.join(RAIZ, 'index.html'), 'utf8'), sw = fs.readFileSync(path.join(RAIZ, 'sw.js'), 'utf8');
-    assert(/config\.js\?v=71"/.test(html) && /app\/main\.js\?v=71"/.test(html), 'index.html carga config.js?v=71 y app/main.js?v=71');
-    assert(/const VER = 'mesa2-v60';/.test(sw), 'sw.js VER mesa2-v60 (la caché vieja se borra al activarse)');
+    assert(/config\.js\?v=72"/.test(html) && /app\/main\.js\?v=72"/.test(html), 'index.html carga config.js?v=72 y app/main.js?v=72');
+    assert(/const VER = 'mesa2-v61';/.test(sw), 'sw.js VER mesa2-v61 (la caché vieja se borra al activarse)');
   }
   const NUEVAS = ['estadoComisionFill', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'textoComisionOpCuentas', 'parteComision',
     'comisionAunPendiente', 'estadoComisionCrudo', 'filasMoomooNetas', 'estadoComisionTramoMoomoo', 'comMoomooFila', 'marcarComisionMoomooCuentas', 'cortoComisionOpCuentas'];   // v71 rev
@@ -49,7 +49,7 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
   const HOY = '2026-11-09';                                   // lunes
   const AHORA = Date.parse('2026-11-09T21:00:00Z');           // 16:00 ET
   const DIA = 86400000;
-  const D = construir(['emparejarFillsFIFO', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre',
+  const D = construir(['emparejarFillsFIFO', 'cuentaFill', 'textoCuentaMoomoo', 'instanteVencimiento', 'vencimientoMoomoo', 'fillSoloVencimiento', 'viajeDe', 'operacionCerrada', 'parteComision', 'claveFill', 'durMin', 'diasEntre',
     'diaADia', 'metricasDiario', 'spotDeFill', 'peorFuenteSpot', 'claveContrato', 'sinHoraIso', 'horaNY', 'diaOpNY', 'fechaNyTransaccion', 'fechaCorta', 'fmtFechaNY',
     'estadoComisionFill', 'estadoComisionCrudo', 'detalleComisionFill', 'textoDetalleComision', 'comisionesDiario', 'tarjetasResumenDiario', 'seccionEjecucionesDiario', 'parteComision',
     'comisionAunPendiente', 'diasHabilesDesde'],
@@ -253,7 +253,7 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     // el pie de la lista
     assert(/moomoo la cobra por ORDEN y la asienta minutos después: la Mesa la pide a los 30 min y la reparte entre las ejecuciones de la orden por contratos/.test(h) && /Schwab no manda comisiones en sus órdenes/.test(h) && !/moomoo \(ejecuciones de OpenD\)/.test(h),
       'el pie de la lista: moomoo SÍ (por orden, repartida entre sus ejecuciones); Schwab no');
-    assert(/^function seccionEjecucionesDiario\(fills, filtro, todas, ahoraMs\)/.test(extraer('seccionEjecucionesDiario')), 'seccionEjecucionesDiario recibe `ahoraMs` (sin él, la hora del equipo)');
+    assert(/^function seccionEjecucionesDiario\(fills, filtro, todas, ahoraMs[,)]/.test(extraer('seccionEjecucionesDiario')), 'seccionEjecucionesDiario recibe `ahoraMs` (sin él, la hora del equipo)');
   }
 
   // ════════════════ 6. el cableado en vistaDiario ════════════════
@@ -261,7 +261,7 @@ const RAIZ = path.join(path.dirname(process.argv[2]), '..');
     const vd = extraer('vistaDiario');
     assert(/const M = metricasDiario\(cerradasSel, dias, viajesSel, fillsSelDias\);\s*M\.com = comisionesDiario\(cerradasSel, fillsSelDias, Date\.now\(\), fills\);/.test(vd),
       'vistaDiario: M.com = comisionesDiario(cerradasSel, fillsSelDias, Date.now(), fills) con los tramos y las ejecuciones DEL PERÍODO y el libro entero (v71 rev)');
-    assert(/tarjetasResumenDiario\(M, sel, cob, hoy\)/.test(vd) && /seccionEjecucionesDiario\(fillsSel, _diario\.brokerFiltro, _diario\.masEjec\)/.test(vd), 'las llamadas de siempre (el pie lee M.com; la lista, la hora del equipo)');
+    assert(/tarjetasResumenDiario\(M, sel, cob, hoy\)/.test(vd) && /seccionEjecucionesDiario\(fillsSel, _diario\.brokerFiltro, _diario\.masEjec(, Date\.now\(\), multiCta)?\)/.test(vd), 'las llamadas de siempre (el pie lee M.com; la lista, la hora del equipo)');
     assert(!/\.(insert|update|upsert|delete)\(/.test(extraer('comisionesDiario') + extraer('estadoComisionFill') + extraer('detalleComisionFill') + extraer('textoDetalleComision')), 'nada de esto escribe en la base: la app solo LEE lo que escribe el worker');
   }
 
