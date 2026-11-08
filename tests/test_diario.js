@@ -778,7 +778,7 @@ function sbGrabador(respuestas) {
       TICKERS: ['AAPL'], periodoDiarioSel: () => ({ modo: 'todo' }), emparejarFillsFIFO: () => ({ cerradas: [], viajes: [], abiertos: [], huerfanas: [], vencidas: [] }), enPeriodoDiario: () => true,
       diaADia: () => [], metricasDiario: () => ({ total: 0, ops: 0, aciertos: 0, comisiones: 0, vencidas: 0, dias_operados: 0 }), resumenPorPeriodo: () => [],
       comisionesDiario: () => ({ por_broker: {}, pendientes: 0, sin_dato: 0 }),   // v71
-      coberturaFills: () => [], cuentasMoomooLibro: () => [], brokersLeidos: () => [], itemsCartera: () => [], compararAbiertos: () => [], _cart: {}, resumenPeriodo: () => ({ util: 0 }), unirOperaciones: () => ({ ops: [] }), dineroD: () => '$0',
+      coberturaFills: () => [], cuentasMoomooLibro: () => [], columnasDiaADia: () => [], brokersLeidos: () => [], itemsCartera: () => [], compararAbiertos: () => [], _cart: {}, resumenPeriodo: () => ({ util: 0 }), unirOperaciones: () => ({ ops: [] }), dineroD: () => '$0',
       selectorCuentas: () => '', seccionPeriodoDiario: () => '', tarjetasResumenDiario: () => '', seccionCoberturaDiario: () => '', seccionDiaADia: () => '', seccionResumenesDiario: () => '',
       seccionOperacionesDiario: () => '', seccionAbiertosDiario: () => '', seccionEjecucionesDiario: () => '', seccionNotasDiario: () => '<textarea id="nTexto"></textarea>', esc, _notas: { lista: [], editando: null, err: null },
       localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
